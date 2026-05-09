@@ -1,6 +1,6 @@
 // 用于在右侧主区域切换显示什么：表数据 / 表结构 / diff
 import { create } from 'zustand'
-import type { ExportDatabaseRequest } from '../../shared/types'
+import type { DbEngine, ExportDatabaseRequest } from '../../shared/types'
 
 let toastTimer: ReturnType<typeof setTimeout> | null = null
 const tabCloseGuards = new Map<string, () => boolean>()
@@ -9,12 +9,13 @@ export type TableViewTabKind = 'data' | 'structure' | 'info'
 
 export type RightView =
   | { kind: 'empty' }
-  | { kind: 'database'; connectionId: string; database: string; connectionName?: string }
+  | { kind: 'database'; connectionId: string; database: string; connectionName?: string; engine?: DbEngine }
   | {
       kind: 'table'
       connectionId: string
       database: string
       table: string
+      engine?: DbEngine
       tableTab?: TableViewTabKind
     }
   | {
@@ -28,7 +29,7 @@ export type RightView =
       comparedTables: string[]
       diffTables: string[]
     }
-  | { kind: 'sql'; connectionId: string; connectionName?: string; database: string }
+  | { kind: 'sql'; connectionId: string; connectionName?: string; database: string; engine?: DbEngine }
   | {
       kind: 'database-export'
       exportTaskId: string

@@ -39,6 +39,7 @@ export function ConnectionDialogForm({
         >
           <option value="mysql">{t('connection.form.mysql')}</option>
           <option value="postgres">{t('connection.form.postgres')}</option>
+          <option value="redis">{t('connection.form.redis')}</option>
         </select>
       </Field>
       <Field label={t('common.name')}>

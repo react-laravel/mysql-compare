@@ -8,6 +8,7 @@ import type {
   DeleteRowsRequest,
   DropDatabaseRequest,
   DropTableRequest,
+  ExplainSQLResult,
   IndexInfo,
   InsertRowRequest,
   QueryRowsRequest,
@@ -18,6 +19,11 @@ import type {
 import type { DbDriver, Dialect, StreamRowsOptions } from './types'
 import { buildMySQLOrderClause, mysqlDialect } from './mysql-dialect'
 import { MySQLPoolCache, type MySQLDriverPoolDebugSnapshot } from './mysql-pool-cache'
+import {
+  buildMySQLExplainResult,
+  buildPlainExplainResult,
+  prepareExplainTarget
+} from './explain-utils'
 
 export type { MySQLDriverPoolDebugSnapshot } from './mysql-pool-cache'
 
@@ -366,6 +372,33 @@ export class MySQLDriver implements DbDriver {
     try {
       const [res] = await client.query(sql)
       return res
+    } finally {
+      await client.end()
+    }
+  }
+
+  async explainSQL(sql: string, database?: string): Promise<ExplainSQLResult> {
+    const statement = prepareExplainTarget(sql)
+    const opts = this.poolCache.buildPoolOptions(database)
+    const client = await mysql.createConnection({ ...opts, multipleStatements: false })
+    try {
+      let planPayload: unknown = null
+      let plainRows: Record<string, unknown>[] = []
+
+      try {
+        const [jsonRows] = await client.query<RowDataPacket[]>(`EXPLAIN FORMAT=JSON ${statement}`)
+        const explainValue = jsonRows[0]?.['EXPLAIN'] ?? Object.values(jsonRows[0] ?? {})[0]
+        planPayload = typeof explainValue === 'string' ? JSON.parse(explainValue) : explainValue
+      } catch {
+        planPayload = null
+      }
+
+      const [rows] = await client.query<RowDataPacket[]>(`EXPLAIN ${statement}`)
+      plainRows = rows as Record<string, unknown>[]
+
+      return planPayload
+        ? buildMySQLExplainResult(statement, planPayload, plainRows)
+        : buildPlainExplainResult('mysql', statement, plainRows)
     } finally {
       await client.end()
     }

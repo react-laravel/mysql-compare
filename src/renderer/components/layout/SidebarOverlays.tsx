@@ -98,6 +98,8 @@ export function SidebarOverlays({
   onImported
 }: SidebarOverlaysProps) {
   const { t } = useI18n()
+  const tableIsRedis = tableMenu?.connection.engine === 'redis'
+  const databaseIsRedis = databaseMenu?.connection.engine === 'redis'
   return (
     <>
       {(creating || editing) && (
@@ -122,39 +124,43 @@ export function SidebarOverlays({
               label={t('sidebar.overlays.tableDetails')}
               onClick={() => onOpenTableDetails(tableMenu)}
             />
-            <div className="my-1 h-px bg-border" />
-            <TableMenuItem
-              icon={<Pencil className="h-3.5 w-3.5" />}
-              label={t('sidebar.overlays.renameTable')}
-              onClick={() => onRenameTable(tableMenu)}
-            />
-            <TableMenuItem
-              icon={<Copy className="h-3.5 w-3.5" />}
-              label={t('sidebar.overlays.copyToCopy', { table: tableMenu.table })}
-              onClick={() => onCopyTable(tableMenu)}
-            />
-            <TableMenuItem
-              icon={<FileCode2 className="h-3.5 w-3.5" />}
-              label={t('sidebar.overlays.showCreateTable')}
-              onClick={() => onShowCreateSQL(tableMenu)}
-            />
-            <TableMenuItem
-              icon={<Download className="h-3.5 w-3.5" />}
-              label={t('sidebar.overlays.exportEllipsis')}
-              onClick={() => onExportTable(tableMenu)}
-            />
-            <TableMenuItem
-              icon={<Upload className="h-3.5 w-3.5" />}
-              label={t('sidebar.overlays.importEllipsis')}
-              onClick={() => onImportTable(tableMenu)}
-            />
-            <div className="my-1 h-px bg-border" />
-            <TableMenuItem
-              icon={<Eraser className="h-3.5 w-3.5" />}
-              label={t('sidebar.overlays.truncateTable')}
-              onClick={() => onTruncateTable(tableMenu)}
-              danger
-            />
+            {!tableIsRedis && (
+              <>
+                <div className="my-1 h-px bg-border" />
+                <TableMenuItem
+                  icon={<Pencil className="h-3.5 w-3.5" />}
+                  label={t('sidebar.overlays.renameTable')}
+                  onClick={() => onRenameTable(tableMenu)}
+                />
+                <TableMenuItem
+                  icon={<Copy className="h-3.5 w-3.5" />}
+                  label={t('sidebar.overlays.copyToCopy', { table: tableMenu.table })}
+                  onClick={() => onCopyTable(tableMenu)}
+                />
+                <TableMenuItem
+                  icon={<FileCode2 className="h-3.5 w-3.5" />}
+                  label={t('sidebar.overlays.showCreateTable')}
+                  onClick={() => onShowCreateSQL(tableMenu)}
+                />
+                <TableMenuItem
+                  icon={<Download className="h-3.5 w-3.5" />}
+                  label={t('sidebar.overlays.exportEllipsis')}
+                  onClick={() => onExportTable(tableMenu)}
+                />
+                <TableMenuItem
+                  icon={<Upload className="h-3.5 w-3.5" />}
+                  label={t('sidebar.overlays.importEllipsis')}
+                  onClick={() => onImportTable(tableMenu)}
+                />
+                <div className="my-1 h-px bg-border" />
+                <TableMenuItem
+                  icon={<Eraser className="h-3.5 w-3.5" />}
+                  label={t('sidebar.overlays.truncateTable')}
+                  onClick={() => onTruncateTable(tableMenu)}
+                  danger
+                />
+              </>
+            )}
           </div>
         </div>
       )}
@@ -171,17 +177,21 @@ export function SidebarOverlays({
               label={t('sidebar.overlays.databaseDetails')}
               onClick={() => onOpenDatabaseDetails(databaseMenu)}
             />
-            <div className="my-1 h-px bg-border" />
-            <TableMenuItem
-              icon={<FileCode2 className="h-3.5 w-3.5" />}
-              label={t('sidebar.overlays.openSqlConsole')}
-              onClick={() => onOpenDatabaseSQLConsole(databaseMenu)}
-            />
-            <TableMenuItem
-              icon={<Download className="h-3.5 w-3.5" />}
-              label={t('sidebar.overlays.exportDatabase')}
-              onClick={() => onExportDatabase(databaseMenu)}
-            />
+            {!databaseIsRedis && (
+              <>
+                <div className="my-1 h-px bg-border" />
+                <TableMenuItem
+                  icon={<FileCode2 className="h-3.5 w-3.5" />}
+                  label={t('sidebar.overlays.openSqlConsole')}
+                  onClick={() => onOpenDatabaseSQLConsole(databaseMenu)}
+                />
+                <TableMenuItem
+                  icon={<Download className="h-3.5 w-3.5" />}
+                  label={t('sidebar.overlays.exportDatabase')}
+                  onClick={() => onExportDatabase(databaseMenu)}
+                />
+              </>
+            )}
             <TableMenuItem
               icon={<RefreshCw className="h-3.5 w-3.5" />}
               label={t('common.refresh')}

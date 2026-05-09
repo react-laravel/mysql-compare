@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ClipboardCopy, FileUp, FolderOpen, History, Play, RotateCcw, Rows3, SplitSquareVertical } from 'lucide-react'
+import { ClipboardCopy, FileUp, FolderOpen, History, Play, RotateCcw, Rows3, ScanSearch, SplitSquareVertical } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Dialog } from '@renderer/components/ui/dialog'
 import { Table, TBody, Td, THead, Th, Tr } from '@renderer/components/ui/table'
@@ -7,17 +7,20 @@ import { api, unwrap } from '@renderer/lib/api'
 import { cn, formatCellValue } from '@renderer/lib/utils'
 import { useUIStore } from '@renderer/store/ui-store'
 import { useI18n, type Translator } from '@renderer/i18n'
+import type { DbEngine, ExplainPlanNode, ExplainSQLResult } from '../../../shared/types'
 
 interface Props {
   connectionId: string
   connectionName?: string
   database: string
+  engine?: DbEngine
 }
 
 type SQLExecutionResult =
   | { kind: 'rows'; columns: string[]; rows: Record<string, unknown>[] }
   | { kind: 'mutation'; affectedRows: number; insertId?: number | string; warningStatus?: number }
   | { kind: 'batch'; statements: number; affectedRows: number; details: string[] }
+  | { kind: 'explain'; result: ExplainSQLResult }
   | { kind: 'empty'; message: string }
 
 interface SQLHistoryEntry {
@@ -67,7 +70,7 @@ function writeSQLHistory(connectionId: string, database: string, history: SQLHis
   }
 }
 
-export function SQLQueryView({ connectionId, connectionName, database }: Props) {
+export function SQLQueryView({ connectionId, connectionName, database, engine }: Props) {
   const { showToast } = useUIStore()
   const { t } = useI18n()
   const [sql, setSQL] = useState(() => t('sql.placeholder'))
@@ -88,6 +91,7 @@ export function SQLQueryView({ connectionId, connectionName, database }: Props) 
     if (connectionName) return `${connectionName} / ${database}`
     return database
   }, [connectionName, database])
+  const canExplain = engine === 'mysql' || engine === 'postgres' || engine === undefined
 
   useEffect(() => {
     setHistory(readSQLHistory(connectionId, database))
@@ -166,6 +170,28 @@ export function SQLQueryView({ connectionId, connectionName, database }: Props) 
     }
   }
 
+  const runExplain = async () => {
+    const statement = (selectedSQL || sql).trim()
+    if (!statement) {
+      showToast(t('sql.empty'), 'error')
+      return
+    }
+    setRunning(true)
+    setError(null)
+    try {
+      const explain = await unwrap(api.db.explainSQL({ connectionId, database, sql: statement }))
+      setResult({ kind: 'explain', result: explain })
+      rememberStatement(statement)
+      showToast(t('sql.explained'), 'success')
+    } catch (err) {
+      const message = (err as Error).message
+      setError(message)
+      showToast(message, 'error')
+    } finally {
+      setRunning(false)
+    }
+  }
+
   const importFile = async (file: File | null | undefined) => {
     if (!file) return
     try {
@@ -218,6 +244,11 @@ export function SQLQueryView({ connectionId, connectionName, database }: Props) 
             <Button size="sm" variant="outline" onClick={() => runSQL(selectedSQL)} disabled={running || !selectedSQL}>
               <Rows3 className="h-4 w-4" /> {t('sql.runSelected')}
             </Button>
+            {canExplain && (
+              <Button size="sm" variant="outline" onClick={runExplain} disabled={running}>
+                <ScanSearch className="h-4 w-4" /> {t('sql.explain')}
+              </Button>
+            )}
             <Button size="sm" onClick={() => runSQL()} disabled={running}>
               <Play className="h-4 w-4" /> {running ? t('sql.running') : t('sql.run')}
             </Button>
@@ -440,6 +471,10 @@ function ResultPanel({ result }: { result: SQLExecutionResult }) {
     )
   }
 
+  if (result.kind === 'explain') {
+    return <ExplainPanel result={result.result} />
+  }
+
   return (
     <div className="flex h-full flex-col overflow-hidden rounded-md border border-border bg-card">
       <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2 text-xs text-muted-foreground">
@@ -475,6 +510,106 @@ function ResultPanel({ result }: { result: SQLExecutionResult }) {
           </TBody>
         </Table>
       </div>
+    </div>
+  )
+}
+
+function ExplainPanel({ result }: { result: ExplainSQLResult }) {
+  const { t } = useI18n()
+  const { showToast } = useUIStore()
+
+  const copyExplainJson = async () => {
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(result.raw ?? result.rows, null, 2))
+      showToast(t('sql.copiedJson'), 'success')
+    } catch (err) {
+      showToast((err as Error).message, 'error')
+    }
+  }
+
+  return (
+    <div className="flex h-full flex-col overflow-hidden rounded-md border border-border bg-card">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2 text-xs text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-medium text-foreground">{t('sql.explainPlan')}</span>
+          <span>{result.engine === 'postgres' ? 'PostgreSQL' : 'MySQL'}</span>
+          {result.summary.map((metric) => (
+            <span key={`${metric.label}:${metric.value}`} className="rounded border border-border bg-background px-2 py-0.5">
+              {metric.label}: {String(metric.value)}
+            </span>
+          ))}
+        </div>
+        <Button size="sm" variant="ghost" onClick={copyExplainJson}>
+          <ClipboardCopy className="h-4 w-4" /> {t('sql.copyJson')}
+        </Button>
+      </div>
+      <div className="grid min-h-0 flex-1 gap-3 overflow-auto p-3 lg:grid-cols-[minmax(20rem,0.9fr)_minmax(26rem,1.1fr)]">
+        <section className="min-h-0 overflow-auto rounded-md border border-border bg-background p-3">
+          <div className="mb-2 text-xs font-medium text-muted-foreground">{t('sql.visualPlan')}</div>
+          {result.plan ? (
+            <PlanNodeView node={result.plan} />
+          ) : (
+            <div className="text-sm text-muted-foreground">{t('sql.noVisualPlan')}</div>
+          )}
+        </section>
+        <section className="min-h-0 overflow-auto rounded-md border border-border bg-background">
+          <div className="border-b border-border px-3 py-2 text-xs font-medium text-muted-foreground">
+            {t('sql.rawExplainRows')}
+          </div>
+          {result.rows.length === 0 ? (
+            <div className="p-3 text-sm text-muted-foreground">{t('sql.noRows')}</div>
+          ) : (
+            <Table>
+              <THead>
+                <Tr>
+                  {result.columns.map((column) => (
+                    <Th key={column}>{column}</Th>
+                  ))}
+                </Tr>
+              </THead>
+              <TBody>
+                {result.rows.map((row, index) => (
+                  <Tr key={index}>
+                    {result.columns.map((column) => (
+                      <Td key={column} title={formatCellValue(row[column])} className="max-w-none whitespace-pre-wrap break-all align-top">
+                        {formatCellValue(row[column])}
+                      </Td>
+                    ))}
+                  </Tr>
+                ))}
+              </TBody>
+            </Table>
+          )}
+        </section>
+      </div>
+    </div>
+  )
+}
+
+function PlanNodeView({ node, depth = 0 }: { node: ExplainPlanNode; depth?: number }) {
+  return (
+    <div className="relative">
+      <div
+        className="mb-2 rounded-md border border-border bg-card p-2"
+        style={{ marginLeft: depth === 0 ? 0 : 14 }}
+      >
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="text-sm font-medium">{node.label}</div>
+          {node.detail && <div className="text-xs text-muted-foreground">{node.detail}</div>}
+        </div>
+        {node.metrics.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-muted-foreground">
+            {node.metrics.map((metric) => (
+              <span key={`${node.id}:${metric.label}`} className="rounded border border-border bg-background px-2 py-0.5">
+                {metric.label}: {String(metric.value)}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+      {node.children.map((child) => (
+        <PlanNodeView key={child.id} node={child} depth={depth + 1} />
+      ))}
     </div>
   )
 }
@@ -518,6 +653,13 @@ function normalizeResult(raw: unknown, t: Translator): SQLExecutionResult {
 
   if (raw && typeof raw === 'object') {
     const payload = raw as Record<string, unknown>
+    if (Array.isArray(payload.rows)) {
+      const rows = payload.rows as Record<string, unknown>[]
+      const columns = Array.from(new Set(rows.flatMap((row) => Object.keys(row))))
+      return rows.length > 0
+        ? { kind: 'rows', columns, rows }
+        : { kind: 'empty', message: t('sql.statementSuccess') }
+    }
     if (typeof payload.affectedRows === 'number') {
       return {
         kind: 'mutation',

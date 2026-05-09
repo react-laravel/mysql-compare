@@ -18,6 +18,8 @@ interface TableDataGridProps {
   selected: Set<number>
   allRowsOnPageSelected: boolean
   someRowsOnPageSelected: boolean
+  readOnly?: boolean
+  sortable?: boolean
   selectionShiftPressedRef: MutableRefObject<boolean>
   onToggleSelectPage: () => void
   onSort: (column: string) => void
@@ -36,6 +38,8 @@ export function TableDataGrid({
   selected,
   allRowsOnPageSelected,
   someRowsOnPageSelected,
+  readOnly = false,
+  sortable = true,
   selectionShiftPressedRef,
   onToggleSelectPage,
   onSort,
@@ -68,23 +72,29 @@ export function TableDataGrid({
         <Table>
           <THead>
             <Tr>
-              <Th className="sticky left-0 z-20 w-8 bg-card">
-                <Checkbox
-                  ref={(element) => {
-                    if (element) element.indeterminate = someRowsOnPageSelected
-                  }}
-                  checked={allRowsOnPageSelected}
-                  disabled={!data.hasPrimaryKey || data.rows.length === 0}
-                  aria-label={t('tableData.selectPageRows')}
-                  onChange={onToggleSelectPage}
-                />
-              </Th>
-              <Th className="sticky left-8 z-20 w-8 bg-card" />
+              {!readOnly && (
+                <>
+                  <Th className="sticky left-0 z-20 w-8 bg-card">
+                    <Checkbox
+                      ref={(element) => {
+                        if (element) element.indeterminate = someRowsOnPageSelected
+                      }}
+                      checked={allRowsOnPageSelected}
+                      disabled={!data.hasPrimaryKey || data.rows.length === 0}
+                      aria-label={t('tableData.selectPageRows')}
+                      onChange={onToggleSelectPage}
+                    />
+                  </Th>
+                  <Th className="sticky left-8 z-20 w-8 bg-card" />
+                </>
+              )}
               {visibleColumns.map((column) => (
                 <Th
                   key={column.name}
-                  className="cursor-pointer select-none"
-                  onClick={() => onSort(column.name)}
+                  className={cn(sortable && 'cursor-pointer select-none')}
+                  onClick={() => {
+                    if (sortable) onSort(column.name)
+                  }}
                   aria-sort={
                     orderBy?.column === column.name
                       ? orderBy.dir === 'ASC'
@@ -92,7 +102,7 @@ export function TableDataGrid({
                         : 'descending'
                       : 'none'
                   }
-                  title={t('tableData.sortColumn')}
+                  title={sortable ? t('tableData.sortColumn') : undefined}
                 >
                   <div className="flex flex-col items-start gap-1 whitespace-normal py-1 leading-tight">
                     <div className="flex flex-wrap items-center gap-1">
@@ -122,53 +132,59 @@ export function TableDataGrid({
                 key={index}
                 className={cn(
                   'group',
-                  data.hasPrimaryKey && 'cursor-pointer',
+                  !readOnly && data.hasPrimaryKey && 'cursor-pointer',
                   selected.has(index) && 'bg-accent/70 hover:bg-accent/80'
                 )}
-                onClick={(event) => onRowClick(index, event.shiftKey)}
+                onClick={(event) => {
+                  if (!readOnly) onRowClick(index, event.shiftKey)
+                }}
                 onDoubleClick={() => {
-                  if (data.hasPrimaryKey) onStartEdit(row)
+                  if (!readOnly && data.hasPrimaryKey) onStartEdit(row)
                 }}
               >
-                <Td
-                  className={cn(
-                    'sticky left-0 z-10 bg-background group-hover:bg-muted/40',
-                    selected.has(index) && 'bg-accent/70 group-hover:bg-accent/80'
-                  )}
-                >
-                  <Checkbox
-                    checked={selected.has(index)}
-                    aria-label={t('tableData.selectRow', { index: index + 1 })}
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      selectionShiftPressedRef.current = event.shiftKey
-                    }}
-                    onChange={() => {
-                      const shiftKey = selectionShiftPressedRef.current
-                      selectionShiftPressedRef.current = false
-                      onToggleSelect(index, shiftKey)
-                    }}
-                    disabled={!data.hasPrimaryKey}
-                  />
-                </Td>
-                <Td
-                  className={cn(
-                    'sticky left-8 z-10 bg-background group-hover:bg-muted/40',
-                    selected.has(index) && 'bg-accent/70 group-hover:bg-accent/80'
-                  )}
-                >
-                  <button
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      onStartEdit(row)
-                    }}
-                    className="text-muted-foreground hover:text-foreground"
-                    disabled={!data.hasPrimaryKey}
-                    title={data.hasPrimaryKey ? t('tableData.editRow') : t('tableData.noPk')}
-                  >
-                    <Pencil className="w-3 h-3" />
-                  </button>
-                </Td>
+                {!readOnly && (
+                  <>
+                    <Td
+                      className={cn(
+                        'sticky left-0 z-10 bg-background group-hover:bg-muted/40',
+                        selected.has(index) && 'bg-accent/70 group-hover:bg-accent/80'
+                      )}
+                    >
+                      <Checkbox
+                        checked={selected.has(index)}
+                        aria-label={t('tableData.selectRow', { index: index + 1 })}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          selectionShiftPressedRef.current = event.shiftKey
+                        }}
+                        onChange={() => {
+                          const shiftKey = selectionShiftPressedRef.current
+                          selectionShiftPressedRef.current = false
+                          onToggleSelect(index, shiftKey)
+                        }}
+                        disabled={!data.hasPrimaryKey}
+                      />
+                    </Td>
+                    <Td
+                      className={cn(
+                        'sticky left-8 z-10 bg-background group-hover:bg-muted/40',
+                        selected.has(index) && 'bg-accent/70 group-hover:bg-accent/80'
+                      )}
+                    >
+                      <button
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          onStartEdit(row)
+                        }}
+                        className="text-muted-foreground hover:text-foreground"
+                        disabled={!data.hasPrimaryKey}
+                        title={data.hasPrimaryKey ? t('tableData.editRow') : t('tableData.noPk')}
+                      >
+                        <Pencil className="w-3 h-3" />
+                      </button>
+                    </Td>
+                  </>
+                )}
                 {visibleColumns.map((column) => (
                   <Td
                     key={column.name}

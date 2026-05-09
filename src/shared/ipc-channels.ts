@@ -15,6 +15,7 @@ export const IPC = {
   UpdateRow: 'db:updateRow',
   DeleteRows: 'db:deleteRows',
   ExecuteSQL: 'db:executeSQL',
+  ExplainSQL: 'db:explainSQL',
   RenameTable: 'db:renameTable',
   CopyTable: 'db:copyTable',
   DropDatabase: 'db:dropDatabase',

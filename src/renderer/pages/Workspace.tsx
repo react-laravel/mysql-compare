@@ -520,7 +520,10 @@ export function Workspace() {
       <div className="flex-1 overflow-hidden">
         {workspaceTabs.map((tab) => {
           const active = tab.id === activeTab.id
-          const currentTableTab = tableTabs[tab.id] ?? 'data'
+          const isRedisTable = tab.view.kind === 'table' && tab.view.engine === 'redis'
+          const currentTableTab = isRedisTable && tableTabs[tab.id] === 'structure'
+            ? 'data'
+            : tableTabs[tab.id] ?? 'data'
 
           return (
             <div
@@ -545,6 +548,7 @@ export function Workspace() {
                   connectionId={tab.view.connectionId}
                   connectionName={tab.view.connectionName}
                   database={tab.view.database}
+                  engine={tab.view.engine}
                 />
               ) : tab.view.kind === 'database-export' ? (
                 <DatabaseExportTaskView
@@ -592,6 +596,7 @@ export function Workspace() {
                     <DatabaseInfoView
                       connectionId={tab.view.connectionId}
                       database={tab.view.database}
+                      readOnly={tab.view.engine === 'redis'}
                     />
                   </div>
                 </>
@@ -624,11 +629,18 @@ export function Workspace() {
                         [tab.id]: value
                       }))
                     }
-                    items={[
-                      { value: 'data', label: t('common.data') },
-                      { value: 'structure', label: t('common.structure') },
-                      { value: 'info', label: t('common.info') }
-                    ]}
+                    items={
+                      isRedisTable
+                        ? [
+                            { value: 'data', label: t('common.data') },
+                            { value: 'info', label: t('common.info') }
+                          ]
+                        : [
+                            { value: 'data', label: t('common.data') },
+                            { value: 'structure', label: t('common.structure') },
+                            { value: 'info', label: t('common.info') }
+                          ]
+                    }
                   />
                   <div className="flex-1 overflow-hidden">
                     {currentTableTab === 'data' ? (
@@ -636,12 +648,16 @@ export function Workspace() {
                         connectionId={tab.view.connectionId}
                         database={tab.view.database}
                         table={tab.view.table}
+                        readOnly={isRedisTable}
+                        filterEnabled={!isRedisTable}
+                        sortable={!isRedisTable}
                       />
                     ) : currentTableTab === 'info' ? (
                       <TableInfoView
                         connectionId={tab.view.connectionId}
                         database={tab.view.database}
                         table={tab.view.table}
+                        readOnly={isRedisTable}
                       />
                     ) : (
                       <TableStructureView

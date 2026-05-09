@@ -9,6 +9,7 @@ import type {
   DeleteRowsRequest,
   DropDatabaseRequest,
   DropTableRequest,
+  ExplainSQLResult,
   InsertRowRequest,
   QueryRowsRequest,
   RenameTableRequest,
@@ -73,6 +74,7 @@ export interface DbDriver {
   dropDatabase(req: DropDatabaseRequest): Promise<void>
   dropTable(req: DropTableRequest): Promise<void>
   executeSQL(sql: string, database?: string): Promise<unknown>
+  explainSQL(sql: string, database?: string): Promise<ExplainSQLResult>
 
   streamRows(opts: StreamRowsOptions): AsyncIterable<Record<string, unknown>[]>
 

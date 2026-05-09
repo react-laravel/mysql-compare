@@ -9,9 +9,10 @@ import type { DatabaseInfo } from '../../../shared/types'
 interface Props {
   connectionId: string
   database: string
+  readOnly?: boolean
 }
 
-export function DatabaseInfoView({ connectionId, database }: Props) {
+export function DatabaseInfoView({ connectionId, database, readOnly = false }: Props) {
   const { closeDatabaseTabs, markDatabaseDropped, showToast } = useUIStore()
   const { t } = useI18n()
   const [info, setInfo] = useState<DatabaseInfo | null>(null)
@@ -63,7 +64,7 @@ export function DatabaseInfoView({ connectionId, database }: Props) {
   return (
     <div className="h-full overflow-auto p-4">
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        <InfoCard label={t('databaseInfo.tables')} value={formatNumber(info.tableCount)} />
+        <InfoCard label={readOnly ? t('databaseInfo.keys') : t('databaseInfo.tables')} value={formatNumber(info.tableCount)} />
         <InfoCard label={t('databaseInfo.rows')} value={formatNumber(info.rowEstimate)} />
         <InfoCard label={t('databaseInfo.dataSize')} value={formatBytes(info.dataLength)} />
         <InfoCard label={t('databaseInfo.indexSize')} value={formatBytes(info.indexLength)} />
@@ -84,23 +85,25 @@ export function DatabaseInfoView({ connectionId, database }: Props) {
         </div>
       </section>
 
-      <section className="mt-4 rounded-lg border border-destructive/30 bg-destructive/5 p-4">
-        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 text-sm font-medium text-red-300">
-              <AlertTriangle className="h-4 w-4" />
-              {t('databaseInfo.dangerZone')}
+      {!readOnly && (
+        <section className="mt-4 rounded-lg border border-destructive/30 bg-destructive/5 p-4">
+          <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 text-sm font-medium text-red-300">
+                <AlertTriangle className="h-4 w-4" />
+                {t('databaseInfo.dangerZone')}
+              </div>
+              <div className="mt-1 text-xs leading-5 text-muted-foreground">
+                {t('databaseInfo.dropDatabaseDescription', { database })}
+              </div>
             </div>
-            <div className="mt-1 text-xs leading-5 text-muted-foreground">
-              {t('databaseInfo.dropDatabaseDescription', { database })}
-            </div>
+            <Button variant="destructive" onClick={dropCurrentDatabase} disabled={deleting}>
+              <Trash2 className="h-3.5 w-3.5" />
+              {deleting ? t('databaseInfo.droppingDatabase') : t('databaseInfo.dropDatabase')}
+            </Button>
           </div>
-          <Button variant="destructive" onClick={dropCurrentDatabase} disabled={deleting}>
-            <Trash2 className="h-3.5 w-3.5" />
-            {deleting ? t('databaseInfo.droppingDatabase') : t('databaseInfo.dropDatabase')}
-          </Button>
-        </div>
-      </section>
+        </section>
+      )}
     </div>
   )
 }

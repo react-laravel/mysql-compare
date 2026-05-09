@@ -11,6 +11,7 @@ import {
   buildPayload,
   createInitialForm,
   DEFAULT_PORT,
+  DEFAULT_USERNAME,
   validateConnectionForm
 } from './connection-dialog-utils'
 
@@ -62,7 +63,10 @@ export function ConnectionDialog({ open, onOpenChange, connection, onSaved, onDe
         const previousDefault = DEFAULT_PORT[current.engine]
         // 切换引擎时，若当前端口还是上一引擎默认值，同步切换为新默认值
         const nextPort = current.port === previousDefault ? DEFAULT_PORT[nextEngine] : current.port
-        return { ...current, engine: nextEngine, port: nextPort }
+        const nextUsername = current.username === DEFAULT_USERNAME[current.engine]
+          ? DEFAULT_USERNAME[nextEngine]
+          : current.username
+        return { ...current, engine: nextEngine, port: nextPort, username: nextUsername }
       }
       return { ...current, [key]: value }
     })

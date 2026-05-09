@@ -56,6 +56,28 @@ describe('connection-dialog-utils', () => {
     })
   })
 
+  it('creates redis defaults without requiring a username', () => {
+    const form = createInitialForm({
+      id: 'redis-1',
+      engine: 'redis',
+      name: 'Cache',
+      host: '127.0.0.1',
+      port: DEFAULT_PORT.redis,
+      username: '',
+      database: '0',
+      useSSH: false,
+      createdAt: 1,
+      updatedAt: 2,
+      hasPassword: false,
+      hasSSHPassword: false,
+      hasSSHPrivateKey: false
+    })
+
+    expect(form.port).toBe(DEFAULT_PORT.redis)
+    expect(form.username).toBe('')
+    expect(validateConnectionForm(form)).toBeNull()
+  })
+
   it('hydrates an existing connection without exposing stored secrets', () => {
     const savedConnection: SafeConnection = {
       id: 'conn-2',

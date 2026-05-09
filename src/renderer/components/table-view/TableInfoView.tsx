@@ -13,9 +13,10 @@ interface Props {
   connectionId: string
   database: string
   table: string
+  readOnly?: boolean
 }
 
-export function TableInfoView({ connectionId, database, table }: Props) {
+export function TableInfoView({ connectionId, database, table, readOnly = false }: Props) {
   const { closeTableTabs, markTableDropped, showToast } = useUIStore()
   const { t } = useI18n()
   const [schema, setSchema] = useState<TableSchema | null>(null)
@@ -108,7 +109,8 @@ export function TableInfoView({ connectionId, database, table }: Props) {
         <InfoCard label={t('tableInfo.columnsIndexes')} value={`${schema.columns.length} / ${schema.indexes.length}`} />
       </div>
 
-      <section className="mt-4 rounded-lg border border-border bg-card p-4">
+      {!readOnly && (
+        <section className="mt-4 rounded-lg border border-border bg-card p-4">
         <div className="mb-2 flex items-center justify-between gap-2">
           <div>
             <h3 className="text-sm font-medium">{t('tableInfo.tableComment')}</h3>
@@ -121,27 +123,39 @@ export function TableInfoView({ connectionId, database, table }: Props) {
         <div className="rounded border border-border/70 bg-background p-3 text-sm whitespace-pre-wrap break-words">
           {schema.tableComment || <span className="text-muted-foreground">{t('tableInfo.noComment')}</span>}
         </div>
-      </section>
+        </section>
+      )}
 
-      <section className="mt-4 rounded-lg border border-destructive/30 bg-destructive/5 p-4">
-        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 text-sm font-medium text-red-300">
-              <AlertTriangle className="h-4 w-4" />
-              {t('tableInfo.dangerZone')}
+      {readOnly && schema.createSQL && (
+        <section className="mt-4 rounded-lg border border-border bg-card p-4">
+          <h3 className="mb-2 text-sm font-medium">{t('common.summary')}</h3>
+          <pre className="max-h-[40vh] overflow-auto whitespace-pre-wrap rounded border border-border bg-background p-3 text-xs">
+            {schema.createSQL}
+          </pre>
+        </section>
+      )}
+
+      {!readOnly && (
+        <section className="mt-4 rounded-lg border border-destructive/30 bg-destructive/5 p-4">
+          <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 text-sm font-medium text-red-300">
+                <AlertTriangle className="h-4 w-4" />
+                {t('tableInfo.dangerZone')}
+              </div>
+              <div className="mt-1 text-xs leading-5 text-muted-foreground">
+                {t('tableInfo.dropTableDescription', { database, table })}
+              </div>
             </div>
-            <div className="mt-1 text-xs leading-5 text-muted-foreground">
-              {t('tableInfo.dropTableDescription', { database, table })}
-            </div>
+            <Button variant="destructive" onClick={dropCurrentTable} disabled={actionBusy}>
+              <Trash2 className="h-3.5 w-3.5" />
+              {deleting ? t('tableInfo.droppingTable') : t('tableInfo.dropTable')}
+            </Button>
           </div>
-          <Button variant="destructive" onClick={dropCurrentTable} disabled={actionBusy}>
-            <Trash2 className="h-3.5 w-3.5" />
-            {deleting ? t('tableInfo.droppingTable') : t('tableInfo.dropTable')}
-          </Button>
-        </div>
-      </section>
+        </section>
+      )}
 
-      {editing && (
+      {!readOnly && editing && (
         <Dialog
           open
           onOpenChange={(open) => {
@@ -168,7 +182,7 @@ export function TableInfoView({ connectionId, database, table }: Props) {
         </Dialog>
       )}
 
-      {confirmSQL && (
+      {!readOnly && confirmSQL && (
         <Dialog
           open
           onOpenChange={(open) => {

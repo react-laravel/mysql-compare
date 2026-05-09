@@ -1,7 +1,8 @@
 // 跨进程共享的所有类型定义。renderer / preload / main 都从这里导入，保证类型一致。
 
 // ---------- 连接 ----------
-export type DbEngine = 'mysql' | 'postgres'
+export type SqlDbEngine = 'mysql' | 'postgres'
+export type DbEngine = SqlDbEngine | 'redis'
 
 export interface ConnectionConfig {
   id: string
@@ -170,7 +171,7 @@ export type ExportFormat = 'sql' | 'csv' | 'txt'
 
 export type ExportScope = 'all' | 'filtered' | 'page' | 'selected'
 
-export type ExportSqlDialect = 'source' | DbEngine
+export type ExportSqlDialect = 'source' | SqlDbEngine
 
 export type ExportDatabaseBackend = 'builtin' | 'mysqldump' | 'mysqldump-ssh'
 
@@ -234,6 +235,36 @@ export interface ImportTableResult {
   filePath?: string
   rowsImported: number
   statementsExecuted: number
+}
+
+// ---------- EXPLAIN ----------
+export interface ExplainPlanMetric {
+  label: string
+  value: string | number
+}
+
+export interface ExplainPlanNode {
+  id: string
+  label: string
+  detail?: string
+  metrics: ExplainPlanMetric[]
+  children: ExplainPlanNode[]
+}
+
+export interface ExplainSQLRequest {
+  connectionId: string
+  database?: string
+  sql: string
+}
+
+export interface ExplainSQLResult {
+  engine: SqlDbEngine
+  statement: string
+  summary: ExplainPlanMetric[]
+  plan: ExplainPlanNode | null
+  columns: string[]
+  rows: Record<string, unknown>[]
+  raw?: unknown
 }
 
 // ---------- SSH 文件管理 ----------

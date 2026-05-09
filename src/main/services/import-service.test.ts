@@ -270,6 +270,7 @@ function createDriver(engine: 'mysql' | 'postgres'): {
     dropDatabase: async () => undefined,
     dropTable: async () => undefined,
     executeSQL,
+    explainSQL: async () => ({ engine, statement: '', summary: [], plan: null, columns: [], rows: [] }),
     streamRows: vi.fn(async function* () {
       yield []
     }),

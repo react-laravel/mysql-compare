@@ -127,13 +127,17 @@ export function DiffPanel() {
     }
   }, [refresh, showToast])
 
-  const connectionIds = useMemo(
-    () => new Set(connections.map((connection) => connection.id)),
+  const comparableConnections = useMemo(
+    () => connections.filter((connection) => connection.engine !== 'redis'),
     [connections]
   )
+  const connectionIds = useMemo(
+    () => new Set(comparableConnections.map((connection) => connection.id)),
+    [comparableConnections]
+  )
   const connectionNameById = useMemo(
-    () => new Map(connections.map((connection) => [connection.id, connection.name])),
-    [connections]
+    () => new Map(comparableConnections.map((connection) => [connection.id, connection.name])),
+    [comparableConnections]
   )
   const validEndpointHistory = useMemo(
     () => filterDiffEndpointHistoryByConnections(preferences.endpointHistory, connectionIds),
@@ -161,14 +165,14 @@ export function DiffPanel() {
 
   const connOptions = [
     { value: '', label: '— select —' },
-    ...connections.map((c) => ({ value: c.id, label: c.name }))
+    ...comparableConnections.map((c) => ({ value: c.id, label: c.name }))
   ]
-  const selectedSourceConnection = connections.find((connection) => connection.id === srcId)
-  const selectedTargetConnection = connections.find((connection) => connection.id === tgtId)
-  const sourceConnection = connections.find(
+  const selectedSourceConnection = comparableConnections.find((connection) => connection.id === srcId)
+  const selectedTargetConnection = comparableConnections.find((connection) => connection.id === tgtId)
+  const sourceConnection = comparableConnections.find(
     (connection) => connection.id === (compareContext?.sourceConnectionId ?? srcId)
   )
-  const targetConnection = connections.find(
+  const targetConnection = comparableConnections.find(
     (connection) => connection.id === (compareContext?.targetConnectionId ?? tgtId)
   )
   const loading = comparePhase === 'loading-tables' || comparePhase === 'comparing'

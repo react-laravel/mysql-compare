@@ -13,6 +13,8 @@ import type {
   DropTableRequest,
   ExportDatabaseRequest,
   ExportDatabaseResult,
+  ExplainSQLRequest,
+  ExplainSQLResult,
   ExportTableRequest,
   ExportTableResult,
   ImportTableRequest,
@@ -84,6 +86,7 @@ const api = {
     deleteRows: (req: DeleteRowsRequest) => invoke(IPC.DeleteRows, req),
     executeSQL: (connectionId: string, sql: string, database?: string) =>
       invoke(IPC.ExecuteSQL, { connectionId, sql, database }),
+    explainSQL: (req: ExplainSQLRequest) => invoke<ExplainSQLResult>(IPC.ExplainSQL, req),
     renameTable: (req: RenameTableRequest) => invoke<{ table: string }>(IPC.RenameTable, req),
     copyTable: (req: CopyTableRequest) => invoke<{ table: string }>(IPC.CopyTable, req),
     dropDatabase: (req: DropDatabaseRequest) => invoke<void>(IPC.DropDatabase, req),

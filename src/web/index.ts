@@ -22,6 +22,7 @@ import type {
   DiffRequest,
   DropDatabaseRequest,
   DropTableRequest,
+  ExplainSQLRequest,
   ExportDatabaseRequest,
   ExportTableRequest,
   ImportTableRequest,
@@ -162,6 +163,12 @@ app.post(`${API_PREFIX}/db/execute-sql`, asyncHandler(async (req) => {
   const payload = req.body as { connectionId: string; sql: string; database?: string }
   const driver = await dbService.getDriver(payload.connectionId)
   return driver.executeSQL(payload.sql, payload.database)
+}))
+
+app.post(`${API_PREFIX}/db/explain-sql`, asyncHandler(async (req) => {
+  const payload = req.body as ExplainSQLRequest
+  const driver = await dbService.getDriver(payload.connectionId)
+  return driver.explainSQL(payload.sql, payload.database)
 }))
 
 app.post(`${API_PREFIX}/db/rename-table`, asyncHandler(async (req) => {

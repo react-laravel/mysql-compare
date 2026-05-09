@@ -74,6 +74,7 @@ export function createFakeDriver(options: {
     dropDatabase: async () => undefined,
     dropTable: async () => undefined,
     executeSQL: async () => undefined,
+    explainSQL: async () => ({ engine: 'postgres', statement: '', summary: [], plan: null, columns: [], rows: [] }),
     streamRows,
     testConnection: async () => 'OK',
     close: async () => undefined

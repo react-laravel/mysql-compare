@@ -29,7 +29,8 @@ export function ExportDatabaseDialog({ open, onOpenChange, connectionId, databas
   )
   const sourceEngine = connection?.engine ?? 'mysql'
   const connectionName = connection?.name
-  const [sqlDialect, setSqlDialect] = useState<ExportSqlDialect>(sourceEngine)
+  const initialSqlDialect: ExportSqlDialect = sourceEngine === 'postgres' ? 'postgres' : 'mysql'
+  const [sqlDialect, setSqlDialect] = useState<ExportSqlDialect>(initialSqlDialect)
   const [backend, setBackend] = useState<ExportDatabaseBackend>('builtin')
   const [includeCreateTable, setIncludeCreateTable] = useState(true)
   const [includeData, setIncludeData] = useState(true)

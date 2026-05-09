@@ -49,6 +49,7 @@ export class DiffService {
       dbService.getDriver(sourceConnectionId),
       dbService.getDriver(targetConnectionId)
     ])
+    assertDiffSupported(sDriver, tDriver)
     const [sTables, tTables] = await Promise.all([
       sDriver.listTables(sourceDatabase),
       tDriver.listTables(targetDatabase)
@@ -117,6 +118,7 @@ async function compareSharedTable(params: {
   table: string
   includeData: boolean
 }): Promise<{ tableDiff: TableDiff | null; rowComparison: TableRowComparison | null }> {
+  assertDiffSupported(params.sourceDriver, params.targetDriver)
   const [sourceSchema, targetSchema] = await Promise.all([
     params.sourceDriver.getTableSchema(params.sourceDatabase, params.table),
     params.targetDriver.getTableSchema(params.targetDatabase, params.table)
@@ -160,6 +162,12 @@ async function compareSharedTable(params: {
       dataDiff
     } satisfies TableDiff,
     rowComparison
+  }
+}
+
+function assertDiffSupported(sourceDriver: DbDriver, targetDriver: DbDriver): void {
+  if (sourceDriver.engine === 'redis' || targetDriver.engine === 'redis') {
+    throw new Error('Redis connections are read-only browsing targets and do not support diff')
   }
 }
 

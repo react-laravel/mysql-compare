@@ -2,7 +2,14 @@ import type { ConnectionConfig, DbEngine, SafeConnection } from '../../../shared
 
 export const DEFAULT_PORT: Record<DbEngine, number> = {
   mysql: 3306,
-  postgres: 5432
+  postgres: 5432,
+  redis: 6379
+}
+
+export const DEFAULT_USERNAME: Record<DbEngine, string> = {
+  mysql: 'root',
+  postgres: 'postgres',
+  redis: ''
 }
 
 export function createInitialForm(connection?: SafeConnection | null): ConnectionConfig {
@@ -14,7 +21,7 @@ export function createInitialForm(connection?: SafeConnection | null): Connectio
     group: connection?.group || '',
     host: connection?.host || '127.0.0.1',
     port: connection?.port || DEFAULT_PORT[engine],
-    username: connection?.username || (engine === 'postgres' ? 'postgres' : 'root'),
+    username: connection?.username || DEFAULT_USERNAME[engine],
     password: '',
     database: connection?.database || '',
     useSSH: connection?.useSSH || false,
@@ -49,7 +56,7 @@ export function buildPayload(form: ConnectionConfig): ConnectionConfig {
 export function validateConnectionForm(form: ConnectionConfig): string | null {
   if (!form.name.trim()) return 'Name is required'
   if (!form.host.trim()) return 'Host is required'
-  if (!form.username.trim()) return 'Username is required'
+  if (form.engine !== 'redis' && !form.username.trim()) return 'Username is required'
   if (!isValidPort(form.port)) return 'Port must be between 1 and 65535'
 
   if (!form.useSSH) return null

@@ -16,9 +16,19 @@ interface Props {
   connectionId: string
   database: string
   table: string
+  readOnly?: boolean
+  filterEnabled?: boolean
+  sortable?: boolean
 }
 
-export function TableDataView({ connectionId, database, table }: Props) {
+export function TableDataView({
+  connectionId,
+  database,
+  table,
+  readOnly = false,
+  filterEnabled = true,
+  sortable = true
+}: Props) {
   const { showToast } = useUIStore()
   const tableReloadToken = useUIStore(
     (state) => state.tableReloadTokens[`${connectionId}:${database}:${table}`] ?? 0
@@ -99,6 +109,8 @@ export function TableDataView({ connectionId, database, table }: Props) {
         selectedCount={selected.size}
         wrapCells={wrapCells}
         density={density}
+        readOnly={readOnly}
+        filterEnabled={filterEnabled}
         columnCounts={
           data
             ? {
@@ -123,7 +135,7 @@ export function TableDataView({ connectionId, database, table }: Props) {
         onClearSelection={onClearSelection}
       />
 
-      {data && !data.hasPrimaryKey && (
+      {data && !data.hasPrimaryKey && !readOnly && (
         <div className="flex items-center gap-2 px-3 py-1.5 bg-amber-500/10 border-b border-amber-500/30 text-amber-300 text-xs">
           <AlertTriangle className="w-3.5 h-3.5" />
           {t('tableData.noPrimaryKeyHint')}
@@ -140,11 +152,15 @@ export function TableDataView({ connectionId, database, table }: Props) {
         selected={selected}
         allRowsOnPageSelected={allRowsOnPageSelected}
         someRowsOnPageSelected={someRowsOnPageSelected}
+        readOnly={readOnly}
+        sortable={sortable}
         selectionShiftPressedRef={selectionShiftPressedRef}
         onToggleSelectPage={onToggleSelectPage}
         onSort={onSort}
         onRowClick={onRowClick}
-        onStartEdit={(row) => setEditing({ mode: 'edit', row })}
+        onStartEdit={(row) => {
+          if (!readOnly) setEditing({ mode: 'edit', row })
+        }}
         onToggleSelect={onToggleSelect}
       />
 
@@ -164,7 +180,7 @@ export function TableDataView({ connectionId, database, table }: Props) {
         />
       )}
 
-      {rowEditing && data && (
+      {!readOnly && rowEditing && data && (
         <RowEditDialog
           mode={rowEditing.mode}
           columns={data.columns}
@@ -175,7 +191,7 @@ export function TableDataView({ connectionId, database, table }: Props) {
         />
       )}
 
-      {exportOpen && (
+      {!readOnly && exportOpen && (
         <ExportTableDialog
           open
           onOpenChange={setExportOpen}

@@ -11,6 +11,7 @@ import type {
   DeleteRowsRequest,
   DropDatabaseRequest,
   DropTableRequest,
+  ExplainSQLResult,
   IndexInfo,
   InsertRowRequest,
   QueryRowsRequest,
@@ -20,6 +21,11 @@ import type {
 } from '../../../shared/types'
 import type { DbDriver, Dialect, StreamRowsOptions } from './types'
 import { pgDialect, renderPgCreateTable } from './pg-dialect'
+import {
+  buildPlainExplainResult,
+  buildPostgresExplainResult,
+  prepareExplainTarget
+} from './explain-utils'
 import {
   assertColumns,
   assertNonEmptySQL,
@@ -439,6 +445,31 @@ export class PostgresDriver implements DbDriver {
         return res.map((r) => ({ rows: r.rows, rowCount: r.rowCount }))
       }
       return { rows: res.rows, rowCount: res.rowCount }
+    } finally {
+      await client.end()
+    }
+  }
+
+  async explainSQL(sql: string, database?: string): Promise<ExplainSQLResult> {
+    const statement = prepareExplainTarget(sql)
+    const client = new pg.Client(this.buildClientConfig(database))
+    await client.connect()
+    try {
+      let planPayload: unknown = null
+      try {
+        const jsonResult = await client.query<{ 'QUERY PLAN': unknown }>(
+          `EXPLAIN (FORMAT JSON, COSTS TRUE, VERBOSE FALSE, BUFFERS FALSE) ${statement}`
+        )
+        planPayload = jsonResult.rows[0]?.['QUERY PLAN'] ?? null
+      } catch {
+        planPayload = null
+      }
+
+      const plainResult = await client.query<QueryResultRow>(`EXPLAIN ${statement}`)
+      const rows = plainResult.rows as Record<string, unknown>[]
+      return planPayload
+        ? buildPostgresExplainResult(statement, planPayload, rows)
+        : buildPlainExplainResult('postgres', statement, rows)
     } finally {
       await client.end()
     }

@@ -2,7 +2,7 @@
 // 落盘前一律走 safeStorage 加密。读取时给主进程内部使用解密版本，给渲染端只暴露安全版本。
 import Store from 'electron-store'
 import { v4 as uuid } from 'uuid'
-import type { ConnectionConfig, SafeConnection } from '../../shared/types'
+import type { ConnectionConfig, DbEngine, SafeConnection } from '../../shared/types'
 import { decryptSecret, encryptSecret } from './secure-store'
 import { createStoreOptions } from './store-config'
 
@@ -20,10 +20,14 @@ interface Schema {
 
 const store = new Store<Schema>(createStoreOptions<Schema>('connections', { connections: [] }))
 
+function normalizeEngine(engine: DbEngine | undefined): DbEngine {
+  return engine || 'mysql'
+}
+
 function toStored(c: ConnectionConfig): StoredConnection {
   return {
     id: c.id || uuid(),
-    engine: c.engine || 'mysql',
+    engine: normalizeEngine(c.engine),
     name: c.name,
     group: c.group,
     host: c.host,
@@ -46,7 +50,7 @@ function toStored(c: ConnectionConfig): StoredConnection {
 function toSafe(s: StoredConnection): SafeConnection {
   return {
     id: s.id,
-    engine: s.engine || 'mysql',
+    engine: normalizeEngine(s.engine),
     name: s.name,
     group: s.group,
     host: s.host,
@@ -74,7 +78,7 @@ function pickSecret(nextValue: string | undefined, previousValue: string | undef
 function toFull(s: StoredConnection): ConnectionConfig {
   return {
     id: s.id,
-    engine: s.engine || 'mysql',
+    engine: normalizeEngine(s.engine),
     name: s.name,
     group: s.group,
     host: s.host,

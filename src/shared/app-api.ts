@@ -9,6 +9,8 @@ import type {
   DropTableRequest,
   ExportDatabaseRequest,
   ExportDatabaseResult,
+  ExplainSQLRequest,
+  ExplainSQLResult,
   ExportTableRequest,
   ExportTableResult,
   ImportTableRequest,
@@ -75,6 +77,7 @@ export interface AppAPI {
     updateRow: (req: UpdateRowRequest) => Promise<IPCResult>
     deleteRows: (req: DeleteRowsRequest) => Promise<IPCResult>
     executeSQL: (connectionId: string, sql: string, database?: string) => Promise<IPCResult>
+    explainSQL: (req: ExplainSQLRequest) => Promise<IPCResult<ExplainSQLResult>>
     renameTable: (req: RenameTableRequest) => Promise<IPCResult<{ table: string }>>
     copyTable: (req: CopyTableRequest) => Promise<IPCResult<{ table: string }>>
     dropDatabase: (req: DropDatabaseRequest) => Promise<IPCResult<void>>

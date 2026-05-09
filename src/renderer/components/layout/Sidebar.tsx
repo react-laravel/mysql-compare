@@ -347,15 +347,16 @@ export function Sidebar() {
   }
 
   const onSelectTable = (conn: SafeConnection, db: string, table: string) => {
-    setRightView({ kind: 'table', connectionId: conn.id, database: db, table })
+    setRightView({ kind: 'table', connectionId: conn.id, database: db, table, engine: conn.engine })
   }
 
   const openSQLConsole = (conn: SafeConnection, db: string) => {
-    setRightView({ kind: 'sql', connectionId: conn.id, connectionName: conn.name, database: db })
+    if (conn.engine === 'redis') return
+    setRightView({ kind: 'sql', connectionId: conn.id, connectionName: conn.name, database: db, engine: conn.engine })
   }
 
   const openDatabaseDetails = (conn: SafeConnection, db: string) => {
-    setRightView({ kind: 'database', connectionId: conn.id, connectionName: conn.name, database: db })
+    setRightView({ kind: 'database', connectionId: conn.id, connectionName: conn.name, database: db, engine: conn.engine })
   }
 
   const openSSHFiles = (conn: SafeConnection) => {
@@ -494,11 +495,13 @@ export function Sidebar() {
       connectionId: menu.connection.id,
       database: menu.database,
       table: menu.table,
+      engine: menu.connection.engine,
       tableTab: 'info'
     })
   }
 
   const openExportDatabaseDialog = (connection: SafeConnection, database: string) => {
+    if (connection.engine === 'redis') return
     setDatabaseMenu(null)
     setExportDatabaseDialog({
       connectionId: connection.id,

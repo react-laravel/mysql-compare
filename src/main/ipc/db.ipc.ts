@@ -5,6 +5,8 @@ import type {
   DeleteRowsRequest,
   DropDatabaseRequest,
   DropTableRequest,
+  ExplainSQLRequest,
+  ExplainSQLResult,
   ExportDatabaseRequest,
   ExportDatabaseResult,
   ExportTableRequest,
@@ -123,4 +125,9 @@ export function registerDbIPC(): void {
       return driver.executeSQL(sql, database)
     }
   )
+
+  handle(IPC.ExplainSQL, async (req: ExplainSQLRequest): Promise<ExplainSQLResult> => {
+    const driver = await dbService.getDriver(req.connectionId)
+    return driver.explainSQL(req.sql, req.database)
+  })
 }

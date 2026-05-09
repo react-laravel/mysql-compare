@@ -24,6 +24,8 @@ interface TableDataToolbarProps {
   selectedCount: number
   wrapCells: boolean
   density: 'compact' | 'comfortable'
+  readOnly?: boolean
+  filterEnabled?: boolean
   columnCounts?: {
     visible: number
     total: number
@@ -50,6 +52,8 @@ export function TableDataToolbar({
   selectedCount,
   wrapCells,
   density,
+  readOnly = false,
+  filterEnabled = true,
   columnCounts,
   onWhereChange,
   onApplyWhere,
@@ -69,40 +73,46 @@ export function TableDataToolbar({
   return (
     <div className="border-b border-border bg-card/70 px-3 py-2">
       <div className="flex flex-wrap items-center gap-2">
-        <div className="relative min-w-[18rem] flex-[1_1_24rem]">
-          <Filter className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            value={where}
-            onChange={(event) => onWhereChange(event.target.value)}
-            placeholder={t('tableData.whereClausePlaceholder')}
-            className="h-8 pl-8 pr-8 font-mono text-xs"
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') onApplyWhere()
-              if (event.key === 'Escape') onClearWhere()
-            }}
-          />
-          {hasActiveFilter && (
-            <button
-              type="button"
-              className="absolute right-2 top-1/2 rounded p-0.5 text-muted-foreground -translate-y-1/2 hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              onClick={onClearWhere}
-              title={t('tableData.clearFilter')}
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
-          )}
-        </div>
+        {filterEnabled && (
+          <div className="relative min-w-[18rem] flex-[1_1_24rem]">
+            <Filter className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={where}
+              onChange={(event) => onWhereChange(event.target.value)}
+              placeholder={t('tableData.whereClausePlaceholder')}
+              className="h-8 pl-8 pr-8 font-mono text-xs"
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') onApplyWhere()
+                if (event.key === 'Escape') onClearWhere()
+              }}
+            />
+            {hasActiveFilter && (
+              <button
+                type="button"
+                className="absolute right-2 top-1/2 rounded p-0.5 text-muted-foreground -translate-y-1/2 hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                onClick={onClearWhere}
+                title={t('tableData.clearFilter')}
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+        )}
 
         <div className="flex items-center gap-1">
-          <Button size="sm" variant="outline" onClick={onApplyWhere} disabled={!hasPendingWhere}>
-            {t('common.apply')}
-          </Button>
+          {filterEnabled && (
+            <Button size="sm" variant="outline" onClick={onApplyWhere} disabled={!hasPendingWhere}>
+              {t('common.apply')}
+            </Button>
+          )}
           <Button size="sm" variant="ghost" onClick={onRefresh} disabled={loading} title={t('common.refresh')}>
             <RefreshCw className={cn('w-4 h-4', loading && 'animate-spin')} />
           </Button>
-          <Button size="sm" variant="outline" onClick={onOpenExport}>
-            <Download className="w-4 h-4" /> {t('common.export')}
-          </Button>
+          {!readOnly && (
+            <Button size="sm" variant="outline" onClick={onOpenExport}>
+              <Download className="w-4 h-4" /> {t('common.export')}
+            </Button>
+          )}
           {columnCounts && (
             <>
               <Button
@@ -137,32 +147,36 @@ export function TableDataToolbar({
           )}
         </div>
 
-        <div className="mx-1 h-6 w-px bg-border" />
+        {!readOnly && (
+          <>
+            <div className="mx-1 h-6 w-px bg-border" />
 
-        <div className="flex items-center gap-1">
-          <Button size="sm" variant="outline" onClick={onInsert}>
-            <Plus className="w-4 h-4" /> {t('common.insert')}
-          </Button>
-          <Button
-            size="sm"
-            variant="destructive"
-            onClick={onDeleteSelected}
-            disabled={selectedCount === 0}
-          >
-            <Trash2 className="w-4 h-4" /> {t('tableData.deleteCount', { count: selectedCount })}
-          </Button>
-          {selectedCount > 0 && (
-            <>
-              <Button size="sm" variant="ghost" onClick={onCopySelectedRows}>
-                <Copy className="h-4 w-4" /> {t('tableData.copySelected')}
+            <div className="flex items-center gap-1">
+              <Button size="sm" variant="outline" onClick={onInsert}>
+                <Plus className="w-4 h-4" /> {t('common.insert')}
               </Button>
-              <Button size="sm" variant="ghost" onClick={onClearSelection}>
-                <X className="h-4 w-4" /> {t('tableData.clearSelection')}
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={onDeleteSelected}
+                disabled={selectedCount === 0}
+              >
+                <Trash2 className="w-4 h-4" /> {t('tableData.deleteCount', { count: selectedCount })}
               </Button>
-              <Badge className="ml-1">{t('tableData.selectedRows', { count: selectedCount })}</Badge>
-            </>
-          )}
-        </div>
+              {selectedCount > 0 && (
+                <>
+                  <Button size="sm" variant="ghost" onClick={onCopySelectedRows}>
+                    <Copy className="h-4 w-4" /> {t('tableData.copySelected')}
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={onClearSelection}>
+                    <X className="h-4 w-4" /> {t('tableData.clearSelection')}
+                  </Button>
+                  <Badge className="ml-1">{t('tableData.selectedRows', { count: selectedCount })}</Badge>
+                </>
+              )}
+            </div>
+          </>
+        )}
       </div>
     </div>
   )

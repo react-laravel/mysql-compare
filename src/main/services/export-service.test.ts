@@ -434,6 +434,7 @@ function createMySQLDriver(options: { streamBatches: Record<string, unknown>[][]
     dropDatabase: async () => undefined,
     dropTable: async () => undefined,
     executeSQL: async () => undefined,
+    explainSQL: async () => ({ engine: 'mysql', statement: '', summary: [], plan: null, columns: [], rows: [] }),
     streamRows,
     testConnection: async () => 'OK',
     close: async () => undefined

@@ -10,6 +10,8 @@ import type {
   DropTableRequest,
   ExportDatabaseRequest,
   ExportDatabaseResult,
+  ExplainSQLRequest,
+  ExplainSQLResult,
   ExportTableRequest,
   ExportTableResult,
   ImportTableRequest,
@@ -338,6 +340,7 @@ export function createWebApi(): AppAPI {
       deleteRows: (req: DeleteRowsRequest) => post('/db/delete-rows', req),
       executeSQL: (connectionId: string, sql: string, database?: string) =>
         post('/db/execute-sql', { connectionId, sql, database }),
+      explainSQL: (req: ExplainSQLRequest) => post<ExplainSQLResult>('/db/explain-sql', req),
       renameTable: (req: RenameTableRequest) => post<{ table: string }>('/db/rename-table', req),
       copyTable: (req: CopyTableRequest) => post<{ table: string }>('/db/copy-table', req),
       dropDatabase: (req: DropDatabaseRequest) => post<void>('/db/drop-database', req),

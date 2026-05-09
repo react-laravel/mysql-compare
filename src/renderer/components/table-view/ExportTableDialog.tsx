@@ -48,8 +48,9 @@ export function ExportTableDialog({
   const sourceEngine = useConnectionStore(
     (state) => state.connections.find((connection) => connection.id === connectionId)?.engine ?? 'mysql'
   )
+  const initialSqlDialect: ExportSqlDialect = sourceEngine === 'postgres' ? 'postgres' : 'mysql'
   const [format, setFormat] = useState<ExportFormat>('sql')
-  const [sqlDialect, setSqlDialect] = useState<ExportSqlDialect>(sourceEngine)
+  const [sqlDialect, setSqlDialect] = useState<ExportSqlDialect>(initialSqlDialect)
   const [scope, setScope] = useState<ExportScope>(availableScopes[0] ?? 'all')
   const [includeCreateTable, setIncludeCreateTable] = useState(true)
   const [includeData, setIncludeData] = useState(true)
