@@ -1,4 +1,5 @@
-import { CircleEllipsis, Copy, Download, Eraser, FileCode2, Pencil, RefreshCw, Upload } from 'lucide-react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { CircleEllipsis, Copy, Download, Eraser, FileCode2, Pencil, RefreshCw, Trash2, Upload } from 'lucide-react'
 import { ConnectionDialog } from '@renderer/components/connection/ConnectionDialog'
 import { ExportDatabaseDialog } from '@renderer/components/table-view/ExportDatabaseDialog'
 import { ExportTableDialog } from '@renderer/components/table-view/ExportTableDialog'
@@ -7,11 +8,15 @@ import { Button } from '@renderer/components/ui/button'
 import { Dialog } from '@renderer/components/ui/dialog'
 import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
+import { Select } from '@renderer/components/ui/select'
 import { cn } from '@renderer/lib/utils'
 import { useI18n } from '@renderer/i18n'
 import type { SafeConnection } from '../../../shared/types'
 import type {
   CreateSQLDialogState,
+  CreateRedisKeyDialogState,
+  CreateRedisKeyPayload,
+  CreateRedisKeyType,
   DatabaseMenuState,
   ExportDatabaseDialogState,
   ExportDialogState,
@@ -32,6 +37,7 @@ interface SidebarOverlaysProps {
   onCloseDatabaseMenu: () => void
   onOpenDatabaseDetails: (menu: DatabaseMenuState) => void
   onOpenDatabaseSQLConsole: (menu: DatabaseMenuState) => void
+  onCreateRedisKey: (menu: DatabaseMenuState) => void
   onExportDatabase: (menu: DatabaseMenuState) => void
   onRefreshDatabase: (menu: DatabaseMenuState) => void | Promise<void>
   onOpenTableDetails: (menu: TableMenuState) => void
@@ -41,6 +47,7 @@ interface SidebarOverlaysProps {
   onExportTable: (menu: TableMenuState) => void
   onImportTable: (menu: TableMenuState) => void
   onTruncateTable: (menu: TableMenuState) => void | Promise<void>
+  onDropTable: (menu: TableMenuState) => void | Promise<void>
   renameDialog: RenameDialogState | null
   renameDraft: string
   actionBusy: boolean
@@ -50,6 +57,9 @@ interface SidebarOverlaysProps {
   createSQLDialog: CreateSQLDialogState | null
   onCreateSQLDialogOpenChange: (open: boolean) => void
   onCopyCreateSQL: () => void
+  createRedisKeyDialog: CreateRedisKeyDialogState | null
+  onCreateRedisKeyDialogOpenChange: (open: boolean) => void
+  onSubmitCreateRedisKey: (payload: CreateRedisKeyPayload) => void | Promise<void>
   exportDialog: ExportDialogState | null
   onExportDialogOpenChange: (open: boolean) => void
   exportDatabaseDialog: ExportDatabaseDialogState | null
@@ -71,6 +81,7 @@ export function SidebarOverlays({
   onCloseDatabaseMenu,
   onOpenDatabaseDetails,
   onOpenDatabaseSQLConsole,
+  onCreateRedisKey,
   onExportDatabase,
   onRefreshDatabase,
   onOpenTableDetails,
@@ -80,6 +91,7 @@ export function SidebarOverlays({
   onExportTable,
   onImportTable,
   onTruncateTable,
+  onDropTable,
   renameDialog,
   renameDraft,
   actionBusy,
@@ -89,6 +101,9 @@ export function SidebarOverlays({
   createSQLDialog,
   onCreateSQLDialogOpenChange,
   onCopyCreateSQL,
+  createRedisKeyDialog,
+  onCreateRedisKeyDialogOpenChange,
+  onSubmitCreateRedisKey,
   exportDialog,
   onExportDialogOpenChange,
   exportDatabaseDialog,
@@ -124,7 +139,22 @@ export function SidebarOverlays({
               label={t('sidebar.overlays.tableDetails')}
               onClick={() => onOpenTableDetails(tableMenu)}
             />
-            {!tableIsRedis && (
+            {tableIsRedis ? (
+              <>
+                <div className="my-1 h-px bg-border" />
+                <TableMenuItem
+                  icon={<Pencil className="h-3.5 w-3.5" />}
+                  label={t('sidebar.overlays.renameRedisKey')}
+                  onClick={() => onRenameTable(tableMenu)}
+                />
+                <TableMenuItem
+                  icon={<Trash2 className="h-3.5 w-3.5" />}
+                  label={t('sidebar.overlays.deleteRedisKey')}
+                  onClick={() => onDropTable(tableMenu)}
+                  danger
+                />
+              </>
+            ) : (
               <>
                 <div className="my-1 h-px bg-border" />
                 <TableMenuItem
@@ -192,6 +222,16 @@ export function SidebarOverlays({
                 />
               </>
             )}
+            {databaseIsRedis && (
+              <>
+                <div className="my-1 h-px bg-border" />
+                <TableMenuItem
+                  icon={<FileCode2 className="h-3.5 w-3.5" />}
+                  label={t('sidebar.overlays.newRedisKey')}
+                  onClick={() => onCreateRedisKey(databaseMenu)}
+                />
+              </>
+            )}
             <TableMenuItem
               icon={<RefreshCw className="h-3.5 w-3.5" />}
               label={t('common.refresh')}
@@ -205,11 +245,15 @@ export function SidebarOverlays({
         <Dialog
           open
           onOpenChange={onRenameDialogOpenChange}
-          title={t('sidebar.overlays.renameTable')}
-          description={t('sidebar.overlays.renameDescription', {
-            db: renameDialog.database,
-            table: renameDialog.table
-          })}
+          title={renameDialog.connection.engine === 'redis'
+            ? t('sidebar.overlays.renameRedisKey')
+            : t('sidebar.overlays.renameTable')}
+          description={renameDialog.connection.engine === 'redis'
+            ? `${renameDialog.database} / ${renameDialog.table}`
+            : t('sidebar.overlays.renameDescription', {
+                db: renameDialog.database,
+                table: renameDialog.table
+              })}
           className="max-w-md"
           footer={
             <>
@@ -223,7 +267,9 @@ export function SidebarOverlays({
           }
         >
           <div className="space-y-2">
-            <Label className="block">{t('sidebar.overlays.newTableName')}</Label>
+            <Label className="block">
+              {renameDialog.connection.engine === 'redis' ? t('redis.keyName') : t('sidebar.overlays.newTableName')}
+            </Label>
             <Input value={renameDraft} onChange={(event) => onRenameDraftChange(event.target.value)} />
           </div>
         </Dialog>
@@ -260,6 +306,15 @@ export function SidebarOverlays({
         </Dialog>
       )}
 
+      {createRedisKeyDialog && (
+        <RedisKeyCreateDialog
+          dialog={createRedisKeyDialog}
+          busy={actionBusy}
+          onOpenChange={onCreateRedisKeyDialogOpenChange}
+          onSubmit={onSubmitCreateRedisKey}
+        />
+      )}
+
       {exportDialog && (
         <ExportTableDialog
           open
@@ -294,13 +349,189 @@ export function SidebarOverlays({
   )
 }
 
+function RedisKeyCreateDialog({
+  dialog,
+  busy,
+  onOpenChange,
+  onSubmit
+}: {
+  dialog: CreateRedisKeyDialogState
+  busy: boolean
+  onOpenChange: (open: boolean) => void
+  onSubmit: (payload: CreateRedisKeyPayload) => void | Promise<void>
+}) {
+  const { t } = useI18n()
+  const [keyName, setKeyName] = useState('')
+  const [type, setType] = useState<CreateRedisKeyType>('string')
+  const [value, setValue] = useState('')
+  const [field, setField] = useState('')
+  const [member, setMember] = useState('')
+  const [score, setScore] = useState('0')
+  const [ttlSeconds, setTtlSeconds] = useState('')
+  const [fieldsJson, setFieldsJson] = useState('{\n  "field": "value"\n}')
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setKeyName('')
+    setType('string')
+    setValue('')
+    setField('')
+    setMember('')
+    setScore('0')
+    setTtlSeconds('')
+    setFieldsJson('{\n  "field": "value"\n}')
+    setError(null)
+  }, [dialog.connection.id, dialog.database])
+
+  const typeOptions = useMemo(
+    () => [
+      { value: 'string', label: 'String' },
+      { value: 'hash', label: 'Hash' },
+      { value: 'list', label: 'List' },
+      { value: 'set', label: 'Set' },
+      { value: 'zset', label: 'Sorted Set' },
+      { value: 'stream', label: 'Stream' }
+    ],
+    []
+  )
+
+  const submit = async () => {
+    setError(null)
+    try {
+      const trimmedKey = keyName.trim()
+      if (!trimmedKey) throw new Error(t('redis.keyRequired'))
+      const ttl = ttlSeconds.trim() ? Number(ttlSeconds.trim()) : undefined
+      if (ttl !== undefined && (!Number.isInteger(ttl) || ttl < 0)) {
+        throw new Error(t('redis.validTtl'))
+      }
+
+      const payload: CreateRedisKeyPayload = { key: trimmedKey, type, ttlSeconds: ttl }
+
+      if (type === 'hash') {
+        if (!field.trim()) throw new Error(t('redis.fieldRequired'))
+        payload.field = field.trim()
+        payload.value = value
+      } else if (type === 'set') {
+        if (!member.trim()) throw new Error(t('redis.memberRequired'))
+        payload.member = member
+      } else if (type === 'zset') {
+        if (!member.trim()) throw new Error(t('redis.memberRequired'))
+        const parsedScore = Number(score)
+        if (!Number.isFinite(parsedScore)) throw new Error(t('redis.validScore'))
+        payload.member = member
+        payload.score = parsedScore
+      } else if (type === 'stream') {
+        const parsed = JSON.parse(fieldsJson) as unknown
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          throw new Error(t('redis.validFieldsJson'))
+        }
+        payload.fields = Object.fromEntries(
+          Object.entries(parsed as Record<string, unknown>).map(([name, fieldValue]) => [
+            name,
+            fieldValue == null ? '' : String(fieldValue)
+          ])
+        )
+      } else {
+        payload.value = value
+      }
+
+      await onSubmit(payload)
+    } catch (submitError) {
+      setError((submitError as Error).message)
+    }
+  }
+
+  return (
+    <Dialog
+      open
+      onOpenChange={onOpenChange}
+      title={t('redis.createKey')}
+      description={`${dialog.connection.name} / ${dialog.database}`}
+      className="max-w-2xl"
+      footer={
+        <>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
+            {t('common.cancel')}
+          </Button>
+          <Button onClick={submit} disabled={busy || !keyName.trim()}>
+            {t('common.insert')}
+          </Button>
+        </>
+      }
+    >
+      <div className="grid gap-3 md:grid-cols-2">
+        <div>
+          <Label className="mb-1 block">{t('redis.keyName')}</Label>
+          <Input value={keyName} onChange={(event) => setKeyName(event.target.value)} />
+        </div>
+        <div>
+          <Label className="mb-1 block">{t('common.type')}</Label>
+          <Select
+            value={type}
+            options={typeOptions}
+            onChange={(event) => setType(event.target.value as CreateRedisKeyType)}
+          />
+        </div>
+        {type === 'hash' && (
+          <div>
+            <Label className="mb-1 block">{t('redis.field')}</Label>
+            <Input value={field} onChange={(event) => setField(event.target.value)} />
+          </div>
+        )}
+        {(type === 'set' || type === 'zset') && (
+          <div>
+            <Label className="mb-1 block">{t('redis.member')}</Label>
+            <Input value={member} onChange={(event) => setMember(event.target.value)} />
+          </div>
+        )}
+        {type === 'zset' && (
+          <div>
+            <Label className="mb-1 block">{t('redis.score')}</Label>
+            <Input value={score} onChange={(event) => setScore(event.target.value)} />
+          </div>
+        )}
+        <div>
+          <Label className="mb-1 block">{t('redis.ttlSeconds')}</Label>
+          <Input value={ttlSeconds} onChange={(event) => setTtlSeconds(event.target.value)} />
+        </div>
+        {type === 'stream' ? (
+          <div className="md:col-span-2">
+            <Label className="mb-1 block">{t('redis.fieldsJson')}</Label>
+            <textarea
+              value={fieldsJson}
+              onChange={(event) => setFieldsJson(event.target.value)}
+              rows={7}
+              className="w-full rounded-md border border-input bg-background p-2 font-mono text-xs"
+            />
+          </div>
+        ) : type !== 'set' && type !== 'zset' ? (
+          <div className="md:col-span-2">
+            <Label className="mb-1 block">{t('common.content')}</Label>
+            <textarea
+              value={value}
+              onChange={(event) => setValue(event.target.value)}
+              rows={7}
+              className="w-full rounded-md border border-input bg-background p-2 font-mono text-xs"
+            />
+          </div>
+        ) : null}
+      </div>
+      {error && (
+        <div className="mt-3 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+          {error}
+        </div>
+      )}
+    </Dialog>
+  )
+}
+
 function TableMenuItem({
   icon,
   label,
   onClick,
   danger = false
 }: {
-  icon: React.ReactNode
+  icon: ReactNode
   label: string
   onClick: () => void
   danger?: boolean

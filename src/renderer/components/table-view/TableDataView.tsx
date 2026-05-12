@@ -19,6 +19,7 @@ interface Props {
   readOnly?: boolean
   filterEnabled?: boolean
   sortable?: boolean
+  exportEnabled?: boolean
 }
 
 export function TableDataView({
@@ -27,7 +28,8 @@ export function TableDataView({
   table,
   readOnly = false,
   filterEnabled = true,
-  sortable = true
+  sortable = true,
+  exportEnabled = true
 }: Props) {
   const { showToast } = useUIStore()
   const tableReloadToken = useUIStore(
@@ -111,6 +113,7 @@ export function TableDataView({
         density={density}
         readOnly={readOnly}
         filterEnabled={filterEnabled}
+        exportEnabled={exportEnabled}
         columnCounts={
           data
             ? {

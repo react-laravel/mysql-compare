@@ -249,7 +249,7 @@ function renderInput(
   if (c.type.startsWith('text') || c.type === 'json' || c.type.includes('blob')) {
     return (
       <textarea
-        value={value == null ? '' : String(value)}
+        value={formatInputValue(c, value)}
         onChange={(e) => onChange(e.target.value)}
         rows={4}
         className="w-full rounded-md border border-input bg-background p-2 text-xs font-mono"
@@ -271,6 +271,23 @@ function renderInput(
       onChange={(e) => onChange(e.target.value)}
     />
   )
+}
+
+function formatInputValue(column: ColumnInfo, value: unknown): string {
+  if (value === null || value === undefined) return ''
+  if (column.type === 'json') return formatJsonValue(value)
+  if (typeof value === 'object') return JSON.stringify(value, null, 2)
+  return String(value)
+}
+
+function formatJsonValue(value: unknown): string {
+  if (typeof value === 'object') return JSON.stringify(value, null, 2)
+  const text = String(value)
+  try {
+    return JSON.stringify(JSON.parse(text), null, 2)
+  } catch {
+    return text
+  }
 }
 
 function getEnumOptions(column: ColumnInfo): string[] {

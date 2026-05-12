@@ -9,6 +9,8 @@ import { SidebarOverlays } from './SidebarOverlays'
 import { SidebarTree } from './SidebarTree'
 import type {
   CreateSQLDialogState,
+  CreateRedisKeyDialogState,
+  CreateRedisKeyPayload,
   DatabaseMenuState,
   DatabaseRowRefEntry,
   ExportDatabaseDialogState,
@@ -38,6 +40,24 @@ function clampSidebarWidth(width: number): number {
   return Math.min(maxWidth, Math.max(MIN_SIDEBAR_WIDTH, width))
 }
 
+async function loadDatabaseKeyCount(connectionId: string, database: string): Promise<number | undefined> {
+  try {
+    const info = await unwrap(api.db.getDatabaseInfo(connectionId, database))
+    return info.tableCount
+  } catch {
+    return undefined
+  }
+}
+
+async function loadDatabaseKeyCounts(connectionId: string, databases: string[]): Promise<Record<string, number>> {
+  const entries = await Promise.all(
+    databases.map(async (database) => [database, await loadDatabaseKeyCount(connectionId, database)] as const)
+  )
+  return Object.fromEntries(
+    entries.flatMap(([database, count]) => count === undefined ? [] : [[database, count]])
+  )
+}
+
 function loadStoredSidebarWidth(): number {
   if (typeof window === 'undefined') return DEFAULT_SIDEBAR_WIDTH
 
@@ -53,7 +73,9 @@ export function Sidebar() {
     rightView,
     setRightView,
     closeDatabaseTabs,
+    closeTableTabs,
     markDatabaseDropped,
+    markTableDropped,
     renameTableTabs,
     refreshTableData,
     latestDatabaseDropEvent,
@@ -70,6 +92,7 @@ export function Sidebar() {
   const [renameDialog, setRenameDialog] = useState<RenameDialogState | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
   const [createSQLDialog, setCreateSQLDialog] = useState<CreateSQLDialogState | null>(null)
+  const [createRedisKeyDialog, setCreateRedisKeyDialog] = useState<CreateRedisKeyDialogState | null>(null)
   const [exportDialog, setExportDialog] = useState<ExportDialogState | null>(null)
   const [exportDatabaseDialog, setExportDatabaseDialog] = useState<ExportDatabaseDialogState | null>(null)
   const [importDialog, setImportDialog] = useState<ImportDialogState | null>(null)
@@ -300,9 +323,12 @@ export function Sidebar() {
     }
     try {
       const dbs = await unwrap(api.db.listDatabases(conn.id))
+      const tableCounts = conn.engine === 'redis'
+        ? await loadDatabaseKeyCounts(conn.id, dbs)
+        : undefined
       setNodes((state) => ({
         ...state,
-        [conn.id]: { ...state[conn.id]!, loading: false, databases: dbs }
+        [conn.id]: { ...state[conn.id]!, loading: false, databases: dbs, tableCounts }
       }))
     } catch (err) {
       showToast((err as Error).message, 'error')
@@ -323,10 +349,22 @@ export function Sidebar() {
     setNodes((state) => ({ ...state, [conn.id]: { ...node, expandedDbs: nextExpanded } }))
     if (!node.tables[db]) {
       try {
-        const tables = await unwrap(api.db.listTables(conn.id, db))
+        const [tables, keyCount] = await Promise.all([
+          unwrap(api.db.listTables(conn.id, db)),
+          conn.engine === 'redis' ? loadDatabaseKeyCount(conn.id, db) : Promise.resolve(undefined)
+        ])
         setNodes((state) => {
           const current = state[conn.id]!
-          return { ...state, [conn.id]: { ...current, tables: { ...current.tables, [db]: tables } } }
+          return {
+            ...state,
+            [conn.id]: {
+              ...current,
+              tables: { ...current.tables, [db]: tables },
+              tableCounts: keyCount === undefined
+                ? current.tableCounts
+                : { ...current.tableCounts, [db]: keyCount }
+            }
+          }
         })
       } catch (err) {
         showToast((err as Error).message, 'error')
@@ -336,10 +374,22 @@ export function Sidebar() {
 
   const refreshDatabase = async (conn: SafeConnection, db: string) => {
     try {
-      const tables = await unwrap(api.db.listTables(conn.id, db))
+      const [tables, keyCount] = await Promise.all([
+        unwrap(api.db.listTables(conn.id, db)),
+        conn.engine === 'redis' ? loadDatabaseKeyCount(conn.id, db) : Promise.resolve(undefined)
+      ])
       setNodes((state) => {
         const current = state[conn.id]!
-        return { ...state, [conn.id]: { ...current, tables: { ...current.tables, [db]: tables } } }
+        return {
+          ...state,
+          [conn.id]: {
+            ...current,
+            tables: { ...current.tables, [db]: tables },
+            tableCounts: keyCount === undefined
+              ? current.tableCounts
+              : { ...current.tableCounts, [db]: keyCount }
+          }
+        }
       })
     } catch (err) {
       showToast((err as Error).message, 'error')
@@ -509,6 +559,43 @@ export function Sidebar() {
     })
   }
 
+  const openCreateRedisKeyDialog = (connection: SafeConnection, database: string) => {
+    setDatabaseMenu(null)
+    setCreateRedisKeyDialog({ connection, database })
+  }
+
+  const createRedisKey = async (payload: CreateRedisKeyPayload) => {
+    if (!createRedisKeyDialog) return
+    const key = payload.key.trim()
+    if (!key) {
+      showToast(t('redis.keyRequired'), 'error')
+      return
+    }
+    setActionBusy(true)
+    try {
+      await unwrap(api.db.insertRow({
+        connectionId: createRedisKeyDialog.connection.id,
+        database: createRedisKeyDialog.database,
+        table: key,
+        values: { ...payload }
+      }))
+      await refreshDatabase(createRedisKeyDialog.connection, createRedisKeyDialog.database)
+      setRightView({
+        kind: 'table',
+        connectionId: createRedisKeyDialog.connection.id,
+        database: createRedisKeyDialog.database,
+        table: key,
+        engine: 'redis'
+      })
+      showToast(t('redis.keyCreated', { key }), 'success')
+      setCreateRedisKeyDialog(null)
+    } catch (err) {
+      showToast((err as Error).message, 'error')
+    } finally {
+      setActionBusy(false)
+    }
+  }
+
   const openImportDialog = (menu: TableMenuState) => {
     setTableMenu(null)
     setImportDialog({
@@ -539,6 +626,36 @@ export function Sidebar() {
       setActionBusy(false)
     }
   }
+
+  const dropTable = async (menu: TableMenuState) => {
+    setTableMenu(null)
+    const confirmMessage = menu.connection.engine === 'redis'
+      ? t('redis.confirmDeleteKey', { key: menu.table })
+      : t('sidebar.confirm.dropTable', { table: menu.table })
+    if (!confirm(confirmMessage)) return
+    setActionBusy(true)
+    try {
+      await unwrap(api.db.dropTable({
+        connectionId: menu.connection.id,
+        database: menu.database,
+        table: menu.table
+      }))
+      await refreshDatabase(menu.connection, menu.database)
+      closeTableTabs(menu.connection.id, menu.database, menu.table)
+      markTableDropped(menu.connection.id, menu.database, menu.table)
+      showToast(
+        menu.connection.engine === 'redis'
+          ? t('redis.keyDeleted', { key: menu.table })
+          : t('sidebar.toast.droppedTable', { table: menu.table }),
+        'success'
+      )
+    } catch (err) {
+      showToast((err as Error).message, 'error')
+    } finally {
+      setActionBusy(false)
+    }
+  }
+
 
   const onDelete = async (conn: SafeConnection): Promise<boolean> => {
     if (!confirm(t('sidebar.confirm.deleteConnection', { name: conn.name }))) return false
@@ -612,6 +729,7 @@ export function Sidebar() {
           onOpenDatabaseDetails={openDatabaseDetails}
           onOpenSQLConsole={openSQLConsole}
           onExportDatabase={openExportDatabaseDialog}
+          onCreateRedisKey={openCreateRedisKeyDialog}
           onRefreshDatabase={refreshDatabase}
           onTableFilterChange={setTableFilter}
           onSelectTable={onSelectTable}
@@ -656,6 +774,7 @@ export function Sidebar() {
           setDatabaseMenu(null)
           openSQLConsole(menu.connection, menu.database)
         }}
+        onCreateRedisKey={(menu) => openCreateRedisKeyDialog(menu.connection, menu.database)}
         onExportDatabase={(menu) => openExportDatabaseDialog(menu.connection, menu.database)}
         onRefreshDatabase={(menu) => {
           setDatabaseMenu(null)
@@ -668,6 +787,7 @@ export function Sidebar() {
         onExportTable={openExportDialog}
         onImportTable={openImportDialog}
         onTruncateTable={truncateTable}
+        onDropTable={dropTable}
         renameDialog={renameDialog}
         renameDraft={renameDraft}
         actionBusy={actionBusy}
@@ -684,6 +804,11 @@ export function Sidebar() {
           navigator.clipboard.writeText(createSQLDialog?.sql ?? '')
           showToast(t('common.sqlCopied'), 'success')
         }}
+        createRedisKeyDialog={createRedisKeyDialog}
+        onCreateRedisKeyDialogOpenChange={(open) => {
+          if (!open && !actionBusy) setCreateRedisKeyDialog(null)
+        }}
+        onSubmitCreateRedisKey={createRedisKey}
         exportDialog={exportDialog}
         onExportDialogOpenChange={(open) => {
           if (!open) setExportDialog(null)

@@ -1,4 +1,4 @@
-import { useMemo, type MouseEvent, type MutableRefObject } from 'react'
+import { useMemo, useState, type MouseEvent, type MutableRefObject } from 'react'
 import {
   CircleEllipsis,
   ChevronDown,
@@ -6,6 +6,7 @@ import {
   Database,
   Download,
   FileCode2,
+  Folder,
   KeyRound,
   Plus,
   RefreshCw,
@@ -45,6 +46,7 @@ interface SidebarTreeProps {
   onOpenDatabaseDetails: (connection: SafeConnection, database: string) => void
   onOpenSQLConsole: (connection: SafeConnection, database: string) => void
   onExportDatabase: (connection: SafeConnection, database: string) => void
+  onCreateRedisKey: (connection: SafeConnection, database: string) => void
   onRefreshDatabase: (connection: SafeConnection, database: string) => void | Promise<void>
   onTableFilterChange: (connectionId: string, database: string, value: string) => void
   onSelectTable: (connection: SafeConnection, database: string, table: string) => void
@@ -81,6 +83,7 @@ export function SidebarTree({
   onOpenDatabaseDetails,
   onOpenSQLConsole,
   onExportDatabase,
+  onCreateRedisKey,
   onRefreshDatabase,
   onTableFilterChange,
   onSelectTable,
@@ -88,6 +91,20 @@ export function SidebarTree({
   onOpenTableMenu
 }: SidebarTreeProps) {
   const { t } = useI18n()
+  const [collapsedRedisFolders, setCollapsedRedisFolders] = useState<Set<string>>(new Set())
+
+  const toggleRedisFolder = (folderId: string) => {
+    setCollapsedRedisFolders((current) => {
+      const next = new Set(current)
+      if (next.has(folderId)) {
+        next.delete(folderId)
+      } else {
+        next.add(folderId)
+      }
+      return next
+    })
+  }
+
   const connectionGroups = useMemo(() => {
     const groups: Array<{ key: string; label: string; connections: SafeConnection[] }> = []
     const groupByKey = new Map<string, { key: string; label: string; connections: SafeConnection[] }>()
@@ -189,6 +206,7 @@ export function SidebarTree({
                           return !filterValue || table.toLowerCase().includes(filterValue.toLowerCase())
                         })
                         const isRedis = connection.engine === 'redis'
+                        const keyCount = isRedis ? node.tableCounts?.[database] : undefined
 
                         return (
                           <div key={database}>
@@ -226,6 +244,11 @@ export function SidebarTree({
                                 )}
                                 <Database className="mx-1 h-3 w-3 text-emerald-400" />
                                 <span className="flex-1 truncate">{database}</span>
+                                {isRedis && keyCount !== undefined && (
+                                  <span className="ml-1 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                                    {keyCount.toLocaleString()}
+                                  </span>
+                                )}
                               </button>
                               {dbExpanded && (
                                 <div className="flex items-center pr-1">
@@ -262,6 +285,18 @@ export function SidebarTree({
                                         <Download className="h-3 w-3" />
                                       </button>
                                     </>
+                                  )}
+                                  {isRedis && (
+                                    <button
+                                      onClick={(event) => {
+                                        event.stopPropagation()
+                                        onCreateRedisKey(connection, database)
+                                      }}
+                                      className="p-1 text-muted-foreground hover:text-foreground"
+                                      title={t('sidebar.overlays.newRedisKey')}
+                                    >
+                                      <Plus className="h-3 w-3" />
+                                    </button>
                                   )}
                                   <button
                                     onClick={(event) => {
@@ -305,32 +340,41 @@ export function SidebarTree({
                                     </button>
                                   )}
                                 </div>
-                                {visibleTables.map((table) => (
-                                  <div
-                                    key={table}
-                                    role="button"
-                                    tabIndex={0}
-                                    className={cn(
-                                      'flex cursor-pointer items-center rounded-md px-2 py-1 hover:bg-accent focus:bg-accent/70 focus:outline-none',
-                                      isSelectedTable(connection.id, database, table) && 'bg-accent text-foreground'
-                                    )}
-                                    onClick={() => onSelectTable(connection, database, table)}
-                                    onKeyDown={(event) => {
-                                      if (event.key !== 'Enter' && event.key !== ' ') return
-                                      event.preventDefault()
-                                      onSelectTable(connection, database, table)
-                                    }}
-                                    onContextMenu={(event) => onOpenTableMenu(event, connection, database, table)}
-                                    title={t('sidebar.rightClickHint')}
-                                  >
-                                    {isRedis ? (
-                                      <KeyRound className="mr-1 h-3 w-3 text-muted-foreground" />
-                                    ) : (
+                                {isRedis ? (
+                                  <RedisKeyTree
+                                    keys={visibleTables}
+                                    collapsedFolders={collapsedRedisFolders}
+                                    folderIdPrefix={`${connection.id}:${database}`}
+                                    isSelectedKey={(key) => isSelectedTable(connection.id, database, key)}
+                                    onToggleFolder={toggleRedisFolder}
+                                    onSelectKey={(key) => onSelectTable(connection, database, key)}
+                                    onOpenKeyMenu={(event, key) => onOpenTableMenu(event, connection, database, key)}
+                                    rightClickHint={t('sidebar.rightClickHint')}
+                                  />
+                                ) : (
+                                  visibleTables.map((table) => (
+                                    <div
+                                      key={table}
+                                      role="button"
+                                      tabIndex={0}
+                                      className={cn(
+                                        'flex cursor-pointer items-center rounded-md px-2 py-1 hover:bg-accent focus:bg-accent/70 focus:outline-none',
+                                        isSelectedTable(connection.id, database, table) && 'bg-accent text-foreground'
+                                      )}
+                                      onClick={() => onSelectTable(connection, database, table)}
+                                      onKeyDown={(event) => {
+                                        if (event.key !== 'Enter' && event.key !== ' ') return
+                                        event.preventDefault()
+                                        onSelectTable(connection, database, table)
+                                      }}
+                                      onContextMenu={(event) => onOpenTableMenu(event, connection, database, table)}
+                                      title={t('sidebar.rightClickHint')}
+                                    >
                                       <TableIcon className="mr-1 h-3 w-3 text-muted-foreground" />
-                                    )}
-                                    <span className="flex-1 truncate text-xs">{table}</span>
-                                  </div>
-                                ))}
+                                      <span className="flex-1 truncate text-xs">{table}</span>
+                                    </div>
+                                  ))
+                                )}
                                 {tables && visibleTables.length === 0 && (
                                   <div className="px-2 py-2 text-xs text-muted-foreground">
                                     {filterValue
@@ -357,4 +401,201 @@ export function SidebarTree({
       </div>
     </>
   )
+}
+
+interface RedisKeyTreeNode {
+  id: string
+  label: string
+  keyName?: string
+  count: number
+  children: RedisKeyTreeNode[]
+}
+
+interface RedisKeyBuildNode {
+  id: string
+  label: string
+  keyName?: string
+  count: number
+  children: Map<string, RedisKeyBuildNode>
+}
+
+interface RedisKeyTreeProps {
+  keys: string[]
+  collapsedFolders: Set<string>
+  folderIdPrefix: string
+  isSelectedKey: (key: string) => boolean
+  onToggleFolder: (folderId: string) => void
+  onSelectKey: (key: string) => void
+  onOpenKeyMenu: (event: MouseEvent<HTMLDivElement>, key: string) => void
+  rightClickHint: string
+}
+
+type RedisKeyTreeItemProps = Omit<RedisKeyTreeProps, 'keys'> & {
+  node: RedisKeyTreeNode
+  depth: number
+}
+
+function RedisKeyTree({
+  keys,
+  collapsedFolders,
+  folderIdPrefix,
+  isSelectedKey,
+  onToggleFolder,
+  onSelectKey,
+  onOpenKeyMenu,
+  rightClickHint
+}: RedisKeyTreeProps) {
+  const tree = useMemo(() => buildRedisKeyTree(keys), [keys])
+
+  return (
+    <div>
+      {tree.map((node) => (
+        <RedisKeyTreeItem
+          key={node.id}
+          node={node}
+          depth={0}
+          collapsedFolders={collapsedFolders}
+          folderIdPrefix={folderIdPrefix}
+          isSelectedKey={isSelectedKey}
+          onToggleFolder={onToggleFolder}
+          onSelectKey={onSelectKey}
+          onOpenKeyMenu={onOpenKeyMenu}
+          rightClickHint={rightClickHint}
+        />
+      ))}
+    </div>
+  )
+}
+
+function RedisKeyTreeItem({
+  node,
+  depth,
+  collapsedFolders,
+  folderIdPrefix,
+  isSelectedKey,
+  onToggleFolder,
+  onSelectKey,
+  onOpenKeyMenu,
+  rightClickHint
+}: RedisKeyTreeItemProps) {
+  if (node.keyName) {
+    return (
+      <div
+        role="button"
+        tabIndex={0}
+        className={cn(
+          'flex cursor-pointer items-center rounded-md px-2 py-1 hover:bg-accent focus:bg-accent/70 focus:outline-none',
+          isSelectedKey(node.keyName) && 'bg-accent text-foreground'
+        )}
+        style={{ paddingLeft: 8 + depth * 12 }}
+        onClick={() => onSelectKey(node.keyName!)}
+        onKeyDown={(event) => {
+          if (event.key !== 'Enter' && event.key !== ' ') return
+          event.preventDefault()
+          onSelectKey(node.keyName!)
+        }}
+        onContextMenu={(event) => onOpenKeyMenu(event, node.keyName!)}
+        title={rightClickHint}
+      >
+        <KeyRound className="mr-1 h-3 w-3 shrink-0 text-muted-foreground" />
+        <span className="flex-1 truncate text-xs">{node.label}</span>
+      </div>
+    )
+  }
+
+  const folderId = `${folderIdPrefix}:${node.id}`
+  const expanded = !collapsedFolders.has(folderId)
+
+  return (
+    <div>
+      <button
+        type="button"
+        className="flex w-full items-center rounded-md px-2 py-1 text-left hover:bg-accent focus:bg-accent/70 focus:outline-none"
+        style={{ paddingLeft: 4 + depth * 12 }}
+        onClick={() => onToggleFolder(folderId)}
+      >
+        {expanded ? (
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        ) : (
+          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        )}
+        <Folder className="mx-1 h-3 w-3 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1 truncate text-xs">{node.label}</span>
+        <span className="ml-1 text-[10px] text-muted-foreground">{node.count}</span>
+      </button>
+      {expanded && node.children.map((child) => (
+        <RedisKeyTreeItem
+          key={child.id}
+          node={child}
+          depth={depth + 1}
+          collapsedFolders={collapsedFolders}
+          folderIdPrefix={folderIdPrefix}
+          isSelectedKey={isSelectedKey}
+          onToggleFolder={onToggleFolder}
+          onSelectKey={onSelectKey}
+          onOpenKeyMenu={onOpenKeyMenu}
+          rightClickHint={rightClickHint}
+        />
+      ))}
+    </div>
+  )
+}
+
+function buildRedisKeyTree(keys: string[]): RedisKeyTreeNode[] {
+  const root = new Map<string, RedisKeyBuildNode>()
+
+  keys.forEach((key) => {
+    const parts = key.split(':')
+    if (parts.length <= 1) {
+      root.set(`leaf:${key}`, createRedisBuildLeaf(key, key))
+      return
+    }
+
+    let siblings = root
+    let path = ''
+    parts.forEach((part, index) => {
+      const label = part || '(empty)'
+      path = path ? `${path}:${part}` : part
+      const last = index === parts.length - 1
+
+      if (last) {
+        siblings.set(`leaf:${key}`, createRedisBuildLeaf(label, key))
+        return
+      }
+
+      const folderMapKey = `folder:${path}`
+      let folder = siblings.get(folderMapKey)
+      if (!folder) {
+        folder = { id: path, label, count: 0, children: new Map() }
+        siblings.set(folderMapKey, folder)
+      }
+      folder.count += 1
+      siblings = folder.children
+    })
+  })
+
+  return sortRedisTreeNodes(Array.from(root.values()).map(toRedisKeyTreeNode))
+}
+
+function createRedisBuildLeaf(label: string, keyName: string): RedisKeyBuildNode {
+  return { id: keyName, label, keyName, count: 1, children: new Map() }
+}
+
+function toRedisKeyTreeNode(node: RedisKeyBuildNode): RedisKeyTreeNode {
+  return {
+    id: node.id,
+    label: node.label,
+    keyName: node.keyName,
+    count: node.count,
+    children: Array.from(node.children.values()).map(toRedisKeyTreeNode)
+  }
+}
+
+function sortRedisTreeNodes(nodes: RedisKeyTreeNode[]): RedisKeyTreeNode[] {
+  return nodes
+    .map((node) => ({ ...node, children: sortRedisTreeNodes(node.children) }))
+    .sort((left, right) => {
+      if (Boolean(left.keyName) !== Boolean(right.keyName)) return left.keyName ? 1 : -1
+      return left.label.localeCompare(right.label)
+    })
 }

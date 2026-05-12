@@ -374,13 +374,18 @@ export const useUIStore = create<UIState>((set) => ({
   renameTableTabs: (connectionId, database, oldTable, newTable) =>
     set((state) => {
       const oldTabId = getTabId({ kind: 'table', connectionId, database, table: oldTable })
-      const nextView: WorkspaceView = { kind: 'table', connectionId, database, table: newTable }
-      const nextTabId = getTabId(nextView)
+      const fallbackNextView: WorkspaceView = { kind: 'table', connectionId, database, table: newTable }
+      const nextTabId = getTabId(fallbackNextView)
       let changed = false
       let removedActiveIndex = -1
+      let activeNextView: WorkspaceView = fallbackNextView
       const workspaceTabs = state.workspaceTabs.flatMap((tab, index) => {
         if (tab.id === oldTabId) {
           changed = true
+          const nextView: WorkspaceView = tab.view.kind === 'table'
+            ? { ...tab.view, table: newTable }
+            : fallbackNextView
+          activeNextView = nextView
           return [createTab(nextView)]
         }
 
@@ -404,7 +409,7 @@ export const useUIStore = create<UIState>((set) => ({
           ...state,
           workspaceTabs,
           activeTabId: nextTabId,
-          rightView: nextView
+          rightView: activeNextView
         }
       }
 

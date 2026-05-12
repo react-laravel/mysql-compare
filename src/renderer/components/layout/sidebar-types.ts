@@ -5,6 +5,7 @@ export interface NodeState {
   loading: boolean
   databases?: string[]
   tables: Record<string, string[]>
+  tableCounts?: Record<string, number>
   expandedDbs: Set<string>
 }
 
@@ -50,6 +51,24 @@ export interface ImportDialogState {
   connection: SafeConnection
   database: string
   table: string
+}
+
+export interface CreateRedisKeyDialogState {
+  connection: SafeConnection
+  database: string
+}
+
+export type CreateRedisKeyType = 'string' | 'hash' | 'list' | 'set' | 'zset' | 'stream'
+
+export interface CreateRedisKeyPayload {
+  key: string
+  type: CreateRedisKeyType
+  value?: string
+  field?: string
+  member?: string
+  score?: number
+  ttlSeconds?: number
+  fields?: Record<string, string>
 }
 
 export interface StickyDatabaseContext {

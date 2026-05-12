@@ -26,6 +26,7 @@ interface TableDataToolbarProps {
   density: 'compact' | 'comfortable'
   readOnly?: boolean
   filterEnabled?: boolean
+  exportEnabled?: boolean
   columnCounts?: {
     visible: number
     total: number
@@ -54,6 +55,7 @@ export function TableDataToolbar({
   density,
   readOnly = false,
   filterEnabled = true,
+  exportEnabled = true,
   columnCounts,
   onWhereChange,
   onApplyWhere,
@@ -108,7 +110,7 @@ export function TableDataToolbar({
           <Button size="sm" variant="ghost" onClick={onRefresh} disabled={loading} title={t('common.refresh')}>
             <RefreshCw className={cn('w-4 h-4', loading && 'animate-spin')} />
           </Button>
-          {!readOnly && (
+          {!readOnly && exportEnabled && (
             <Button size="sm" variant="outline" onClick={onOpenExport}>
               <Download className="w-4 h-4" /> {t('common.export')}
             </Button>

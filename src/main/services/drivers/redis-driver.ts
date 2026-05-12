@@ -18,6 +18,7 @@ import type { DbDriver, Dialect, StreamRowsOptions } from './types'
 
 type RedisClient = ReturnType<typeof createClient>
 type RedisKeyType = 'string' | 'hash' | 'list' | 'set' | 'zset' | 'stream' | 'none'
+type WritableRedisKeyType = Exclude<RedisKeyType, 'none'>
 
 const MAX_PAGE_SIZE = 1000
 const MAX_LISTED_KEYS = 10000
@@ -132,7 +133,7 @@ export class RedisDriver implements DbDriver {
       name: table,
       columns: getRedisColumns(keyType),
       indexes: [],
-      primaryKey: [],
+      primaryKey: getRedisPrimaryKey(keyType),
       createSQL: renderRedisKeyMetadata(table, keyType, ttl, memoryBytes, rowEstimate),
       rowEstimate,
       engine: `Redis ${keyType}`,
@@ -169,7 +170,7 @@ export class RedisDriver implements DbDriver {
         ])
         return {
           total: 1,
-          rows: page === 1 ? [{ key: req.table, type: keyType, value, ttlSeconds: ttl, memoryBytes }] : []
+          rows: page === 1 ? [{ key: req.table, value, ttlSeconds: ttl, memoryBytes }] : []
         }
       }
       case 'hash': {
@@ -217,19 +218,48 @@ export class RedisDriver implements DbDriver {
   }
 
   async insertRow(_req: InsertRowRequest): Promise<{ insertId: number | string; affectedRows: number }> {
-    throw unsupportedRedisOperation('Insert')
+    const req = _req
+    const client = await this.getClient(req.database)
+    const currentType = await getRedisKeyType(client, req.table)
+    const targetType = currentType === 'none'
+      ? readWritableRedisType(req.values['type'])
+      : currentType
+    const affectedRows = await insertRedisValue(client, req.table, targetType, req.values)
+    await applyRedisTtl(client, req.table, req.values['ttlSeconds'])
+    return { insertId: req.table, affectedRows }
   }
 
   async updateRow(_req: UpdateRowRequest): Promise<{ affectedRows: number }> {
-    throw unsupportedRedisOperation('Update')
+    const req = _req
+    const client = await this.getClient(req.database)
+    const keyType = await getRedisKeyType(client, req.table)
+    if (keyType === 'none') throw new Error(`Redis key "${req.table}" not found`)
+    const ttlTargetKey = keyType === 'string' && req.changes['key'] !== undefined
+      ? requiredString(req.changes['key'], 'Redis key name is required')
+      : req.table
+    const affectedRows = await updateRedisValue(client, req.table, keyType, req.pkValues, req.changes)
+    await applyRedisTtl(client, ttlTargetKey, req.changes['ttlSeconds'])
+    return { affectedRows }
   }
 
   async deleteRows(_req: DeleteRowsRequest): Promise<{ affectedRows: number }> {
-    throw unsupportedRedisOperation('Delete rows')
+    const req = _req
+    const client = await this.getClient(req.database)
+    const keyType = await getRedisKeyType(client, req.table)
+    if (keyType === 'none') return { affectedRows: 0 }
+    return { affectedRows: await deleteRedisValues(client, req.table, keyType, req.pkRows) }
   }
 
   async renameTable(_req: RenameTableRequest): Promise<{ table: string }> {
-    throw unsupportedRedisOperation('Rename')
+    const req = _req
+    const nextKey = req.newTable.trim()
+    if (!nextKey) throw new Error('Redis key name is required')
+    const client = await this.getClient(req.database)
+    const keyType = await getRedisKeyType(client, req.table)
+    if (keyType === 'none') throw new Error(`Redis key "${req.table}" not found`)
+    if (await client.exists(nextKey)) throw new Error(`Redis key "${nextKey}" already exists`)
+    await client.rename(req.table, nextKey)
+    return { table: nextKey }
   }
 
   async copyTable(_req: CopyTableRequest): Promise<{ table: string }> {
@@ -241,7 +271,9 @@ export class RedisDriver implements DbDriver {
   }
 
   async dropTable(_req: DropTableRequest): Promise<void> {
-    throw unsupportedRedisOperation('Drop key')
+    const req = _req
+    const client = await this.getClient(req.database)
+    await client.del(req.table)
   }
 
   async executeSQL(_sql: string, _database?: string): Promise<unknown> {
@@ -292,11 +324,8 @@ function getRedisColumns(type: RedisKeyType): ColumnInfo[] {
   switch (type) {
     case 'string':
       return [
-        column('key', 'redis-key'),
-        column('type', 'string'),
         column('value', 'string'),
-        column('ttlSeconds', 'number'),
-        column('memoryBytes', 'number')
+        column('ttlSeconds', 'number')
       ]
     case 'hash':
       return [column('field', 'hash-field'), column('value', 'string')]
@@ -311,6 +340,160 @@ function getRedisColumns(type: RedisKeyType): ColumnInfo[] {
     default:
       return [column('key', 'redis-key'), column('type', 'unknown')]
   }
+}
+
+function getRedisPrimaryKey(type: RedisKeyType): string[] {
+  switch (type) {
+    case 'string':
+      return ['key']
+    case 'hash':
+      return ['field']
+    case 'list':
+      return ['index']
+    case 'set':
+      return ['member']
+    case 'zset':
+      return ['member']
+    case 'stream':
+      return ['id']
+    default:
+      return []
+  }
+}
+
+async function insertRedisValue(
+  client: RedisClient,
+  key: string,
+  type: WritableRedisKeyType,
+  values: Record<string, unknown>
+): Promise<number> {
+  switch (type) {
+    case 'string':
+      await client.set(key, stringValue(values['value']))
+      return 1
+    case 'hash': {
+      const field = requiredString(values['field'], 'Hash field is required')
+      return client.hSet(key, field, stringValue(values['value']))
+    }
+    case 'list':
+      return client.rPush(key, stringValue(values['value']))
+    case 'set':
+      return client.sAdd(key, requiredString(values['member'] ?? values['value'], 'Set member is required'))
+    case 'zset':
+      return client.zAdd(key, {
+        value: requiredString(values['member'] ?? values['value'], 'Sorted set member is required'),
+        score: numberValue(values['score'], 'Sorted set score must be a valid number')
+      })
+    case 'stream': {
+      const fields = streamFields(values['fields'] ?? values['value'])
+      const id = await client.xAdd(key, '*', fields)
+      return id ? 1 : 0
+    }
+  }
+}
+
+async function updateRedisValue(
+  client: RedisClient,
+  key: string,
+  type: WritableRedisKeyType,
+  pkValues: Record<string, unknown>,
+  changes: Record<string, unknown>
+): Promise<number> {
+  switch (type) {
+    case 'string': {
+      const nextKey = changes['key'] === undefined ? key : requiredString(changes['key'], 'Redis key name is required')
+      let currentKey = key
+      if (nextKey !== key) {
+        if (await client.exists(nextKey)) throw new Error(`Redis key "${nextKey}" already exists`)
+        await client.rename(key, nextKey)
+        currentKey = nextKey
+      }
+      if (changes['value'] !== undefined) {
+        const ttl = await client.ttl(currentKey).catch(() => -1)
+        await client.set(currentKey, stringValue(changes['value']))
+        if (ttl > 0 && changes['ttlSeconds'] === undefined) await client.expire(currentKey, ttl)
+      }
+      return 1
+    }
+    case 'hash': {
+      const oldField = requiredString(pkValues['field'], 'Hash field is required')
+      const nextField = changes['field'] === undefined
+        ? oldField
+        : requiredString(changes['field'], 'Hash field is required')
+      const currentValue = changes['value'] === undefined ? await client.hGet(key, oldField) : undefined
+      if (changes['value'] === undefined && currentValue == null) {
+        throw new Error(`Hash field "${oldField}" not found`)
+      }
+      const nextValue = changes['value'] === undefined ? currentValue! : stringValue(changes['value'])
+      if (nextField !== oldField) await client.hDel(key, oldField)
+      await client.hSet(key, nextField, nextValue)
+      return 1
+    }
+    case 'list': {
+      if (changes['value'] === undefined) return 0
+      const index = numberValue(pkValues['index'], 'List index must be a valid number')
+      await client.lSet(key, index, stringValue(changes['value']))
+      return 1
+    }
+    case 'set': {
+      if (changes['member'] === undefined) return 0
+      const oldMember = requiredString(pkValues['member'], 'Set member is required')
+      const nextMember = requiredString(changes['member'], 'Set member is required')
+      if (oldMember === nextMember) return 0
+      await client.sRem(key, oldMember)
+      return client.sAdd(key, nextMember)
+    }
+    case 'zset': {
+      const oldMember = requiredString(pkValues['member'], 'Sorted set member is required')
+      const nextMember = changes['member'] === undefined
+        ? oldMember
+        : requiredString(changes['member'], 'Sorted set member is required')
+      const score = changes['score'] === undefined
+        ? await client.zScore(key, oldMember)
+        : numberValue(changes['score'], 'Sorted set score must be a valid number')
+      if (score === null) throw new Error(`Sorted set member "${oldMember}" not found`)
+      if (nextMember !== oldMember) await client.zRem(key, oldMember)
+      return client.zAdd(key, { value: nextMember, score })
+    }
+    case 'stream':
+      throw new Error('Redis stream entries cannot be edited; delete the entry and add a new one')
+  }
+}
+
+async function deleteRedisValues(
+  client: RedisClient,
+  key: string,
+  type: WritableRedisKeyType,
+  pkRows: Record<string, unknown>[]
+): Promise<number> {
+  if (pkRows.length === 0) return 0
+
+  switch (type) {
+    case 'string':
+      return client.del(key)
+    case 'hash':
+      return client.hDel(key, pkRows.map((row) => requiredString(row['field'], 'Hash field is required')))
+    case 'list':
+      return deleteListIndexes(client, key, pkRows.map((row) => numberValue(row['index'], 'List index must be a valid number')))
+    case 'set':
+      return client.sRem(key, pkRows.map((row) => requiredString(row['member'], 'Set member is required')))
+    case 'zset':
+      return client.zRem(key, pkRows.map((row) => requiredString(row['member'], 'Sorted set member is required')))
+    case 'stream':
+      return client.xDel(key, pkRows.map((row) => requiredString(row['id'], 'Stream id is required')))
+  }
+}
+
+async function deleteListIndexes(client: RedisClient, key: string, indexes: number[]): Promise<number> {
+  const marker = `__mysql_compare_delete_${Date.now()}_${Math.random().toString(36).slice(2)}__`
+  const uniqueIndexes = Array.from(new Set(indexes)).sort((left, right) => right - left)
+  let marked = 0
+  for (const index of uniqueIndexes) {
+    await client.lSet(key, index, marker)
+    marked += 1
+  }
+  await client.lRem(key, 0, marker)
+  return marked
 }
 
 function column(name: string, type: string): ColumnInfo {
@@ -331,6 +514,58 @@ function parseRedisDatabase(database?: string): number {
   const value = Number.parseInt(raw, 10)
   if (!Number.isInteger(value) || value < 0) throw new Error('Redis database must be a non-negative integer')
   return value
+}
+
+function readWritableRedisType(value: unknown): WritableRedisKeyType {
+  const type = String(value || 'string').toLowerCase()
+  if (type === 'string' || type === 'hash' || type === 'list' || type === 'set' || type === 'zset' || type === 'stream') {
+    return type
+  }
+  throw new Error(`Unsupported Redis key type "${type}"`)
+}
+
+async function applyRedisTtl(client: RedisClient, key: string, value: unknown): Promise<void> {
+  if (value === undefined || value === null || value === '') return
+  const ttl = numberValue(value, 'TTL must be a valid number')
+  if (!Number.isInteger(ttl) || ttl < 0) throw new Error('TTL must be a non-negative integer')
+  if (ttl === 0) {
+    await client.persist(key)
+    return
+  }
+  await client.expire(key, ttl)
+}
+
+function requiredString(value: unknown, message: string): string {
+  const text = stringValue(value)
+  if (!text.trim()) throw new Error(message)
+  return text
+}
+
+function stringValue(value: unknown): string {
+  if (value === undefined || value === null) return ''
+  if (typeof value === 'object') return JSON.stringify(value)
+  return String(value)
+}
+
+function numberValue(value: unknown, message: string): number {
+  const parsed = typeof value === 'number' ? value : Number(String(value ?? '').trim())
+  if (!Number.isFinite(parsed)) throw new Error(message)
+  return parsed
+}
+
+function streamFields(value: unknown): Record<string, string> {
+  const raw = typeof value === 'string' ? JSON.parse(value || '{}') : value
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('Stream fields must be a JSON object')
+  }
+  const fields = Object.fromEntries(
+    Object.entries(raw as Record<string, unknown>).map(([field, fieldValue]) => [
+      field,
+      fieldValue === undefined || fieldValue === null ? '' : String(fieldValue)
+    ])
+  )
+  if (Object.keys(fields).length === 0) throw new Error('Stream fields cannot be empty')
+  return fields
 }
 
 async function getRedisKeyType(client: RedisClient, key: string): Promise<RedisKeyType> {

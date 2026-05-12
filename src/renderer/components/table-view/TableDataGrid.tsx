@@ -1,10 +1,12 @@
-import type { MutableRefObject } from 'react'
+import { useState, type MutableRefObject } from 'react'
 import { Badge } from '@renderer/components/ui/badge'
+import { Button } from '@renderer/components/ui/button'
 import { Checkbox } from '@renderer/components/ui/checkbox'
+import { Dialog } from '@renderer/components/ui/dialog'
 import { Table, TBody, THead, Th, Tr, Td } from '@renderer/components/ui/table'
 import { useI18n } from '@renderer/i18n'
 import { cn, formatCellValue } from '@renderer/lib/utils'
-import { Pencil, RefreshCw } from 'lucide-react'
+import { Braces, ClipboardCopy, Pencil, RefreshCw } from 'lucide-react'
 import type { ColumnInfo, QueryRowsResult } from '../../../shared/types'
 import { renderTableCellValue } from './table-cell-render'
 
@@ -48,6 +50,12 @@ export function TableDataGrid({
   onToggleSelect
 }: TableDataGridProps) {
   const { t } = useI18n()
+  const [jsonViewer, setJsonViewer] = useState<{ title: string; content: string } | null>(null)
+
+  const copyJsonViewerContent = async () => {
+    if (!jsonViewer) return
+    await navigator.clipboard.writeText(jsonViewer.content)
+  }
 
   return (
     <div className="relative flex-1 overflow-auto">
@@ -196,7 +204,25 @@ export function TableDataGrid({
                         : 'max-w-xs truncate whitespace-nowrap'
                     )}
                   >
-                    {renderTableCellValue(row[column.name], column)}
+                    <div className="flex min-w-0 items-start gap-1.5">
+                      <span className={cn('min-w-0', wrapCells ? 'whitespace-pre-wrap break-words' : 'truncate')}>
+                        {renderTableCellValue(row[column.name], column)}
+                      </span>
+                      {getFormattedJson(row[column.name]) && (
+                        <button
+                          type="button"
+                          className="shrink-0 rounded border border-border bg-background p-1 text-muted-foreground hover:text-foreground"
+                          title={t('tableData.viewJson')}
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            const content = getFormattedJson(row[column.name])
+                            if (content) setJsonViewer({ title: column.name, content })
+                          }}
+                        >
+                          <Braces className="h-3 w-3" />
+                        </button>
+                      )}
+                    </div>
                   </Td>
                 ))}
               </Tr>
@@ -204,6 +230,45 @@ export function TableDataGrid({
           </TBody>
         </Table>
       )}
+      {jsonViewer && (
+        <Dialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setJsonViewer(null)
+          }}
+          title={t('tableData.jsonViewerTitle')}
+          description={jsonViewer.title}
+          className="max-w-4xl"
+          footer={
+            <>
+              <Button variant="outline" onClick={() => setJsonViewer(null)}>
+                {t('common.close')}
+              </Button>
+              <Button onClick={copyJsonViewerContent}>
+                <ClipboardCopy className="h-4 w-4" /> {t('tableData.copyJson')}
+              </Button>
+            </>
+          }
+        >
+          <pre className="max-h-[70vh] overflow-auto whitespace-pre-wrap rounded border border-border bg-background p-3 text-xs">
+            {jsonViewer.content}
+          </pre>
+        </Dialog>
+      )}
     </div>
   )
+}
+
+function getFormattedJson(value: unknown): string | null {
+  if (value === null || value === undefined) return null
+  if (typeof value === 'object') return JSON.stringify(value, null, 2)
+  if (typeof value !== 'string') return null
+
+  const trimmed = value.trim()
+  if (!trimmed || (trimmed[0] !== '{' && trimmed[0] !== '[')) return null
+  try {
+    return JSON.stringify(JSON.parse(trimmed), null, 2)
+  } catch {
+    return null
+  }
 }
