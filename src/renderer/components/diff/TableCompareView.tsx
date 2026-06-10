@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type Dispatch, type MouseEvent, type SetStateAction, type UIEvent } from 'react'
-import { ArrowRight, RefreshCw, Trash2 } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction, type UIEvent } from 'react'
+import { ArrowRight, RefreshCw } from 'lucide-react'
 import { api, unwrap } from '@renderer/lib/api'
 import { Badge } from '@renderer/components/ui/badge'
 import { Button } from '@renderer/components/ui/button'
@@ -22,6 +22,7 @@ import {
   buildOverwriteTargetSyncRequest,
   buildRowKey
 } from './table-compare-utils'
+import { useComparePaneSelection } from './table-compare-selection'
 import { TableComparePane } from './TableComparePane'
 
 interface Props {
@@ -62,17 +63,14 @@ export function TableCompareView({
   const [page, setPage] = useState(1)
   const [sourceReloadToken, setSourceReloadToken] = useState(0)
   const [targetReloadToken, setTargetReloadToken] = useState(0)
-  const [selectedSourceRows, setSelectedSourceRows] = useState<Record<string, Record<string, unknown>>>({})
   const [copying, setCopying] = useState(false)
   const [overwriting, setOverwriting] = useState(false)
-  const [deleting, setDeleting] = useState(false)
+  const [deletingSide, setDeletingSide] = useState<'source' | 'target' | null>(null)
   const sourceScrollRef = useRef<HTMLDivElement | null>(null)
   const targetScrollRef = useRef<HTMLDivElement | null>(null)
   const syncScrollFrameRef = useRef<number | null>(null)
   const syncingScrollRef = useRef(false)
   const cacheScopeKeyRef = useRef<string | null>(null)
-  const sourceSelectionAnchorKeyRef = useRef<string | null>(null)
-
   if (cacheScopeKeyRef.current === null) {
     tableCompareCacheScopeCounter += 1
     cacheScopeKeyRef.current = `table-compare:${tableCompareCacheScopeCounter}`
@@ -123,10 +121,15 @@ export function TableCompareView({
     )
   }, [compareColumnNames, sharedKeyColumns, sourceState.data, targetState.data])
 
+  const sourceKeyColumns = sourceState.data?.primaryKey ?? []
+  const targetKeyColumns = targetState.data?.primaryKey ?? []
+  const sourceSelection = useComparePaneSelection(sourceState.data, sourceKeyColumns)
+  const targetSelection = useComparePaneSelection(targetState.data, targetKeyColumns)
+
   useEffect(() => {
     setPage(1)
-    setSelectedSourceRows({})
-    sourceSelectionAnchorKeyRef.current = null
+    sourceSelection.clearSelection()
+    targetSelection.clearSelection()
     setSourceState({
       data: null,
       error: null,
@@ -214,32 +217,12 @@ export function TableCompareView({
     onStateChange: setTargetState
   })
 
-  const sourceConnectionName =
-    connections.find((connection) => connection.id === sourceConnectionId)?.name ?? sourceConnectionId
-  const targetConnectionName =
-    connections.find((connection) => connection.id === targetConnectionId)?.name ?? targetConnectionId
-  const sourceKeyColumns = sourceState.data?.primaryKey ?? []
-  const sourceSelectionEnabled = sourceState.data?.hasPrimaryKey ?? false
-  const selectedCount = Object.keys(selectedSourceRows).length
-  const selectedKeySet = useMemo(() => new Set(Object.keys(selectedSourceRows)), [selectedSourceRows])
-  const visibleSourceKeys = useMemo(() => {
-    if (!sourceState.data || !sourceSelectionEnabled) return []
-
-    return sourceState.data.rows
-      .map((row) => buildRowKey(row, sourceKeyColumns))
-      .filter((key): key is string => key !== null)
-  }, [sourceKeyColumns, sourceSelectionEnabled, sourceState.data])
-  const visibleSourceRowsWithKeys = useMemo(() => {
-    if (!sourceState.data || !sourceSelectionEnabled) return []
-
-    return sourceState.data.rows.flatMap((row) => {
-      const key = buildRowKey(row, sourceKeyColumns)
-      return key ? [{ key, row }] : []
-    })
-  }, [sourceKeyColumns, sourceSelectionEnabled, sourceState.data])
-  const visibleSourceKeySet = useMemo(() => new Set(visibleSourceKeys), [visibleSourceKeys])
-  const allVisibleSelected =
-    visibleSourceKeys.length > 0 && visibleSourceKeys.every((key) => selectedKeySet.has(key))
+  const sourceConnection =
+    connections.find((connection) => connection.id === sourceConnectionId) ?? null
+  const targetConnection =
+    connections.find((connection) => connection.id === targetConnectionId) ?? null
+  const sourceConnectionName = sourceConnection?.name ?? sourceConnectionId
+  const targetConnectionName = targetConnection?.name ?? targetConnectionId
   const totalPages = useMemo(() => {
     const sourcePages = sourceState.data ? Math.max(1, Math.ceil(sourceState.data.total / PAGE_SIZE)) : 1
     const targetPages = targetState.data ? Math.max(1, Math.ceil(targetState.data.total / PAGE_SIZE)) : 1
@@ -249,7 +232,7 @@ export function TableCompareView({
     () => getRowDiffNavigation(comparedTables, diffTables, table),
     [comparedTables, diffTables, table]
   )
-  const actionBusy = copying || overwriting || deleting
+  const actionBusy = copying || overwriting || deletingSide !== null
 
   const refreshBoth = () => {
     setSourceReloadToken((current) => current + 1)
@@ -270,72 +253,28 @@ export function TableCompareView({
     })
   }
 
-  const toggleSourceRow = (row: Record<string, unknown>, event: MouseEvent<HTMLInputElement>) => {
-    const rowKey = buildRowKey(row, sourceKeyColumns)
-    if (!rowKey) return
-
-    const anchorKey = sourceSelectionAnchorKeyRef.current
-    const shouldSelect = event.currentTarget.checked
-
-    setSelectedSourceRows((current) => {
-      if (event.shiftKey && anchorKey) {
-        const anchorIndex = visibleSourceRowsWithKeys.findIndex((item) => item.key === anchorKey)
-        const rowIndex = visibleSourceRowsWithKeys.findIndex((item) => item.key === rowKey)
-
-        if (anchorIndex !== -1 && rowIndex !== -1) {
-          const [start, end] =
-            anchorIndex < rowIndex ? [anchorIndex, rowIndex] : [rowIndex, anchorIndex]
-          const next = { ...current }
-
-          for (const item of visibleSourceRowsWithKeys.slice(start, end + 1)) {
-            if (shouldSelect) {
-              next[item.key] = item.row
-            } else {
-              delete next[item.key]
-            }
-          }
-
-          return next
-        }
-      }
-
-      if (current[rowKey]) {
-        const { [rowKey]: _removed, ...rest } = current
-        return rest
-      }
-
-      return {
-        ...current,
-        [rowKey]: row
-      }
+  const openSourceTable = () => {
+    setRightView({
+      kind: 'table',
+      connectionId: sourceConnectionId,
+      database: sourceDatabase,
+      table,
+      engine: sourceConnection?.engine
     })
-
-    sourceSelectionAnchorKeyRef.current = rowKey
   }
 
-  const toggleAllVisibleSourceRows = () => {
-    if (!sourceState.data || !sourceSelectionEnabled) return
-
-    const sourceData = sourceState.data
-
-    setSelectedSourceRows((current) => {
-      if (allVisibleSelected) {
-        return Object.fromEntries(
-          Object.entries(current).filter(([rowKey]) => !visibleSourceKeySet.has(rowKey))
-        )
-      }
-
-      const next = { ...current }
-      for (const row of sourceData.rows) {
-        const rowKey = buildRowKey(row, sourceKeyColumns)
-        if (rowKey) next[rowKey] = row
-      }
-      return next
+  const openTargetTable = () => {
+    setRightView({
+      kind: 'table',
+      connectionId: targetConnectionId,
+      database: targetDatabase,
+      table,
+      engine: targetConnection?.engine
     })
   }
 
   const copySelectedRows = async () => {
-    if (!targetState.data || selectedCount === 0) return
+    if (!targetState.data || sourceSelection.selectedCount === 0) return
 
     setCopying(true)
 
@@ -345,7 +284,7 @@ export function TableCompareView({
     let firstError: string | null = null
 
     try {
-      for (const [rowKey, row] of Object.entries(selectedSourceRows)) {
+      for (const [rowKey, row] of Object.entries(sourceSelection.selectedRows)) {
         const values = buildCopyValues(row, targetState.data.columns)
         if (Object.keys(values).length === 0) {
           failed += 1
@@ -379,10 +318,8 @@ export function TableCompareView({
         setTargetReloadToken((current) => current + 1)
       }
 
-      setSelectedSourceRows((current) =>
-        Object.fromEntries(
-          Object.entries(current).filter(([rowKey]) => failedRowKeys.has(rowKey))
-        )
+      sourceSelection.removeSelectedKeys(
+        new Set(Object.keys(sourceSelection.selectedRows).filter((rowKey) => !failedRowKeys.has(rowKey)))
       )
 
       showToast(
@@ -396,32 +333,44 @@ export function TableCompareView({
     }
   }
 
-  const deleteSelectedSourceRows = async () => {
-    if (!sourceState.data || selectedCount === 0) return
-    if (!sourceSelectionEnabled) {
+  const deleteSelectedRows = async (side: 'source' | 'target') => {
+    const selection = side === 'source' ? sourceSelection : targetSelection
+    const state = side === 'source' ? sourceState : targetState
+    const keyColumns = side === 'source' ? sourceKeyColumns : targetKeyColumns
+    const connectionId = side === 'source' ? sourceConnectionId : targetConnectionId
+    const database = side === 'source' ? sourceDatabase : targetDatabase
+    const setState = side === 'source' ? setSourceState : setTargetState
+    const bumpReloadToken = side === 'source' ? setSourceReloadToken : setTargetReloadToken
+
+    if (!state.data || selection.selectedCount === 0) return
+    if (!selection.selectionEnabled) {
       showToast(t('tableData.refuseNoPrimaryKey'), 'error')
       return
     }
-    if (!confirm(t('diff.compareView.confirmDeleteSelectedSourceRows', { count: selectedCount }))) return
 
-    setDeleting(true)
+    const confirmMessage =
+      side === 'source'
+        ? t('diff.compareView.confirmDeleteSelectedSourceRows', { count: selection.selectedCount })
+        : t('diff.compareView.confirmDeleteSelectedTargetRows', { count: selection.selectedCount })
+    if (!confirm(confirmMessage)) return
+
+    setDeletingSide(side)
 
     try {
-      const deletedRowKeys = new Set(Object.keys(selectedSourceRows))
-      const pkRows = Object.values(selectedSourceRows).map((row) => pickPK(row, sourceKeyColumns))
+      const deletedRowKeys = new Set(Object.keys(selection.selectedRows))
+      const pkRows = Object.values(selection.selectedRows).map((row) => pickPK(row, keyColumns))
       const result = await unwrap(
         api.db.deleteRows({
-          connectionId: sourceConnectionId,
-          database: sourceDatabase,
+          connectionId,
+          database,
           table,
           pkRows
         })
       )
       const affectedRows = (result as { affectedRows: number }).affectedRows
 
-      setSelectedSourceRows({})
-      sourceSelectionAnchorKeyRef.current = null
-      setSourceState((current) => {
+      selection.clearSelection()
+      setState((current) => {
         if (!current.data) return current
 
         return {
@@ -436,7 +385,7 @@ export function TableCompareView({
           }
         }
       })
-      setSourceReloadToken((current) => current + 1)
+      bumpReloadToken((current) => current + 1)
 
       showToast(
         t('diff.compareView.deleteSuccess', {
@@ -447,7 +396,7 @@ export function TableCompareView({
     } catch (err) {
       showToast((err as Error).message, 'error')
     } finally {
-      setDeleting(false)
+      setDeletingSide(null)
     }
   }
 
@@ -470,7 +419,8 @@ export function TableCompareView({
         )
       )
 
-      setSelectedSourceRows({})
+      sourceSelection.clearSelection()
+      targetSelection.clearSelection()
       setTargetReloadToken((current) => current + 1)
 
       showToast(
@@ -568,23 +518,11 @@ export function TableCompareView({
             </Button>
           </div>
           <div className="ml-auto flex shrink-0 items-center gap-2">
-            <Badge className="h-8 px-3 text-xs">{t('diff.compareView.selected', { count: selectedCount })}</Badge>
+            <Badge className="h-8 px-3 text-xs">
+              {t('diff.compareView.selectedSource', { count: sourceSelection.selectedCount })}
+            </Badge>
             <Button size="sm" variant="outline" onClick={refreshBoth}>
               <RefreshCw className="mr-1 h-4 w-4" /> {t('common.refresh')}
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={deleteSelectedSourceRows}
-              disabled={
-                actionBusy ||
-                selectedCount === 0 ||
-                !sourceSelectionEnabled ||
-                sourceState.loading
-              }
-            >
-              <Trash2 className="mr-1 h-4 w-4" />
-              {deleting ? t('diff.compareView.deleting') : t('diff.compareView.deleteSelectedSourceRows')}
             </Button>
             <Button
               size="sm"
@@ -607,8 +545,8 @@ export function TableCompareView({
               onClick={copySelectedRows}
               disabled={
                 actionBusy ||
-                selectedCount === 0 ||
-                !sourceSelectionEnabled ||
+                sourceSelection.selectedCount === 0 ||
+                !sourceSelection.selectionEnabled ||
                 !targetState.data ||
                 targetState.loading
               }
@@ -650,15 +588,19 @@ export function TableCompareView({
           loading={sourceState.loading}
           scrollContainerRef={sourceScrollRef}
           onScroll={(event) => syncPaneScroll('source', event)}
-          selectedKeys={selectedKeySet}
-          showSelection={sourceSelectionEnabled}
-          selectionEnabled={sourceSelectionEnabled}
-          onToggleAllVisible={toggleAllVisibleSourceRows}
-          allVisibleSelected={allVisibleSelected}
-          onToggleRow={toggleSourceRow}
+          selectedKeys={sourceSelection.selectedKeySet}
+          showSelection={sourceSelection.selectionEnabled}
+          selectionEnabled={sourceSelection.selectionEnabled}
+          onToggleAllVisible={sourceSelection.toggleAllVisible}
+          allVisibleSelected={sourceSelection.allVisibleSelected}
+          onToggleRow={sourceSelection.toggleRow}
           compareColumns={compareColumns}
           rowDiffByKey={rowDiffLookup?.source}
           side="source"
+          selectedCount={sourceSelection.selectedCount}
+          onOpenTable={openSourceTable}
+          onDeleteSelected={() => void deleteSelectedRows('source')}
+          deleting={deletingSide === 'source'}
         />
 
         <TableComparePane
@@ -671,10 +613,20 @@ export function TableCompareView({
           loading={targetState.loading}
           scrollContainerRef={targetScrollRef}
           onScroll={(event) => syncPaneScroll('target', event)}
-          leadingSpacer={sourceSelectionEnabled}
+          leadingSpacer={sourceSelection.selectionEnabled && !targetSelection.selectionEnabled}
+          selectedKeys={targetSelection.selectedKeySet}
+          showSelection={targetSelection.selectionEnabled}
+          selectionEnabled={targetSelection.selectionEnabled}
+          onToggleAllVisible={targetSelection.toggleAllVisible}
+          allVisibleSelected={targetSelection.allVisibleSelected}
+          onToggleRow={targetSelection.toggleRow}
           compareColumns={compareColumns}
           rowDiffByKey={rowDiffLookup?.target}
           side="target"
+          selectedCount={targetSelection.selectedCount}
+          onOpenTable={openTargetTable}
+          onDeleteSelected={() => void deleteSelectedRows('target')}
+          deleting={deletingSide === 'target'}
         />
       </div>
     </div>

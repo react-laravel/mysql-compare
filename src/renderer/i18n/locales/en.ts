@@ -448,6 +448,8 @@ export const en = {
       orderedBy: 'Ordered by {{column}}; selection tracked by primary key.',
       noSharedPk: 'No shared primary key — rows may not line up across sides.',
       selected: '{{count}} selected',
+      selectedSource: '{{count}} source selected',
+      deleteSelectedRows: 'Delete selected ({{count}})',
       copying: 'Copying...',
       overwritingTargetTable: 'Overwriting...',
       deleting: 'Deleting...',
@@ -468,6 +470,8 @@ export const en = {
       copySuccess: 'Copied {{count}} row(s) to target',
       confirmDeleteSelectedSourceRows:
         'Delete {{count}} selected source row(s)? This cannot be undone.',
+      confirmDeleteSelectedTargetRows:
+        'Delete {{count}} selected target row(s)? This cannot be undone.',
       deleteSuccess: 'Deleted {{count}} row(s)',
       confirmOverwriteTargetTable:
         'Overwrite target table "{{table}}" with the full source table? This will recreate the target structure and replace all target data.',

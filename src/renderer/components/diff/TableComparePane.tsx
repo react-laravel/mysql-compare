@@ -1,5 +1,6 @@
 import type { MouseEvent, Ref, UIEvent } from 'react'
-import { Loader2 } from 'lucide-react'
+import { ExternalLink, Loader2, Trash2 } from 'lucide-react'
+import { Button } from '@renderer/components/ui/button'
 import { Badge } from '@renderer/components/ui/badge'
 import { Checkbox } from '@renderer/components/ui/checkbox'
 import { Table, TBody, Td, THead, Th, Tr } from '@renderer/components/ui/table'
@@ -29,6 +30,10 @@ interface TableComparePaneProps {
   compareColumns?: CompareColumn[]
   rowDiffByKey?: Map<string, RowDiffInfo>
   side?: 'source' | 'target'
+  selectedCount?: number
+  onOpenTable?: () => void
+  onDeleteSelected?: () => void
+  deleting?: boolean
 }
 
 export function TableComparePane({
@@ -50,7 +55,11 @@ export function TableComparePane({
   onToggleRow,
   compareColumns,
   rowDiffByKey,
-  side = 'source'
+  side = 'source',
+  selectedCount = 0,
+  onOpenTable,
+  onDeleteSelected,
+  deleting = false
 }: TableComparePaneProps) {
   const { t } = useI18n()
   const columns =
@@ -82,9 +91,40 @@ export function TableComparePane({
             )}
           </div>
           {data && (
-            <div className="flex shrink-0 items-center gap-2 text-[11px] text-muted-foreground">
-              <span>{t('diff.pane.rows', { count: data.total.toLocaleString() })}</span>
-              <span>{data.hasPrimaryKey ? t('diff.pane.pkPrefix', { columns: data.primaryKey.join(', ') }) : t('diff.pane.noPrimaryKey')}</span>
+            <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+              {onOpenTable && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 px-2 text-xs"
+                  onClick={onOpenTable}
+                >
+                  <ExternalLink className="mr-1 h-3.5 w-3.5" />
+                  {side === 'source' ? t('diff.presentation.openSource') : t('diff.presentation.openTarget')}
+                </Button>
+              )}
+              {showSelection && onDeleteSelected && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 px-2 text-xs"
+                  disabled={selectedCount === 0 || deleting}
+                  onClick={onDeleteSelected}
+                >
+                  <Trash2 className="mr-1 h-3.5 w-3.5" />
+                  {deleting
+                    ? t('diff.compareView.deleting')
+                    : t('diff.compareView.deleteSelectedRows', { count: selectedCount })}
+                </Button>
+              )}
+              <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                <span>{t('diff.pane.rows', { count: data.total.toLocaleString() })}</span>
+                <span>
+                  {data.hasPrimaryKey
+                    ? t('diff.pane.pkPrefix', { columns: data.primaryKey.join(', ') })
+                    : t('diff.pane.noPrimaryKey')}
+                </span>
+              </div>
             </div>
           )}
         </div>
