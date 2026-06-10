@@ -8,7 +8,7 @@ import { cn, formatCellValue } from '@renderer/lib/utils'
 import { useI18n } from '@renderer/i18n'
 import type { ColumnInfo, QueryRowsResult } from '../../../shared/types'
 import { buildRowKey, type CompareColumn } from './table-compare-utils'
-import type { RowDiffInfo } from './table-compare-diff'
+import type { AlignedCompareRow, RowDiffInfo } from './table-compare-diff'
 
 interface TableComparePaneProps {
   title: string
@@ -29,6 +29,7 @@ interface TableComparePaneProps {
   onToggleRow?: (row: Record<string, unknown>, event: MouseEvent<HTMLInputElement>) => void
   compareColumns?: CompareColumn[]
   rowDiffByKey?: Map<string, RowDiffInfo>
+  alignedRows?: AlignedCompareRow[] | null
   side?: 'source' | 'target'
   selectedCount?: number
   onOpenTable?: () => void
@@ -55,6 +56,7 @@ export function TableComparePane({
   onToggleRow,
   compareColumns,
   rowDiffByKey,
+  alignedRows = null,
   side = 'source',
   selectedCount = 0,
   onOpenTable,
@@ -94,27 +96,39 @@ export function TableComparePane({
             <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
               {onOpenTable && (
                 <Button
-                  size="sm"
+                  size="icon"
                   variant="ghost"
-                  className="h-7 px-2 text-xs"
+                  className="h-7 w-7"
                   onClick={onOpenTable}
+                  title={side === 'source' ? t('diff.presentation.openSource') : t('diff.presentation.openTarget')}
+                  aria-label={side === 'source' ? t('diff.presentation.openSource') : t('diff.presentation.openTarget')}
                 >
-                  <ExternalLink className="mr-1 h-3.5 w-3.5" />
-                  {side === 'source' ? t('diff.presentation.openSource') : t('diff.presentation.openTarget')}
+                  <ExternalLink className="h-3.5 w-3.5" />
                 </Button>
               )}
               {showSelection && onDeleteSelected && (
                 <Button
-                  size="sm"
+                  size="icon"
                   variant="outline"
-                  className="h-7 px-2 text-xs"
+                  className="h-7 w-7"
                   disabled={selectedCount === 0 || deleting}
                   onClick={onDeleteSelected}
+                  title={
+                    deleting
+                      ? t('diff.compareView.deleting')
+                      : t('diff.compareView.deleteSelectedRows', { count: selectedCount })
+                  }
+                  aria-label={
+                    deleting
+                      ? t('diff.compareView.deleting')
+                      : t('diff.compareView.deleteSelectedRows', { count: selectedCount })
+                  }
                 >
-                  <Trash2 className="mr-1 h-3.5 w-3.5" />
-                  {deleting
-                    ? t('diff.compareView.deleting')
-                    : t('diff.compareView.deleteSelectedRows', { count: selectedCount })}
+                  {deleting ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Trash2 className="h-3.5 w-3.5" />
+                  )}
                 </Button>
               )}
               <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
@@ -173,16 +187,17 @@ export function TableComparePane({
               </Tr>
             </THead>
             <TBody>
-              {data.rows.length === 0 && (
+              {getPaneRows(data, alignedRows, side).length === 0 && (
                 <Tr>
                   <Td colSpan={columns.length + (showSelection || leadingSpacer ? 1 : 0)} className="h-11 text-xs text-muted-foreground">
                     {t('diff.pane.noRowsOnPage')}
                   </Td>
                 </Tr>
               )}
-              {data.rows.map((row, index) => {
-                const rowKey = buildRowKey(row, data.primaryKey) ?? `${title}-${index}`
-                const selected = selectedKeys?.has(rowKey) ?? false
+              {getPaneRows(data, alignedRows, side).map((entry, index) => {
+                const rowKey = entry.key ?? `${title}-${index}`
+                const row = entry.row
+                const selected = row ? (selectedKeys?.has(rowKey) ?? false) : false
                 const diffInfo = rowDiffByKey?.get(rowKey)
 
                 return (
@@ -190,14 +205,16 @@ export function TableComparePane({
                     key={rowKey}
                     className={cn(
                       selected && 'bg-accent/30',
-                      !selected && diffInfo?.status === 'modified' && 'bg-amber-500/8',
-                      !selected && diffInfo?.status === 'source-only' && 'bg-sky-500/10',
-                      !selected && diffInfo?.status === 'target-only' && 'bg-violet-500/10'
+                      !selected && !row && diffInfo?.status === 'source-only' && side === 'target' && 'bg-sky-500/10',
+                      !selected && !row && diffInfo?.status === 'target-only' && side === 'source' && 'bg-violet-500/10',
+                      !selected && row && diffInfo?.status === 'modified' && 'bg-amber-500/8',
+                      !selected && row && diffInfo?.status === 'source-only' && 'bg-sky-500/10',
+                      !selected && row && diffInfo?.status === 'target-only' && 'bg-violet-500/10'
                     )}
                   >
                     {(showSelection || leadingSpacer) && (
                       <Td>
-                        {showSelection && (
+                        {showSelection && row && (
                           <Checkbox
                             checked={selected}
                             onChange={() => undefined}
@@ -212,14 +229,20 @@ export function TableComparePane({
                       return (
                         <Td
                           key={column.name}
-                          title={sideColumn ? renderCellValue(row[column.name], sideColumn.type) : t('diff.pane.notPresent')}
+                          title={
+                            row && sideColumn
+                              ? renderCellValue(row[column.name], sideColumn.type)
+                              : t('diff.pane.notPresent')
+                          }
                           className={cn(
                             'h-11',
-                            diffInfo?.changedColumns.has(column.name) &&
+                            !row && 'bg-muted/10',
+                            row &&
+                              diffInfo?.changedColumns.has(column.name) &&
                               'bg-amber-400/25 ring-1 ring-inset ring-amber-500/50'
                           )}
                         >
-                          {sideColumn ? (
+                          {row && sideColumn ? (
                             renderCellValue(row[column.name], sideColumn.type)
                           ) : (
                             <span className="text-muted-foreground">—</span>
@@ -236,6 +259,29 @@ export function TableComparePane({
       </div>
     </div>
   )
+}
+
+interface PaneRowEntry {
+  key: string
+  row: Record<string, unknown> | null
+}
+
+function getPaneRows(
+  data: QueryRowsResult,
+  alignedRows: AlignedCompareRow[] | null,
+  side: 'source' | 'target'
+): PaneRowEntry[] {
+  if (alignedRows) {
+    return alignedRows.map((entry) => ({
+      key: entry.key,
+      row: side === 'source' ? entry.sourceRow : entry.targetRow
+    }))
+  }
+
+  return data.rows.map((row, index) => ({
+    key: buildRowKey(row, data.primaryKey) ?? `${side}-${index}`,
+    row
+  }))
 }
 
 function getSideColumn(column: CompareColumn, side: 'source' | 'target'): ColumnInfo | undefined {

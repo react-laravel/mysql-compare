@@ -15,7 +15,7 @@ import {
   prefetchComparedTables,
   type ComparedTableRowsQuery
 } from './table-compare-data-cache'
-import { buildRowDiffLookup } from './table-compare-diff'
+import { buildAlignedCompareRows, buildRowDiffLookup, syncComparePaneScroll } from './table-compare-diff'
 import {
   buildCompareColumns,
   buildCopyValues,
@@ -120,6 +120,15 @@ export function TableCompareView({
       compareColumnNames
     )
   }, [compareColumnNames, sharedKeyColumns, sourceState.data, targetState.data])
+  const alignedRows = useMemo(() => {
+    if (!sourceState.data || !targetState.data) return null
+
+    return buildAlignedCompareRows(
+      sourceState.data.rows,
+      targetState.data.rows,
+      sharedKeyColumns
+    )
+  }, [sharedKeyColumns, sourceState.data, targetState.data])
 
   const sourceKeyColumns = sourceState.data?.primaryKey ?? []
   const targetKeyColumns = targetState.data?.primaryKey ?? []
@@ -445,8 +454,7 @@ export function TableCompareView({
     if (!peerElement) return
 
     syncingScrollRef.current = true
-    peerElement.scrollTop = activeElement.scrollTop
-    peerElement.scrollLeft = activeElement.scrollLeft
+    syncComparePaneScroll(activeElement, peerElement)
 
     if (syncScrollFrameRef.current !== null) {
       cancelAnimationFrame(syncScrollFrameRef.current)
@@ -596,6 +604,7 @@ export function TableCompareView({
           onToggleRow={sourceSelection.toggleRow}
           compareColumns={compareColumns}
           rowDiffByKey={rowDiffLookup?.source}
+          alignedRows={alignedRows}
           side="source"
           selectedCount={sourceSelection.selectedCount}
           onOpenTable={openSourceTable}
@@ -622,6 +631,7 @@ export function TableCompareView({
           onToggleRow={targetSelection.toggleRow}
           compareColumns={compareColumns}
           rowDiffByKey={rowDiffLookup?.target}
+          alignedRows={alignedRows}
           side="target"
           selectedCount={targetSelection.selectedCount}
           onOpenTable={openTargetTable}

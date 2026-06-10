@@ -12,6 +12,39 @@ export interface RowDiffLookup {
   target: Map<string, RowDiffInfo>
 }
 
+export interface AlignedCompareRow {
+  key: string
+  sourceRow: Record<string, unknown> | null
+  targetRow: Record<string, unknown> | null
+}
+
+export function buildAlignedCompareRows(
+  sourceRows: Record<string, unknown>[],
+  targetRows: Record<string, unknown>[],
+  keyColumns: string[]
+): AlignedCompareRow[] | null {
+  if (keyColumns.length === 0) return null
+
+  const sourceByKey = indexRowsByKey(sourceRows, keyColumns)
+  const targetByKey = indexRowsByKey(targetRows, keyColumns)
+  const keys = [...new Set([...sourceByKey.keys(), ...targetByKey.keys()])].sort(compareRowKeys)
+
+  return keys.map((key) => ({
+    key,
+    sourceRow: sourceByKey.get(key) ?? null,
+    targetRow: targetByKey.get(key) ?? null
+  }))
+}
+
+export function syncComparePaneScroll(activeElement: HTMLElement, peerElement: HTMLElement): void {
+  const activeMaxScroll = Math.max(0, activeElement.scrollHeight - activeElement.clientHeight)
+  const peerMaxScroll = Math.max(0, peerElement.scrollHeight - peerElement.clientHeight)
+  const scrollRatio = activeMaxScroll > 0 ? activeElement.scrollTop / activeMaxScroll : 0
+
+  peerElement.scrollTop = scrollRatio * peerMaxScroll
+  peerElement.scrollLeft = activeElement.scrollLeft
+}
+
 export function buildRowDiffLookup(
   sourceRows: Record<string, unknown>[],
   targetRows: Record<string, unknown>[],
@@ -141,4 +174,59 @@ function serializeComparableValue(value: unknown): string {
   if (typeof value === 'string') return value
   if (typeof value === 'number' || typeof value === 'boolean') return String(value)
   return JSON.stringify(value)
+}
+
+function compareRowKeys(leftKey: string, rightKey: string): number {
+  const leftParts = extractRowKeyParts(leftKey)
+  const rightParts = extractRowKeyParts(rightKey)
+  const length = Math.max(leftParts.length, rightParts.length)
+
+  for (let index = 0; index < length; index += 1) {
+    const compared = compareComparableValues(leftParts[index] ?? null, rightParts[index] ?? null)
+    if (compared !== 0) return compared
+  }
+
+  return 0
+}
+
+function extractRowKeyParts(key: string): unknown[] {
+  try {
+    const parsed = JSON.parse(key) as Array<{ column: string; value: unknown }>
+    return parsed.map((entry) => entry.value)
+  } catch {
+    return []
+  }
+}
+
+function compareComparableValues(source: unknown, target: unknown): number {
+  if (source === target) return 0
+  if (source === null || source === undefined) return -1
+  if (target === null || target === undefined) return 1
+
+  const sourceType = comparableTypeRank(source)
+  const targetType = comparableTypeRank(target)
+  if (sourceType !== targetType) {
+    return sourceType < targetType ? -1 : 1
+  }
+
+  if (typeof source === 'number' && typeof target === 'number') {
+    return source < target ? -1 : 1
+  }
+
+  if (typeof source === 'boolean' && typeof target === 'boolean') {
+    return source ? 1 : -1
+  }
+
+  const sourceText = serializeComparableValue(normalizeComparableValue(source))
+  const targetText = serializeComparableValue(normalizeComparableValue(target))
+  if (sourceText === targetText) return 0
+  return sourceText < targetText ? -1 : 1
+}
+
+function comparableTypeRank(value: unknown): number {
+  if (value === null || value === undefined) return 0
+  if (typeof value === 'number') return 1
+  if (typeof value === 'boolean') return 2
+  if (typeof value === 'string') return 3
+  return 4
 }
