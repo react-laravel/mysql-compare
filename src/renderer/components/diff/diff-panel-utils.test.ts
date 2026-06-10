@@ -178,7 +178,7 @@ describe('diff-panel-utils', () => {
     ])
   })
 
-  it('moves unfinished comparison entries to the top while preserving order within each priority', () => {
+  it('keeps comparison entries sorted by table name regardless of status', () => {
     expect(prioritizeComparisonEntries([
       {
         ...entries[1]!,
@@ -195,8 +195,8 @@ describe('diff-panel-utils', () => {
       }
     ]).map((entry) => entry.table)).toEqual([
       'comparing_table',
-      'queued_table',
       'failed_table',
+      'queued_table',
       'row_changed_table'
     ])
   })

@@ -287,11 +287,8 @@ export function prioritizeComparisonEntries(entries: TableCompareEntry[]): Table
   return entries
     .map((entry, index) => ({ entry, index }))
     .sort((left, right) => {
-      const leftPriority = getComparisonEntryPriority(left.entry)
-      const rightPriority = getComparisonEntryPriority(right.entry)
-      if (leftPriority !== rightPriority) {
-        return leftPriority - rightPriority
-      }
+      const byName = left.entry.table.localeCompare(right.entry.table)
+      if (byName !== 0) return byName
       return left.index - right.index
     })
     .map(({ entry }) => entry)
@@ -436,13 +433,6 @@ function hasSchemaChangedEntry(entry: TableCompareEntry): boolean {
 function hasRowChangedEntry(entry: TableCompareEntry): boolean {
   if (!entry.rowComparison?.dataDiff.comparable) return false
   return !hasNoRowDifferences(entry.rowComparison)
-}
-
-function getComparisonEntryPriority(entry: TableCompareEntry): number {
-  if (entry.status === 'comparing') return 0
-  if (entry.status === 'queued') return 1
-  if (entry.status === 'error') return 2
-  return 3
 }
 
 function parseTableStatusFilter(value: unknown): TableStatusFilter {
