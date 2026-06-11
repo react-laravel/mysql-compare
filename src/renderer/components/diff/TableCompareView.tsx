@@ -24,6 +24,7 @@ import {
 } from './table-compare-utils'
 import { useComparePaneSelection } from './table-compare-selection'
 import { TableComparePane } from './TableComparePane'
+import { TableDataPagination } from '@renderer/components/table-view/TableDataPagination'
 
 interface Props {
   compareSessionId: string
@@ -42,7 +43,7 @@ interface ComparedTableDataState {
   loading: boolean
 }
 
-const PAGE_SIZE = 100
+const DEFAULT_PAGE_SIZE = 100
 const PREFETCH_TABLE_COUNT = 3
 
 let tableCompareCacheScopeCounter = 0
@@ -61,6 +62,8 @@ export function TableCompareView({
   const { setRightView, showToast } = useUIStore()
   const { t } = useI18n()
   const [page, setPage] = useState(1)
+  const [pageDraft, setPageDraft] = useState('1')
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
   const [sourceReloadToken, setSourceReloadToken] = useState(0)
   const [targetReloadToken, setTargetReloadToken] = useState(0)
   const [copying, setCopying] = useState(false)
@@ -137,6 +140,7 @@ export function TableCompareView({
 
   useEffect(() => {
     setPage(1)
+    setPageDraft('1')
     sourceSelection.clearSelection()
     targetSelection.clearSelection()
     setSourceState({
@@ -174,7 +178,7 @@ export function TableCompareView({
     database: sourceDatabase,
     table,
     page,
-    pageSize: PAGE_SIZE,
+    pageSize,
     reloadToken: sourceReloadToken,
     orderBy: stableOrderBy,
     onStateChange: setSourceState
@@ -196,7 +200,7 @@ export function TableCompareView({
       targetReloadToken,
       tables: upcomingDiffTables,
       page: 1,
-      pageSize: PAGE_SIZE
+      pageSize
     }).catch(() => undefined)
   }, [
     cacheScopeKey,
@@ -220,7 +224,7 @@ export function TableCompareView({
     database: targetDatabase,
     table,
     page,
-    pageSize: PAGE_SIZE,
+    pageSize,
     reloadToken: targetReloadToken,
     orderBy: stableOrderBy,
     onStateChange: setTargetState
@@ -232,11 +236,44 @@ export function TableCompareView({
     connections.find((connection) => connection.id === targetConnectionId) ?? null
   const sourceConnectionName = sourceConnection?.name ?? sourceConnectionId
   const targetConnectionName = targetConnection?.name ?? targetConnectionId
-  const totalPages = useMemo(() => {
-    const sourcePages = sourceState.data ? Math.max(1, Math.ceil(sourceState.data.total / PAGE_SIZE)) : 1
-    const targetPages = targetState.data ? Math.max(1, Math.ceil(targetState.data.total / PAGE_SIZE)) : 1
-    return Math.max(sourcePages, targetPages)
+  const totalRows = useMemo(() => {
+    const sourceTotal = sourceState.data?.total ?? 0
+    const targetTotal = targetState.data?.total ?? 0
+    return Math.max(sourceTotal, targetTotal)
   }, [sourceState.data, targetState.data])
+  const totalPages = useMemo(
+    () => Math.max(1, Math.ceil(totalRows / pageSize)),
+    [pageSize, totalRows]
+  )
+
+  useEffect(() => {
+    if (page > totalPages) {
+      setPage(totalPages)
+    }
+  }, [page, totalPages])
+
+  useEffect(() => {
+    setPageDraft(String(page))
+  }, [page])
+
+  const goToPage = (nextPage: number) => {
+    const safePage = Math.max(1, Math.min(totalPages, nextPage))
+    setPage(safePage)
+  }
+
+  const submitPageDraft = () => {
+    const parsed = Number.parseInt(pageDraft, 10)
+    if (Number.isFinite(parsed)) {
+      goToPage(parsed)
+      return
+    }
+    setPageDraft(String(page))
+  }
+
+  const onPageSizeChange = (nextPageSize: number) => {
+    setPageSize(nextPageSize)
+    setPage(1)
+  }
   const rowDiffNavigation = useMemo(
     () => getRowDiffNavigation(comparedTables, diffTables, table),
     [comparedTables, diffTables, table]
@@ -502,29 +539,6 @@ export function TableCompareView({
               </Button>
             </div>
           )}
-          <div className="flex shrink-0 items-center gap-1.5">
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-8 px-3"
-              disabled={page <= 1}
-              onClick={() => setPage(page - 1)}
-            >
-              {t('diff.compareView.prev')}
-            </Button>
-            <span className="tabular-nums">
-              {t('diff.compareView.pageOf', { page, total: totalPages })}
-            </span>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-8 px-3"
-              disabled={page >= totalPages}
-              onClick={() => setPage(page + 1)}
-            >
-              {t('diff.compareView.next')}
-            </Button>
-          </div>
           <div className="ml-auto flex shrink-0 items-center gap-2">
             <Badge className="h-8 px-3 text-xs">
               {t('diff.compareView.selectedSource', { count: sourceSelection.selectedCount })}
@@ -639,6 +653,22 @@ export function TableCompareView({
           deleting={deletingSide === 'target'}
         />
       </div>
+
+      {(sourceState.data || targetState.data) && (
+        <TableDataPagination
+          totalRows={totalRows}
+          page={page}
+          totalPages={totalPages}
+          pageDraft={pageDraft}
+          pageSize={pageSize}
+          hiddenColumnCount={0}
+          onPageSizeChange={onPageSizeChange}
+          onGoToPage={goToPage}
+          onPageDraftChange={setPageDraft}
+          onSubmitPageDraft={submitPageDraft}
+          onResetPageDraft={() => setPageDraft(String(page))}
+        />
+      )}
     </div>
   )
 }
