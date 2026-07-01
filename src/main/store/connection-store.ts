@@ -1,10 +1,10 @@
 // 连接元数据持久化。敏感字段（password / sshPassword / sshPrivateKey / sshPassphrase）
 // 落盘前一律走 safeStorage 加密。读取时给主进程内部使用解密版本，给渲染端只暴露安全版本。
-import Store from 'electron-store'
 import { v4 as uuid } from 'uuid'
 import type { ConnectionConfig, DbEngine, SafeConnection } from '../../shared/types'
 import { decryptSecret, encryptSecret } from './secure-store'
 import { createStoreOptions } from './store-config'
+import { SimpleJsonStore } from './simple-json-store'
 
 interface StoredConnection extends Omit<ConnectionConfig,
   'password' | 'sshPassword' | 'sshPrivateKey' | 'sshPassphrase'> {
@@ -18,7 +18,7 @@ interface Schema {
   connections: StoredConnection[]
 }
 
-const store = new Store<Schema>(createStoreOptions<Schema>('connections', { connections: [] }))
+const store = new SimpleJsonStore<Schema>(createStoreOptions<Schema>('connections', { connections: [] }))
 
 function normalizeEngine(engine: DbEngine | undefined): DbEngine {
   return engine || 'mysql'

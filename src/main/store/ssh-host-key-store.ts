@@ -1,11 +1,11 @@
-import Store from 'electron-store'
 import { createStoreOptions } from './store-config'
+import { SimpleJsonStore } from './simple-json-store'
 
 interface Schema {
   fingerprints: Record<string, string>
 }
 
-const store = new Store<Schema>(createStoreOptions('ssh-host-keys', { fingerprints: {} }))
+const store = new SimpleJsonStore<Schema>(createStoreOptions('ssh-host-keys', { fingerprints: {} }))
 
 function getKey(connectionId: string, host: string, port: number): string {
   return `${connectionId}:${host}:${port}`
