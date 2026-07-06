@@ -35,3 +35,16 @@ jobs:
           PORT: "3006"
           RUNNER_TRACKING_ID: ""
         run: php "$HOME/.deployer/dep.phar" deploy production -v
+
+      - name: Notify dogeow deployment
+        if: success()
+        env:
+          APP_NAME: mysql-compare
+          APP_URL: https://mysql-compare.dogeow.com
+        run: |
+          set -euo pipefail
+          php /var/www/dogeow-api/current/artisan notify:deploy "$APP_NAME" \
+            --title="部署完成：$APP_NAME" \
+            --body="react-laravel/$APP_NAME 已通过 GitHub self-hosted runner 部署成功（${GITHUB_SHA::7}）" \
+            --url="$APP_URL" \
+            --no-interaction || true
