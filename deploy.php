@@ -5,7 +5,7 @@ namespace Deployer;
 require 'recipe/common.php';
 
 set('application', 'mysql-compare');
-set('keep_releases', 5);
+set('keep_releases', 2);
 set('git_tty', false);
 set('workspace_root', __DIR__);
 set('writable_mode', 'chmod');
