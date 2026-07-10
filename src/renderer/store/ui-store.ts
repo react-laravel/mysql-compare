@@ -79,6 +79,7 @@ interface UIState {
   registerTabCloseGuard: (tabId: string, guard: () => boolean) => () => void
   confirmSSHPathTabRetarget: (connectionId: string, oldPath: string) => boolean
   closeDatabaseTabs: (connectionId: string, database: string) => void
+  closeConnectionDatabaseTabs: (connectionId: string) => void
   renameTableTabs: (connectionId: string, database: string, oldTable: string, newTable: string) => void
   closeTableTabs: (connectionId: string, database: string, table: string) => void
   moveSSHPathTabs: (connectionId: string, oldPath: string, newPath: string) => void
@@ -126,6 +127,23 @@ function compareViewReferencesDatabase(
   )
 }
 
+function compareViewReferencesConnection(
+  view: Extract<WorkspaceView, { kind: 'table-compare' }>,
+  connectionId: string
+): boolean {
+  return view.sourceConnectionId === connectionId || view.targetConnectionId === connectionId
+}
+
+function viewReferencesDatabaseConnection(view: WorkspaceView, connectionId: string): boolean {
+  return (
+    (view.kind === 'database' && view.connectionId === connectionId) ||
+    (view.kind === 'table' && view.connectionId === connectionId) ||
+    (view.kind === 'sql' && view.connectionId === connectionId) ||
+    (view.kind === 'database-export' && view.request.connectionId === connectionId) ||
+    (view.kind === 'table-compare' && compareViewReferencesConnection(view, connectionId))
+  )
+}
+
 function getTabId(view: WorkspaceView): string {
   if (view.kind === 'diff') return 'diff'
   if (view.kind === 'database') return `database:${view.connectionId}:${view.database}`
@@ -166,7 +184,7 @@ function getTabTitle(view: WorkspaceView): string {
   if (view.kind === 'ssh-editor') return view.path.split('/').filter(Boolean).pop() || view.path
   if (view.kind === 'table-compare') return `Compare · ${view.table}`
   if (view.kind === 'table') return `${view.database} / ${view.table}`
-  return view.table
+  return ''
 }
 
 function createTab(view: WorkspaceView): WorkspaceTab {
@@ -357,6 +375,27 @@ export const useUIStore = create<UIState>((set) => ({
           (tab.view.kind === 'table-compare' &&
             compareViewReferencesDatabase(tab.view, connectionId, database))
 
+        if (!shouldRemove) return true
+
+        changed = true
+        if (tab.id === state.activeTabId) {
+          removedActiveIndex = index
+        }
+        return false
+      })
+
+      if (!changed) return state
+      if (removedActiveIndex < 0) {
+        return { ...state, workspaceTabs }
+      }
+      return { ...state, workspaceTabs, ...pickActiveState(workspaceTabs, removedActiveIndex - 1) }
+    }),
+  closeConnectionDatabaseTabs: (connectionId) =>
+    set((state) => {
+      let removedActiveIndex = -1
+      let changed = false
+      const workspaceTabs = state.workspaceTabs.filter((tab, index) => {
+        const shouldRemove = viewReferencesDatabaseConnection(tab.view, connectionId)
         if (!shouldRemove) return true
 
         changed = true

@@ -4,6 +4,9 @@ export const IPC = {
   ConnectionList: 'connection:list',
   ConnectionUpsert: 'connection:upsert',
   ConnectionDelete: 'connection:delete',
+  ConnectionClose: 'connection:close',
+  ConnectionSetDatabaseCredential: 'connection:setDatabaseCredential',
+  ConnectionTestDatabaseCredential: 'connection:testDatabaseCredential',
   ConnectionTest: 'connection:test',
 
   // 数据库浏览（引擎无关）

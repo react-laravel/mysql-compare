@@ -15,6 +15,14 @@ import { sshFileService } from '../main/services/ssh-file-service'
 import { sshService } from '../main/services/ssh-service'
 import { sshTerminalService } from '../main/services/ssh-terminal-service'
 import { syncService } from '../main/services/sync-service'
+import {
+  establishWebSession,
+  getRequestSessionId,
+  loadWebSecurityConfig,
+  requireBasicAuth,
+  requireMutationProtection,
+  securityHeaders
+} from './security'
 import type {
   ConnectionConfig,
   CopyTableRequest,
@@ -61,21 +69,23 @@ const API_PREFIX = '/api'
 const PROJECT_ROOT = resolve(fileURLToPath(new URL('../..', import.meta.url)))
 const STATIC_DIST_DIR = resolve(PROJECT_ROOT, 'dist-web')
 const STATIC_INDEX_FILE = join(STATIC_DIST_DIR, 'index.html')
-const PORT = Number(process.env['PORT'] || process.env['MYSQL_COMPARE_WEB_PORT'] || 3000)
-const JSON_LIMIT = process.env['MYSQL_COMPARE_JSON_LIMIT'] || '100mb'
+const webSecurity = loadWebSecurityConfig()
+const PORT = webSecurity.port
+const HOST = webSecurity.host
+const JSON_LIMIT = process.env['MYSQL_COMPARE_JSON_LIMIT'] || '25mb'
 
-const syncClients = new Set<Response>()
-const terminalDataClients = new Set<Response>()
-const terminalExitClients = new Set<Response>()
+const syncClients = new Map<string, Set<Response>>()
+const terminalDataClients = new Map<string, Set<Response>>()
+const terminalExitClients = new Map<string, Set<Response>>()
 
 const app = express()
 app.disable('x-powered-by')
-app.use(express.json({ limit: JSON_LIMIT }))
+app.use(securityHeaders())
 
 const heartbeat = setInterval(() => {
-  broadcastSSE(syncClients, null)
-  broadcastSSE(terminalDataClients, null)
-  broadcastSSE(terminalExitClients, null)
+  broadcastAllSSE(syncClients, null)
+  broadcastAllSSE(terminalDataClients, null)
+  broadcastAllSSE(terminalExitClients, null)
 }, 15000)
 
 app.get(`${API_PREFIX}/health`, (_req, res) => {
@@ -85,6 +95,13 @@ app.get(`${API_PREFIX}/health`, (_req, res) => {
     timestamp: new Date().toISOString()
   })
 })
+
+app.use(requireBasicAuth(webSecurity))
+app.use(establishWebSession(webSecurity))
+app.use(API_PREFIX, requireMutationProtection(webSecurity))
+app.use(API_PREFIX, express.json({ limit: JSON_LIMIT }))
+
+app.get(`${API_PREFIX}/session`, asyncHandler(async () => ({ authenticated: true })))
 
 app.get(`${API_PREFIX}/connections`, asyncHandler(async () => connectionStore.list()))
 
@@ -100,6 +117,31 @@ app.delete(`${API_PREFIX}/connections/:id`, asyncHandler(async (req) => {
   connectionStore.remove(connectionId)
   await dbService.closeConnection(connectionId)
   return undefined
+}))
+
+app.post(`${API_PREFIX}/connections/:id/close`, asyncHandler(async (req) => {
+  await dbService.closeConnection(getParam(req, 'id'))
+  return undefined
+}))
+
+app.post(`${API_PREFIX}/connections/:id/database-credentials/:database`, asyncHandler(async (req) => {
+  const saved = connectionStore.setDatabaseCredential(
+    getParam(req, 'id'),
+    getParam(req, 'database'),
+    req.body
+  )
+  await dbService.closeConnection(saved.id)
+  return saved
+}))
+
+app.post(`${API_PREFIX}/connections/:id/database-credentials/:database/test`, asyncHandler(async (req) => {
+  const connection = connectionStore.resolveDatabaseCredentialTest(
+    getParam(req, 'id'),
+    getParam(req, 'database'),
+    req.body
+  )
+  const message = await dbService.testConnection(connection)
+  return { message }
 }))
 
 app.post(`${API_PREFIX}/connections/test`, asyncHandler(async (req) => {
@@ -290,7 +332,7 @@ app.post(`${API_PREFIX}/diff/table`, asyncHandler(async (req) => {
 }))
 
 app.get(`${API_PREFIX}/sync/events/progress`, (req, res) => {
-  attachSSEClient(req, res, syncClients)
+  attachSSEClient(req, res, syncClients, getRequestSessionId(req))
 })
 
 app.post(`${API_PREFIX}/sync/build-plan`, asyncHandler(async (req) => {
@@ -298,8 +340,9 @@ app.post(`${API_PREFIX}/sync/build-plan`, asyncHandler(async (req) => {
 }))
 
 app.post(`${API_PREFIX}/sync/execute`, asyncHandler(async (req) => {
+  const sessionId = getRequestSessionId(req)
   return syncService.execute(req.body as SyncRequest, {
-    onProgress: (event: SyncProgressEvent) => broadcastSSE(syncClients, event)
+    onProgress: (event: SyncProgressEvent) => broadcastSSE(syncClients, sessionId, event)
   })
 }))
 
@@ -361,33 +404,34 @@ app.post(`${API_PREFIX}/ssh/move-file`, asyncHandler(async (req) => {
 }))
 
 app.get(`${API_PREFIX}/ssh-terminal/events/data`, (req, res) => {
-  attachSSEClient(req, res, terminalDataClients)
+  attachSSEClient(req, res, terminalDataClients, getRequestSessionId(req))
 })
 
 app.get(`${API_PREFIX}/ssh-terminal/events/exit`, (req, res) => {
-  attachSSEClient(req, res, terminalExitClients)
+  attachSSEClient(req, res, terminalExitClients, getRequestSessionId(req))
 })
 
 app.post(`${API_PREFIX}/ssh-terminal/create`, asyncHandler(async (req) => {
   const payload = req.body as SSHTerminalCreateRequest
+  const sessionId = getRequestSessionId(req)
   return sshTerminalService.createSession(payload, {
-    onData: (event: SSHTerminalDataEvent) => broadcastSSE(terminalDataClients, event),
-    onExit: (event: SSHTerminalExitEvent) => broadcastSSE(terminalExitClients, event)
-  })
+    onData: (event: SSHTerminalDataEvent) => broadcastSSE(terminalDataClients, sessionId, event),
+    onExit: (event: SSHTerminalExitEvent) => broadcastSSE(terminalExitClients, sessionId, event)
+  }, sessionId)
 }))
 
 app.post(`${API_PREFIX}/ssh-terminal/write`, asyncHandler(async (req) => {
-  sshTerminalService.write(req.body as SSHTerminalWriteRequest)
+  sshTerminalService.write(req.body as SSHTerminalWriteRequest, getRequestSessionId(req))
   return undefined
 }))
 
 app.post(`${API_PREFIX}/ssh-terminal/resize`, asyncHandler(async (req) => {
-  sshTerminalService.resize(req.body as SSHTerminalResizeRequest)
+  sshTerminalService.resize(req.body as SSHTerminalResizeRequest, getRequestSessionId(req))
   return undefined
 }))
 
 app.post(`${API_PREFIX}/ssh-terminal/close`, asyncHandler(async (req) => {
-  sshTerminalService.close(req.body as SSHTerminalCloseRequest)
+  sshTerminalService.close(req.body as SSHTerminalCloseRequest, getRequestSessionId(req))
   return undefined
 }))
 
@@ -403,8 +447,8 @@ if (existsSync(STATIC_INDEX_FILE)) {
   })
 }
 
-const server = app.listen(PORT, () => {
-  console.log(`[web] MySQL Compare web server listening on http://0.0.0.0:${PORT}`)
+const server = app.listen(PORT, HOST, () => {
+  console.log(`[web] MySQL Compare web server listening on http://${HOST}:${PORT}`)
   if (existsSync(STATIC_INDEX_FILE)) {
     console.log(`[web] Serving static frontend from ${STATIC_DIST_DIR}`)
   } else {
@@ -447,21 +491,31 @@ function sendError(res: Response, error: unknown, status = 500): void {
   res.status(status).json(body)
 }
 
-function attachSSEClient(req: Request, res: Response, bucket: Set<Response>): void {
+function attachSSEClient(
+  req: Request,
+  res: Response,
+  buckets: Map<string, Set<Response>>,
+  sessionId: string
+): void {
   res.setHeader('Content-Type', 'text/event-stream')
   res.setHeader('Cache-Control', 'no-cache, no-transform')
   res.setHeader('Connection', 'keep-alive')
   res.flushHeaders()
   res.write(': connected\n\n')
 
+  const bucket = buckets.get(sessionId) ?? new Set<Response>()
   bucket.add(res)
+  buckets.set(sessionId, bucket)
   req.on('close', () => {
     bucket.delete(res)
+    if (bucket.size === 0) buckets.delete(sessionId)
     res.end()
   })
 }
 
-function broadcastSSE<T>(bucket: Set<Response>, event: T | null): void {
+function broadcastSSE<T>(buckets: Map<string, Set<Response>>, sessionId: string, event: T | null): void {
+  const bucket = buckets.get(sessionId)
+  if (!bucket) return
   const payload = event === null ? ': heartbeat\n\n' : `data: ${JSON.stringify(event)}\n\n`
   for (const client of Array.from(bucket)) {
     try {
@@ -471,6 +525,11 @@ function broadcastSSE<T>(bucket: Set<Response>, event: T | null): void {
       client.end()
     }
   }
+  if (bucket.size === 0) buckets.delete(sessionId)
+}
+
+function broadcastAllSSE<T>(buckets: Map<string, Set<Response>>, event: T | null): void {
+  for (const sessionId of buckets.keys()) broadcastSSE(buckets, sessionId, event)
 }
 
 function getExportMimeType(format: ExportTableRequest['format'] | 'sql'): string {
@@ -503,12 +562,17 @@ function getParam(req: Request, key: string): string {
 
 async function shutdown(): Promise<void> {
   clearInterval(heartbeat)
-  syncClients.forEach((client) => client.end())
-  terminalDataClients.forEach((client) => client.end())
-  terminalExitClients.forEach((client) => client.end())
+  closeSSEClients(syncClients)
+  closeSSEClients(terminalDataClients)
+  closeSSEClients(terminalExitClients)
   sshTerminalService.closeAll()
   await Promise.allSettled([dbService.closeAll(), sshService.closeAll()])
   await new Promise<void>((resolveClose) => {
     server.close(() => resolveClose())
   })
+}
+
+function closeSSEClients(buckets: Map<string, Set<Response>>): void {
+  for (const bucket of buckets.values()) bucket.forEach((client) => client.end())
+  buckets.clear()
 }

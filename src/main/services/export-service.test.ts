@@ -44,15 +44,7 @@ vi.mock('node:child_process', () => ({
   spawn
 }))
 
-vi.mock('electron', () => ({
-  BrowserWindow: {
-    getFocusedWindow: () => null,
-    getAllWindows: () => []
-  },
-  dialog: {
-    showSaveDialog
-  }
-}))
+vi.mock('../platform/electron-runtime', () => ({ showSaveDialog }))
 
 vi.mock('./db-service', () => ({
   dbService: {

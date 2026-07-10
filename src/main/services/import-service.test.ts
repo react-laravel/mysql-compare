@@ -14,15 +14,10 @@ vi.mock('node:fs/promises', () => ({
   readFile
 }))
 
-vi.mock('electron', () => ({
-  BrowserWindow: {
-    getFocusedWindow: () => null,
-    getAllWindows: () => []
-  },
-  dialog: {
-    showOpenDialog,
-    showMessageBox
-  }
+vi.mock('../platform/electron-runtime', () => ({
+  isElectronRuntime: () => true,
+  showOpenDialog,
+  showMessageBox
 }))
 
 vi.mock('./db-service', () => ({

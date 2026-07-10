@@ -4,6 +4,16 @@
 export type SqlDbEngine = 'mysql' | 'postgres'
 export type DbEngine = SqlDbEngine | 'redis'
 
+export interface DatabaseCredentialConfig {
+  username?: string
+  password?: string
+}
+
+export interface SafeDatabaseCredential {
+  username?: string
+  hasPassword: boolean
+}
+
 export interface ConnectionConfig {
   id: string
   engine: DbEngine
@@ -14,6 +24,8 @@ export interface ConnectionConfig {
   username: string
   /** 仅在写入时携带；读取时不会回传明文，渲染端只能拿到 hasPassword 标记 */
   password?: string
+  /** PostgreSQL 数据库级登录覆盖；用于同一服务器下不同数据库使用不同账号密码 */
+  databaseCredentials?: Record<string, DatabaseCredentialConfig>
   database?: string
   // SSH Tunnel
   useSSH: boolean
@@ -32,9 +44,10 @@ export interface ConnectionConfig {
 /** 渲染端能看到的安全版本：去除明文密码，附带 hasPassword 标记 */
 export type SafeConnection = Omit<
   ConnectionConfig,
-  'password' | 'sshPassword' | 'sshPrivateKey' | 'sshPassphrase'
+  'password' | 'databaseCredentials' | 'sshPassword' | 'sshPrivateKey' | 'sshPassphrase'
 > & {
   hasPassword: boolean
+  databaseCredentials?: Record<string, SafeDatabaseCredential>
   hasSSHPassword: boolean
   hasSSHPrivateKey: boolean
 }

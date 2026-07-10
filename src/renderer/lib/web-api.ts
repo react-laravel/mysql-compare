@@ -2,6 +2,7 @@ import type { AppAPI } from '../../shared/app-api'
 import type {
   ConnectionConfig,
   CopyTableRequest,
+  DatabaseCredentialConfig,
   DatabaseDiff,
   DatabaseInfo,
   DiffRequest,
@@ -54,6 +55,7 @@ import type {
 } from '../../shared/types'
 
 const WEB_API_BASE = (import.meta.env.VITE_WEB_API_BASE || '/api').replace(/\/$/, '')
+let webSessionReady: Promise<void> | null = null
 
 interface BrowserUploadFile {
   relativePath: string
@@ -67,8 +69,28 @@ function makeUrl(path: string): string {
   return `${WEB_API_BASE}${path.startsWith('/') ? path : `/${path}`}`
 }
 
+function ensureWebSession(): Promise<void> {
+  if (webSessionReady) return webSessionReady
+
+  webSessionReady = fetch(makeUrl('/session'), {
+    credentials: 'include',
+    headers: { Accept: 'application/json' }
+  })
+    .then(async (response) => {
+      if (response.ok) return
+      const result = await parseErrorResponse(response)
+      throw new Error(result.error || 'Authentication failed')
+    })
+    .catch((error) => {
+      webSessionReady = null
+      throw error
+    })
+  return webSessionReady
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<IPCResult<T>> {
   try {
+    await ensureWebSession()
     const response = await fetch(makeUrl(path), {
       credentials: 'include',
       headers: {
@@ -115,14 +137,23 @@ function del<T>(path: string, body?: unknown): Promise<IPCResult<T>> {
 }
 
 function subscribeToEvents<T>(path: string, onEvent: (value: T) => void): () => void {
-  const source = new EventSource(makeUrl(path), { withCredentials: true })
-  source.onmessage = (event) => {
-    onEvent(JSON.parse(event.data) as T)
+  let source: EventSource | null = null
+  let closed = false
+  void ensureWebSession().then(() => {
+    if (closed) return
+    source = new EventSource(makeUrl(path), { withCredentials: true })
+    source.onmessage = (event) => {
+      onEvent(JSON.parse(event.data) as T)
+    }
+    source.onerror = () => {
+      source?.close()
+    }
+  }).catch(() => undefined)
+
+  return () => {
+    closed = true
+    source?.close()
   }
-  source.onerror = () => {
-    source.close()
-  }
-  return () => source.close()
 }
 
 function unsupportedPathForFile(_file: File): string {
@@ -152,6 +183,7 @@ function triggerBrowserDownload(blob: Blob, fileName: string): void {
 }
 
 async function postAndDownload(path: string, body: unknown): Promise<Response> {
+  await ensureWebSession()
   const response = await fetch(makeUrl(path), {
     method: 'POST',
     credentials: 'include',
@@ -326,6 +358,17 @@ export function createWebApi(): AppAPI {
       list: () => get<SafeConnection[]>('/connections'),
       upsert: (conn: ConnectionConfig) => post<SafeConnection>('/connections', conn),
       remove: (id: string) => del<void>(`/connections/${encodeURIComponent(id)}`),
+      close: (id: string) => post<void>(`/connections/${encodeURIComponent(id)}/close`),
+      setDatabaseCredential: (id: string, database: string, credential: DatabaseCredentialConfig) =>
+        post<SafeConnection>(
+          `/connections/${encodeURIComponent(id)}/database-credentials/${encodeURIComponent(database)}`,
+          credential
+        ),
+      testDatabaseCredential: (id: string, database: string, credential: DatabaseCredentialConfig) =>
+        post<{ message: string }>(
+          `/connections/${encodeURIComponent(id)}/database-credentials/${encodeURIComponent(database)}/test`,
+          credential
+        ),
       test: (conn: ConnectionConfig) => post<{ message: string }>('/connections/test', conn)
     },
     db: {

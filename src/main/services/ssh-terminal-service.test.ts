@@ -154,6 +154,23 @@ describe('SSHTerminalService', () => {
     expect(client.channel.close).toHaveBeenCalled()
     expect(client.end).toHaveBeenCalled()
   })
+
+  it('rejects terminal control from a different client owner', async () => {
+    getFull.mockReturnValue(buildConnection())
+    const result = await sshTerminalService.createSession(
+      { connectionId: 'conn-1', cols: 80, rows: 24 },
+      { onData: vi.fn(), onExit: vi.fn() },
+      'web-client-a'
+    )
+
+    expect(() => sshTerminalService.write(
+      { sessionId: result.sessionId, data: 'whoami\r' },
+      'web-client-b'
+    )).toThrow('not owned by this client')
+    expect(clients[0]?.channel.write).not.toHaveBeenCalled()
+
+    sshTerminalService.close({ sessionId: result.sessionId }, 'web-client-a')
+  })
 })
 
 function buildConnection(overrides: Partial<ConnectionConfig> = {}): ConnectionConfig {

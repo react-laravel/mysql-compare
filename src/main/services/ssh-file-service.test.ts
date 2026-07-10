@@ -11,7 +11,8 @@ const {
   showMessageBox,
   getFull,
   getFingerprint,
-  setFingerprint
+  setFingerprint,
+  createSSHHostVerifier
 } = vi.hoisted(() => {
   const sftp = {
     readdir: vi.fn(),
@@ -70,7 +71,8 @@ const {
     showMessageBox: vi.fn(),
     getFull: vi.fn(),
     getFingerprint: vi.fn(),
-    setFingerprint: vi.fn()
+    setFingerprint: vi.fn(),
+    createSSHHostVerifier: vi.fn()
   }
 })
 
@@ -81,16 +83,9 @@ vi.mock('node:fs/promises', () => ({
   mkdir
 }))
 
-vi.mock('electron', () => ({
-  BrowserWindow: {
-    getFocusedWindow: () => null,
-    getAllWindows: () => []
-  },
-  dialog: {
-    showOpenDialog,
-    showSaveDialog,
-    showMessageBox
-  }
+vi.mock('../platform/electron-runtime', () => ({
+  showOpenDialog,
+  showSaveDialog
 }))
 
 vi.mock('../store/connection-store', () => ({
@@ -105,6 +100,8 @@ vi.mock('../store/ssh-host-key-store', () => ({
     set: setFingerprint
   }
 }))
+
+vi.mock('./ssh-host-verifier', () => ({ createSSHHostVerifier }))
 
 import { sshFileService } from './ssh-file-service'
 
@@ -129,6 +126,8 @@ describe('SSHFileService', () => {
     getFull.mockReset()
     getFingerprint.mockReset()
     setFingerprint.mockReset()
+    createSSHHostVerifier.mockReset()
+    createSSHHostVerifier.mockReturnValue((_key: Buffer, verify: (verified: boolean) => void) => verify(true))
     showMessageBox.mockResolvedValue({ response: 0 })
     getFull.mockReturnValue({
       id: 'conn-1',
@@ -170,13 +169,8 @@ describe('SSHFileService', () => {
     expect(clients[0]?.connect).toHaveBeenCalledWith(
       expect.objectContaining({ host: 'ssh.internal', username: 'deploy', password: 'secret' })
     )
-    expect(showMessageBox).toHaveBeenCalledWith(
-      expect.objectContaining({
-        title: 'Trust SSH Host',
-        message: 'Trust SSH host ssh.internal:22?'
-      })
-    )
-    expect(setFingerprint).toHaveBeenCalledWith('conn-1', 'ssh.internal', 22, expect.stringMatching(/^SHA256:/u))
+    expect(createSSHHostVerifier).toHaveBeenCalledWith(expect.objectContaining({ id: 'conn-1' }))
+    expect(clients[0]?.connect).toHaveBeenCalledWith(expect.objectContaining({ hostVerifier: expect.any(Function) }))
     expect(clients[0]?.end).toHaveBeenCalledTimes(1)
   })
 
@@ -360,13 +354,14 @@ describe('SSHFileService', () => {
   })
 
   it('rejects a changed SSH host fingerprint', async () => {
-    getFingerprint.mockReturnValue('SHA256:different')
+    createSSHHostVerifier.mockReturnValueOnce(
+      (_key: Buffer, verify: (verified: boolean) => void) => verify(false)
+    )
 
     await expect(sshFileService.listFiles({ connectionId: 'conn-1', path: '/var/www' })).rejects.toThrow(
       'Host verification failed'
     )
 
-    expect(showMessageBox).not.toHaveBeenCalled()
     expect(sftp.readdir).not.toHaveBeenCalled()
   })
 

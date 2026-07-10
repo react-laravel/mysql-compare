@@ -25,6 +25,14 @@ const connection: SafeConnection = {
   hasSSHPrivateKey: false
 }
 
+const postgresConnection: SafeConnection = {
+  ...connection,
+  engine: 'postgres',
+  name: 'Production PostgreSQL',
+  port: 5432,
+  username: 'server_user'
+}
+
 function createProps(overrides: Partial<React.ComponentProps<typeof SidebarOverlays>> = {}) {
   return {
     creating: false,
@@ -32,6 +40,10 @@ function createProps(overrides: Partial<React.ComponentProps<typeof SidebarOverl
     onConnectionDialogOpenChange: vi.fn(),
     onConnectionSaved: vi.fn(),
     onDeleteConnection: vi.fn(() => true),
+    connectionMenu: null,
+    onCloseConnectionMenu: vi.fn(),
+    onCloseDatabaseConnection: vi.fn(),
+    onEditConnection: vi.fn(),
     tableMenu: {
       x: 120,
       y: 80,
@@ -44,6 +56,7 @@ function createProps(overrides: Partial<React.ComponentProps<typeof SidebarOverl
     onCloseDatabaseMenu: vi.fn(),
     onOpenDatabaseDetails: vi.fn(),
     onOpenDatabaseSQLConsole: vi.fn(),
+    onOpenDatabaseCredentialDialog: vi.fn(),
     onCreateRedisKey: vi.fn(),
     onExportDatabase: vi.fn(),
     onRefreshDatabase: vi.fn(),
@@ -74,6 +87,17 @@ function createProps(overrides: Partial<React.ComponentProps<typeof SidebarOverl
     importDialog: null,
     onImportDialogOpenChange: vi.fn(),
     onImported: vi.fn(),
+    databaseCredentialDialog: null,
+    databaseCredentialUsername: '',
+    databaseCredentialPassword: '',
+    databaseCredentialUseDefault: true,
+    databaseCredentialFeedback: null,
+    onDatabaseCredentialUsernameChange: vi.fn(),
+    onDatabaseCredentialPasswordChange: vi.fn(),
+    onDatabaseCredentialUseDefaultChange: vi.fn(),
+    onDatabaseCredentialDialogOpenChange: vi.fn(),
+    onTestDatabaseCredential: vi.fn(),
+    onSubmitDatabaseCredential: vi.fn(),
     ...overrides
   }
 }
@@ -101,7 +125,7 @@ describe('SidebarOverlays menus', () => {
       databaseMenu: {
         x: 160,
         y: 96,
-        connection,
+        connection: postgresConnection,
         database: 'app_db'
       }
     })
@@ -112,5 +136,63 @@ describe('SidebarOverlays menus', () => {
 
     expect(props.onOpenDatabaseDetails).toHaveBeenCalledWith(props.databaseMenu)
     expect(screen.getByText('Open SQL Console')).toBeTruthy()
+  })
+
+  it('opens database credential settings from the database menu', () => {
+    const props = createProps({
+      tableMenu: null,
+      databaseMenu: {
+        x: 160,
+        y: 96,
+        connection: postgresConnection,
+        database: 'app_db'
+      }
+    })
+
+    render(<SidebarOverlays {...props} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Database Credentials...' }))
+
+    expect(props.onOpenDatabaseCredentialDialog).toHaveBeenCalledWith(props.databaseMenu)
+  })
+
+  it('switches a database from the server account to a custom account and can test it', () => {
+    const props = createProps({
+      tableMenu: null,
+      databaseCredentialDialog: {
+        connection: postgresConnection,
+        database: 'app_db'
+      },
+      databaseCredentialUsername: 'app_user',
+      databaseCredentialUseDefault: false
+    })
+
+    render(<SidebarOverlays {...props} />)
+
+    expect(screen.getByText('Database Access Account')).toBeTruthy()
+    expect(screen.getByDisplayValue('app_user')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Test' }))
+    expect(props.onTestDatabaseCredential).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Server account' }))
+    expect(props.onDatabaseCredentialUseDefaultChange).toHaveBeenCalledWith(true)
+  })
+
+  it('closes a database connection from the connection menu', () => {
+    const props = createProps({
+      tableMenu: null,
+      connectionMenu: {
+        x: 120,
+        y: 80,
+        connection
+      }
+    })
+
+    render(<SidebarOverlays {...props} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close Database Connection' }))
+
+    expect(props.onCloseDatabaseConnection).toHaveBeenCalledWith(props.connectionMenu)
+    expect(screen.getByRole('button', { name: 'Edit' })).toBeTruthy()
   })
 })

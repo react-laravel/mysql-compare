@@ -1,11 +1,10 @@
 import type { OpenDialogOptions, SaveDialogOptions } from 'electron'
-import { createHash } from 'node:crypto'
 import { mkdir as mkdirLocal, readdir as readdirLocal } from 'node:fs/promises'
 import { basename, join, posix } from 'node:path'
-import { Client, type ConnectConfig, type SFTPWrapper, type VerifyCallback } from 'ssh2'
+import { Client, type ConnectConfig, type SFTPWrapper } from 'ssh2'
 import { connectionStore } from '../store/connection-store'
-import { isElectronRuntime, showMessageBox, showOpenDialog, showSaveDialog } from '../platform/electron-runtime'
-import { sshHostKeyStore } from '../store/ssh-host-key-store'
+import { showOpenDialog, showSaveDialog } from '../platform/electron-runtime'
+import { createSSHHostVerifier } from './ssh-host-verifier'
 import type {
   ConnectionConfig,
   SSHCreateDirectoryRequest,
@@ -347,10 +346,7 @@ function buildSSHConfig(conn: ConnectionConfig): ConnectConfig {
     username: conn.sshUsername,
     readyTimeout: 15000,
     keepaliveInterval: 30000,
-    hostVerifier: (key: Buffer, verify: VerifyCallback) => {
-      const fingerprint = formatHostFingerprint(key)
-      void verifyHostFingerprint(conn, fingerprint).then(verify, () => verify(false))
-    }
+    hostVerifier: createSSHHostVerifier(conn)
   }
 
   if (conn.sshPrivateKey) {
@@ -365,38 +361,6 @@ function buildSSHConfig(conn: ConnectionConfig): ConnectConfig {
     ...base,
     password: conn.sshPassword
   }
-}
-
-function formatHostFingerprint(key: Buffer): string {
-  return `SHA256:${createHash('sha256').update(key).digest('base64').replace(/=+$/u, '')}`
-}
-
-async function verifyHostFingerprint(conn: ConnectionConfig, fingerprint: string): Promise<boolean> {
-  const host = conn.sshHost ?? ''
-  const port = conn.sshPort || 22
-  const saved = sshHostKeyStore.get(conn.id, host, port)
-  if (saved) return saved === fingerprint
-
-  if (!isElectronRuntime()) {
-    console.warn(`[ssh-file-service] auto-trusting SSH host fingerprint for ${host}:${port} in web runtime.`)
-    sshHostKeyStore.set(conn.id, host, port, fingerprint)
-    return true
-  }
-
-  const options = {
-    type: 'warning' as const,
-    buttons: ['Trust Host', 'Cancel'],
-    defaultId: 1,
-    cancelId: 1,
-    title: 'Trust SSH Host',
-    message: `Trust SSH host ${host}:${port}?`,
-    detail: `Fingerprint: ${fingerprint}`
-  }
-  const result = await showMessageBox(options)
-  if (result.response !== 0) return false
-
-  sshHostKeyStore.set(conn.id, host, port, fingerprint)
-  return true
 }
 
 function connectSSH(config: ConnectConfig): Promise<Client> {

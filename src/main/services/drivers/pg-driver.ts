@@ -58,11 +58,12 @@ export class PostgresDriver implements DbDriver {
   private buildClientConfig(database?: string): pg.PoolConfig {
     const host = this.localPort !== undefined ? '127.0.0.1' : this.connection.host
     const port = this.localPort ?? this.connection.port
+    const databaseCredential = database ? this.connection.databaseCredentials?.[database] : undefined
     return {
       host,
       port,
-      user: this.connection.username,
-      password: this.connection.password,
+      user: databaseCredential?.username?.trim() || this.connection.username,
+      password: normalizePostgresPassword(databaseCredential?.password ?? this.connection.password),
       database: database || this.connection.database || 'postgres',
       max: 5,
       idleTimeoutMillis: 30000
@@ -79,11 +80,13 @@ export class PostgresDriver implements DbDriver {
   }
 
   async testConnection(): Promise<string> {
-    const client = new pg.Client(this.buildClientConfig())
-    await client.connect()
+    const client = new pg.Client(this.buildClientConfig(this.connection.database))
     try {
+      await client.connect()
       const res = await client.query<{ server_version: string }>('SHOW server_version')
       return `OK · PostgreSQL ${res.rows[0]?.server_version ?? ''}`
+    } catch (error) {
+      throw normalizePostgresConnectionError(error)
     } finally {
       await client.end()
     }
@@ -93,7 +96,9 @@ export class PostgresDriver implements DbDriver {
     return this.withMaintenanceClient(undefined, async (client) => {
       const result = await client.query<{ datname: string }>(
         `SELECT datname FROM pg_database
-         WHERE NOT datistemplate AND datallowconn
+         WHERE NOT datistemplate
+           AND datallowconn
+           AND has_database_privilege(datname, 'CONNECT')
          ORDER BY datname`
       )
       return result.rows.map((row) => row.datname)
@@ -573,6 +578,21 @@ export class PostgresDriver implements DbDriver {
       }
     }
 
-    throw lastError instanceof Error ? lastError : new Error(String(lastError))
+    throw normalizePostgresConnectionError(lastError)
   }
+}
+
+function normalizePostgresPassword(password: string | undefined): string {
+  return typeof password === 'string' ? password : ''
+}
+
+function normalizePostgresConnectionError(error: unknown): Error {
+  const message = error instanceof Error ? error.message : String(error)
+  if (
+    message.includes('SASL: SCRAM-SERVER-FIRST-MESSAGE: client password must be a string') ||
+    message.includes('SASL: SCRAM-SERVER-FIRST-MESSAGE: client password must be a non-empty string')
+  ) {
+    return new Error('PostgreSQL database password is required. The SSH password only opens the tunnel; fill the database password in the connection settings.')
+  }
+  return error instanceof Error ? error : new Error(message)
 }

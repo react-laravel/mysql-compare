@@ -1,6 +1,7 @@
 import type {
   ConnectionConfig,
   CopyTableRequest,
+  DatabaseCredentialConfig,
   DatabaseDiff,
   DatabaseInfo,
   DeleteRowsRequest,
@@ -66,6 +67,17 @@ export interface AppAPI {
     list: () => Promise<IPCResult<SafeConnection[]>>
     upsert: (conn: ConnectionConfig) => Promise<IPCResult<SafeConnection>>
     remove: (id: string) => Promise<IPCResult<void>>
+    close: (id: string) => Promise<IPCResult<void>>
+    setDatabaseCredential: (
+      id: string,
+      database: string,
+      credential: DatabaseCredentialConfig
+    ) => Promise<IPCResult<SafeConnection>>
+    testDatabaseCredential: (
+      id: string,
+      database: string,
+      credential: DatabaseCredentialConfig
+    ) => Promise<IPCResult<{ message: string }>>
     test: (conn: ConnectionConfig) => Promise<IPCResult<{ message: string }>>
   }
   readonly db: {

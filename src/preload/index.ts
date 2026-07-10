@@ -5,6 +5,7 @@ import type { AppAPI } from '../shared/app-api'
 import type {
   ConnectionConfig,
   CopyTableRequest,
+  DatabaseCredentialConfig,
   DatabaseInfo,
   DatabaseDiff,
   DiffRequest,
@@ -71,6 +72,11 @@ const api = {
     list: () => invoke<SafeConnection[]>(IPC.ConnectionList),
     upsert: (conn: ConnectionConfig) => invoke<SafeConnection>(IPC.ConnectionUpsert, conn),
     remove: (id: string) => invoke<void>(IPC.ConnectionDelete, id),
+    close: (id: string) => invoke<void>(IPC.ConnectionClose, id),
+    setDatabaseCredential: (id: string, database: string, credential: DatabaseCredentialConfig) =>
+      invoke<SafeConnection>(IPC.ConnectionSetDatabaseCredential, { id, database, credential }),
+    testDatabaseCredential: (id: string, database: string, credential: DatabaseCredentialConfig) =>
+      invoke<{ message: string }>(IPC.ConnectionTestDatabaseCredential, { id, database, credential }),
     test: (conn: ConnectionConfig) => invoke<{ message: string }>(IPC.ConnectionTest, conn)
   },
   db: {

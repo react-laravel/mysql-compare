@@ -43,9 +43,14 @@ interface SidebarTreeProps {
   onEditConnection: (connection: SafeConnection) => void
   onOpenSSHFiles: (connection: SafeConnection) => void
   onOpenSSHTerminal: (connection: SafeConnection) => void | Promise<void>
+  onOpenConnectionMenu: (
+    event: MouseEvent<HTMLDivElement>,
+    connection: SafeConnection
+  ) => void
   onToggleDatabase: (connection: SafeConnection, database: string) => void | Promise<void>
   onOpenDatabaseDetails: (connection: SafeConnection, database: string) => void
   onOpenSQLConsole: (connection: SafeConnection, database: string) => void
+  onOpenDatabaseCredential: (connection: SafeConnection, database: string) => void
   onExportDatabase: (connection: SafeConnection, database: string) => void
   onCreateRedisKey: (connection: SafeConnection, database: string) => void
   onRefreshDatabase: (connection: SafeConnection, database: string) => void | Promise<void>
@@ -80,9 +85,11 @@ export function SidebarTree({
   onEditConnection,
   onOpenSSHFiles,
   onOpenSSHTerminal,
+  onOpenConnectionMenu,
   onToggleDatabase,
   onOpenDatabaseDetails,
   onOpenSQLConsole,
+  onOpenDatabaseCredential,
   onExportDatabase,
   onCreateRedisKey,
   onRefreshDatabase,
@@ -193,6 +200,7 @@ export function SidebarTree({
                     onEdit={onEditConnection}
                     onOpenSSHFiles={onOpenSSHFiles}
                     onOpenSSHTerminal={onOpenSSHTerminal}
+                    onOpenMenu={onOpenConnectionMenu}
                   />
 
                   {node?.expanded && (
@@ -208,6 +216,9 @@ export function SidebarTree({
                           return !filterValue || table.toLowerCase().includes(filterValue.toLowerCase())
                         })
                         const isRedis = connection.engine === 'redis'
+                        const customCredential = connection.engine === 'postgres'
+                          ? connection.databaseCredentials?.[database]
+                          : undefined
                         const keyCount = isRedis ? node.tableCounts?.[database] : undefined
 
                         return (
@@ -227,7 +238,7 @@ export function SidebarTree({
                                 }
                               }}
                               className={cn(
-                                'mx-1 flex items-center rounded-md hover:bg-accent focus-within:bg-accent/70',
+                                'group mx-1 flex items-center rounded-md hover:bg-accent focus-within:bg-accent/70',
                                 isSelectedDatabase(connection.id, database) && 'bg-accent text-foreground'
                               )}
                               onContextMenu={(event) => onOpenDatabaseMenu(event, connection, database)}
@@ -246,12 +257,44 @@ export function SidebarTree({
                                 )}
                                 <Database className="mx-1 h-3 w-3 text-emerald-400" />
                                 <span className="flex-1 truncate">{database}</span>
+                                {customCredential && (
+                                  <span
+                                    className="ml-1 inline-flex max-w-24 items-center gap-1 rounded border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] text-emerald-300"
+                                    title={t('sidebar.customDatabaseCredential', { username: customCredential.username ?? '' })}
+                                  >
+                                    <KeyRound className="h-2.5 w-2.5 shrink-0" />
+                                    <span className="truncate">{customCredential.username}</span>
+                                  </span>
+                                )}
                                 {isRedis && keyCount !== undefined && (
                                   <span className="ml-1 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground">
                                     {keyCount.toLocaleString()}
                                   </span>
                                 )}
                               </button>
+                              {connection.engine === 'postgres' && (
+                                <button
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation()
+                                    onOpenDatabaseCredential(connection, database)
+                                  }}
+                                  className={cn(
+                                    'mr-1 p-1 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+                                    customCredential
+                                      ? 'text-emerald-400'
+                                      : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'
+                                  )}
+                                  title={customCredential
+                                    ? t('sidebar.editCustomDatabaseCredential', { username: customCredential.username ?? '' })
+                                    : t('sidebar.addCustomDatabaseCredential')}
+                                  aria-label={customCredential
+                                    ? t('sidebar.editCustomDatabaseCredential', { username: customCredential.username ?? '' })
+                                    : t('sidebar.addCustomDatabaseCredential')}
+                                >
+                                  <KeyRound className="h-3 w-3" />
+                                </button>
+                              )}
                               {dbExpanded && (
                                 <div className="flex items-center pr-1">
                                   <button

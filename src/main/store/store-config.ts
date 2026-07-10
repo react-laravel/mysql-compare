@@ -1,7 +1,6 @@
 import { mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import type { Options } from 'electron-store'
 import { isElectronRuntime } from '../platform/electron-runtime'
 
 const DEFAULT_WEB_DATA_DIR = join(homedir(), '.mysql-compare-web')
@@ -18,7 +17,7 @@ function resolveStoreDirectory(): string | undefined {
 export function createStoreOptions<T extends Record<string, any>>(
   name: string,
   defaults: T
-): Options<T> {
+): { name: string; defaults: T; cwd?: string } {
   const cwd = resolveStoreDirectory()
   return cwd ? { name, defaults, cwd } : { name, defaults }
 }

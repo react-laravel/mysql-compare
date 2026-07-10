@@ -1,5 +1,23 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { CircleEllipsis, Copy, Download, Eraser, FileCode2, Pencil, RefreshCw, Trash2, Upload } from 'lucide-react'
+import {
+  CheckCircle2,
+  CircleEllipsis,
+  Copy,
+  Download,
+  Eraser,
+  Eye,
+  EyeOff,
+  FileCode2,
+  KeyRound,
+  Pencil,
+  RefreshCw,
+  Server,
+  Trash2,
+  Unplug,
+  Upload,
+  UserRound,
+  XCircle
+} from 'lucide-react'
 import { ConnectionDialog } from '@renderer/components/connection/ConnectionDialog'
 import { ExportDatabaseDialog } from '@renderer/components/table-view/ExportDatabaseDialog'
 import { ExportTableDialog } from '@renderer/components/table-view/ExportTableDialog'
@@ -17,6 +35,8 @@ import type {
   CreateRedisKeyDialogState,
   CreateRedisKeyPayload,
   CreateRedisKeyType,
+  ConnectionMenuState,
+  DatabaseCredentialDialogState,
   DatabaseMenuState,
   ExportDatabaseDialogState,
   ExportDialogState,
@@ -31,12 +51,17 @@ interface SidebarOverlaysProps {
   onConnectionDialogOpenChange: (open: boolean) => void
   onConnectionSaved: () => void
   onDeleteConnection: (connection: SafeConnection) => boolean | Promise<boolean>
+  connectionMenu: ConnectionMenuState | null
+  onCloseConnectionMenu: () => void
+  onCloseDatabaseConnection: (menu: ConnectionMenuState) => void | Promise<void>
+  onEditConnection: (connection: SafeConnection) => void
   tableMenu: TableMenuState | null
   onCloseTableMenu: () => void
   databaseMenu: DatabaseMenuState | null
   onCloseDatabaseMenu: () => void
   onOpenDatabaseDetails: (menu: DatabaseMenuState) => void
   onOpenDatabaseSQLConsole: (menu: DatabaseMenuState) => void
+  onOpenDatabaseCredentialDialog: (menu: DatabaseMenuState) => void
   onCreateRedisKey: (menu: DatabaseMenuState) => void
   onExportDatabase: (menu: DatabaseMenuState) => void
   onRefreshDatabase: (menu: DatabaseMenuState) => void | Promise<void>
@@ -67,6 +92,17 @@ interface SidebarOverlaysProps {
   importDialog: ImportDialogState | null
   onImportDialogOpenChange: (open: boolean) => void
   onImported: () => void | Promise<void>
+  databaseCredentialDialog: DatabaseCredentialDialogState | null
+  databaseCredentialUsername: string
+  databaseCredentialPassword: string
+  databaseCredentialUseDefault: boolean
+  databaseCredentialFeedback: { level: 'success' | 'error'; message: string } | null
+  onDatabaseCredentialUsernameChange: (value: string) => void
+  onDatabaseCredentialPasswordChange: (value: string) => void
+  onDatabaseCredentialUseDefaultChange: (value: boolean) => void
+  onDatabaseCredentialDialogOpenChange: (open: boolean) => void
+  onTestDatabaseCredential: () => void | Promise<void>
+  onSubmitDatabaseCredential: () => void | Promise<void>
 }
 
 export function SidebarOverlays({
@@ -75,12 +111,17 @@ export function SidebarOverlays({
   onConnectionDialogOpenChange,
   onConnectionSaved,
   onDeleteConnection,
+  connectionMenu,
+  onCloseConnectionMenu,
+  onCloseDatabaseConnection,
+  onEditConnection,
   tableMenu,
   onCloseTableMenu,
   databaseMenu,
   onCloseDatabaseMenu,
   onOpenDatabaseDetails,
   onOpenDatabaseSQLConsole,
+  onOpenDatabaseCredentialDialog,
   onCreateRedisKey,
   onExportDatabase,
   onRefreshDatabase,
@@ -110,11 +151,28 @@ export function SidebarOverlays({
   onExportDatabaseDialogOpenChange,
   importDialog,
   onImportDialogOpenChange,
-  onImported
+  onImported,
+  databaseCredentialDialog,
+  databaseCredentialUsername,
+  databaseCredentialPassword,
+  databaseCredentialUseDefault,
+  databaseCredentialFeedback,
+  onDatabaseCredentialUsernameChange,
+  onDatabaseCredentialPasswordChange,
+  onDatabaseCredentialUseDefaultChange,
+  onDatabaseCredentialDialogOpenChange,
+  onTestDatabaseCredential,
+  onSubmitDatabaseCredential
 }: SidebarOverlaysProps) {
   const { t } = useI18n()
+  const [showDatabaseCredentialPassword, setShowDatabaseCredentialPassword] = useState(false)
   const tableIsRedis = tableMenu?.connection.engine === 'redis'
   const databaseIsRedis = databaseMenu?.connection.engine === 'redis'
+  const databaseIsPostgres = databaseMenu?.connection.engine === 'postgres'
+
+  useEffect(() => {
+    setShowDatabaseCredentialPassword(false)
+  }, [databaseCredentialDialog?.connection.id, databaseCredentialDialog?.database])
   return (
     <>
       {(creating || editing) && (
@@ -125,6 +183,28 @@ export function SidebarOverlays({
           onSaved={onConnectionSaved}
           onDelete={onDeleteConnection}
         />
+      )}
+
+      {connectionMenu && (
+        <div className="fixed inset-0 z-[80]" onClick={onCloseConnectionMenu}>
+          <div
+            className="absolute w-56 rounded-md border border-border bg-card p-1 shadow-xl"
+            style={{ left: connectionMenu.x, top: connectionMenu.y }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <TableMenuItem
+              icon={<Unplug className="h-3.5 w-3.5" />}
+              label={t('sidebar.overlays.closeDatabaseConnection')}
+              onClick={() => onCloseDatabaseConnection(connectionMenu)}
+            />
+            <div className="my-1 h-px bg-border" />
+            <TableMenuItem
+              icon={<Pencil className="h-3.5 w-3.5" />}
+              label={t('common.edit')}
+              onClick={() => onEditConnection(connectionMenu.connection)}
+            />
+          </div>
+        </div>
       )}
 
       {tableMenu && (
@@ -215,6 +295,13 @@ export function SidebarOverlays({
                   label={t('sidebar.overlays.openSqlConsole')}
                   onClick={() => onOpenDatabaseSQLConsole(databaseMenu)}
                 />
+                {databaseIsPostgres && (
+                  <TableMenuItem
+                    icon={<KeyRound className="h-3.5 w-3.5" />}
+                    label={t('sidebar.overlays.databaseCredential')}
+                    onClick={() => onOpenDatabaseCredentialDialog(databaseMenu)}
+                  />
+                )}
                 <TableMenuItem
                   icon={<Download className="h-3.5 w-3.5" />}
                   label={t('sidebar.overlays.exportDatabase')}
@@ -239,6 +326,160 @@ export function SidebarOverlays({
             />
           </div>
         </div>
+      )}
+
+      {databaseCredentialDialog && (
+        <Dialog
+          open
+          onOpenChange={onDatabaseCredentialDialogOpenChange}
+          title={t('sidebar.overlays.databaseCredentialTitle')}
+          description={t('sidebar.overlays.databaseCredentialDescription')}
+          className="max-w-md"
+          footer={
+            <>
+              <Button
+                variant="outline"
+                className="mr-auto"
+                onClick={onTestDatabaseCredential}
+                disabled={actionBusy}
+              >
+                {t('common.test')}
+              </Button>
+              <Button variant="outline" onClick={() => onDatabaseCredentialDialogOpenChange(false)} disabled={actionBusy}>
+                {t('common.cancel')}
+              </Button>
+              <Button
+                onClick={onSubmitDatabaseCredential}
+                disabled={actionBusy || (
+                  databaseCredentialUseDefault &&
+                  !databaseCredentialDialog.connection.databaseCredentials?.[databaseCredentialDialog.database]
+                )}
+              >
+                {databaseCredentialUseDefault
+                  ? t('sidebar.overlays.useServerCredential')
+                  : t('common.save')}
+              </Button>
+            </>
+          }
+        >
+          <div className="space-y-4">
+            <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1 rounded-md border border-border bg-background/50 px-3 py-2.5 text-xs">
+              <div className="flex min-w-0 items-center gap-2">
+                <Server className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                <span className="truncate font-medium">{databaseCredentialDialog.connection.name}</span>
+              </div>
+              <span className="text-muted-foreground">
+                {databaseCredentialDialog.connection.host}:{databaseCredentialDialog.connection.port}
+              </span>
+              <div className="col-span-2 flex min-w-0 items-center gap-2 text-muted-foreground">
+                <span className="shrink-0">{t('sidebar.overlays.targetDatabase')}</span>
+                <span className="truncate font-medium text-foreground">{databaseCredentialDialog.database}</span>
+              </div>
+            </div>
+
+            <div>
+              <Label className="mb-1.5 block">{t('sidebar.overlays.credentialSource')}</Label>
+              <div className="grid grid-cols-2 rounded-md border border-border bg-background p-1">
+                <button
+                  type="button"
+                  aria-pressed={databaseCredentialUseDefault}
+                  className={cn(
+                    'flex h-8 min-w-0 items-center justify-center gap-1.5 rounded text-xs transition-colors',
+                    databaseCredentialUseDefault
+                      ? 'bg-accent font-medium text-foreground shadow-sm'
+                      : 'text-muted-foreground hover:text-foreground'
+                  )}
+                  onClick={() => onDatabaseCredentialUseDefaultChange(true)}
+                >
+                  <Server className="h-3.5 w-3.5 shrink-0" />
+                  <span className="truncate">{t('sidebar.overlays.serverCredential')}</span>
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={!databaseCredentialUseDefault}
+                  className={cn(
+                    'flex h-8 min-w-0 items-center justify-center gap-1.5 rounded text-xs transition-colors',
+                    !databaseCredentialUseDefault
+                      ? 'bg-accent font-medium text-foreground shadow-sm'
+                      : 'text-muted-foreground hover:text-foreground'
+                  )}
+                  onClick={() => onDatabaseCredentialUseDefaultChange(false)}
+                >
+                  <KeyRound className="h-3.5 w-3.5 shrink-0" />
+                  <span className="truncate">{t('sidebar.overlays.customCredential')}</span>
+                </button>
+              </div>
+            </div>
+
+            {databaseCredentialUseDefault ? (
+              <div className="flex items-start gap-2 rounded-md border border-border bg-background/50 px-3 py-2.5 text-xs">
+                <UserRound className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                <div className="min-w-0">
+                  <div className="truncate font-medium">{databaseCredentialDialog.connection.username}</div>
+                  <div className="mt-0.5 text-muted-foreground">
+                    {t('sidebar.overlays.serverCredentialHint')}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div>
+                  <Label className="mb-1 block">{t('connection.form.username')}</Label>
+                  <Input
+                    value={databaseCredentialUsername}
+                    autoComplete="username"
+                    onChange={(event) => onDatabaseCredentialUsernameChange(event.target.value)}
+                    autoFocus
+                  />
+                </div>
+                <div>
+                  <Label className="mb-1 block">
+                    {databaseCredentialDialog.connection.databaseCredentials?.[databaseCredentialDialog.database]?.hasPassword
+                      ? t('connection.form.passwordKeep')
+                      : t('connection.form.password')}
+                  </Label>
+                  <div className="relative">
+                    <Input
+                      type={showDatabaseCredentialPassword ? 'text' : 'password'}
+                      value={databaseCredentialPassword}
+                      autoComplete="new-password"
+                      className="pr-9"
+                      onChange={(event) => onDatabaseCredentialPasswordChange(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') void onTestDatabaseCredential()
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-1 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      onClick={() => setShowDatabaseCredentialPassword((current) => !current)}
+                      title={showDatabaseCredentialPassword ? t('common.hidePassword') : t('common.showPassword')}
+                      aria-label={showDatabaseCredentialPassword ? t('common.hidePassword') : t('common.showPassword')}
+                    >
+                      {showDatabaseCredentialPassword
+                        ? <EyeOff className="h-3.5 w-3.5" />
+                        : <Eye className="h-3.5 w-3.5" />}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {databaseCredentialFeedback && (
+              <div className={cn(
+                'flex items-start gap-2 rounded-md border px-3 py-2 text-xs',
+                databaseCredentialFeedback.level === 'success'
+                  ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
+                  : 'border-destructive/50 bg-destructive/10 text-red-300'
+              )}>
+                {databaseCredentialFeedback.level === 'success'
+                  ? <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  : <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
+                <span className="min-w-0 break-words">{databaseCredentialFeedback.message}</span>
+              </div>
+            )}
+          </div>
+        </Dialog>
       )}
 
       {renameDialog && (

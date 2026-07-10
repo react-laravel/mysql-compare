@@ -3,6 +3,7 @@
 import { Client, ConnectConfig } from 'ssh2'
 import { createServer, AddressInfo, Server } from 'node:net'
 import type { ConnectionConfig } from '../../shared/types'
+import { createSSHHostVerifier } from './ssh-host-verifier'
 
 interface ActiveTunnel {
   client: Client
@@ -95,7 +96,8 @@ class SSHService {
       port: conn.sshPort || 22,
       username: conn.sshUsername,
       readyTimeout: 15000,
-      keepaliveInterval: 30000
+      keepaliveInterval: 30000,
+      hostVerifier: createSSHHostVerifier(conn)
     }
     if (conn.sshPrivateKey) {
       sshConfig.privateKey = conn.sshPrivateKey

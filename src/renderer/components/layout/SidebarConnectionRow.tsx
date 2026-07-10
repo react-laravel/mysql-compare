@@ -1,3 +1,4 @@
+import type { MouseEvent } from 'react'
 import { ChevronDown, ChevronRight, Folder, Pencil, SquareTerminal } from 'lucide-react'
 import { EngineIcon } from '@renderer/components/icons/EngineIcon'
 import { useI18n } from '@renderer/i18n'
@@ -10,6 +11,7 @@ interface SidebarConnectionRowProps {
   onEdit: (connection: SafeConnection) => void
   onOpenSSHFiles: (connection: SafeConnection) => void
   onOpenSSHTerminal: (connection: SafeConnection) => void | Promise<void>
+  onOpenMenu: (event: MouseEvent<HTMLDivElement>, connection: SafeConnection) => void
 }
 
 
@@ -19,12 +21,16 @@ export function SidebarConnectionRow({
   onToggle,
   onEdit,
   onOpenSSHFiles,
-  onOpenSSHTerminal
+  onOpenSSHTerminal,
+  onOpenMenu
 }: SidebarConnectionRowProps) {
   const { t } = useI18n()
 
   return (
-    <div className="group mx-1 flex cursor-pointer items-center rounded-md px-2 py-1 hover:bg-accent focus-within:bg-accent/70">
+    <div
+      className="group mx-1 flex cursor-pointer items-center rounded-md px-2 py-1 hover:bg-accent focus-within:bg-accent/70"
+      onContextMenu={(event) => onOpenMenu(event, connection)}
+    >
       <button
         onClick={() => onToggle(connection)}
         aria-expanded={expanded}

@@ -36,9 +36,12 @@ export function registerSSHIPC(): void {
     sshTerminalService.createSession(payload, {
       onData: (terminalEvent) => event.sender.send(IPC.SSHTerminalData, terminalEvent),
       onExit: (terminalEvent) => event.sender.send(IPC.SSHTerminalExit, terminalEvent)
-    })
+    }, `electron:${event.sender.id}`)
   )
-  handle(IPC.SSHTerminalWrite, (payload: SSHTerminalWriteRequest) => sshTerminalService.write(payload))
-  handle(IPC.SSHTerminalResize, (payload: SSHTerminalResizeRequest) => sshTerminalService.resize(payload))
-  handle(IPC.SSHTerminalClose, (payload: SSHTerminalCloseRequest) => sshTerminalService.close(payload))
+  handle(IPC.SSHTerminalWrite, (payload: SSHTerminalWriteRequest, event) =>
+    sshTerminalService.write(payload, `electron:${event.sender.id}`))
+  handle(IPC.SSHTerminalResize, (payload: SSHTerminalResizeRequest, event) =>
+    sshTerminalService.resize(payload, `electron:${event.sender.id}`))
+  handle(IPC.SSHTerminalClose, (payload: SSHTerminalCloseRequest, event) =>
+    sshTerminalService.close(payload, `electron:${event.sender.id}`))
 }

@@ -34,6 +34,10 @@ Local development:
 
 ```bash
 # terminal 1
+export MYSQL_COMPARE_SECRET='persist-a-random-32-byte-secret'
+export MYSQL_COMPARE_WEB_USERNAME='admin'
+export MYSQL_COMPARE_WEB_PASSWORD='use-a-long-unique-password'
+export MYSQL_COMPARE_ALLOWED_ORIGINS='http://127.0.0.1:5173'
 npm run web:server
 
 # terminal 2

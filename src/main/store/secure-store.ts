@@ -1,5 +1,5 @@
-// Electron 桌面端优先使用 safeStorage；Web 服务端则回退到对称加密。
-// 为避免混用密文格式，新的密文会带前缀；旧版纯 base64 仍然兼容读取。
+// Electron 桌面端使用 safeStorage；Web 服务端使用显式配置密钥的 AES-GCM。
+// 无安全密钥或 safeStorage 时拒绝存储，旧版无前缀密文只尝试 safeStorage 解密。
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'node:crypto'
 import { getSafeStorage, isElectronRuntime } from '../platform/electron-runtime'
 
@@ -7,18 +7,15 @@ const ELECTRON_CIPHER_PREFIX = 'electron:'
 const NODE_CIPHER_PREFIX = 'node:'
 const NODE_SECRET_SALT = 'mysql-compare-web'
 
-let warnedAboutNodeSecret = false
-
 function getNodeSecret(): string {
   const configured = process.env['MYSQL_COMPARE_SECRET']?.trim() || process.env['WEB_SECRET_KEY']?.trim()
   if (configured) return configured
+  throw new Error('MYSQL_COMPARE_SECRET is required in web runtime; refusing to use a built-in encryption key')
+}
 
-  if (!warnedAboutNodeSecret) {
-    warnedAboutNodeSecret = true
-    console.warn('[secure-store] MYSQL_COMPARE_SECRET is not set; using the built-in development secret for web runtime.')
-  }
-
-  return 'mysql-compare-dev-secret'
+export function assertNodeSecretConfigured(): void {
+  if (isElectronRuntime()) return
+  void getNodeSecret()
 }
 
 function encryptForNodeRuntime(plain: string): string {
@@ -69,20 +66,17 @@ function decryptLegacyCipher(cipher: string): string | null {
   if (safeStorage?.isEncryptionAvailable()) {
     try {
       return safeStorage.decryptString(Buffer.from(cipher, 'base64'))
-    } catch {
-      // 旧降级格式直接当普通 base64 字符串处理。
+    } catch (err) {
+      console.error('[secure-store] legacy safeStorage decrypt failed', err)
+      return null
     }
   }
 
-  try {
-    return Buffer.from(cipher, 'base64').toString('utf-8')
-  } catch (err) {
-    console.error('[secure-store] legacy decrypt failed', err)
-    return null
-  }
+  console.error('[secure-store] refusing to decode a legacy base64-only secret without safeStorage')
+  return null
 }
 
-/** 把明文加密成 base64；如系统不可用则降级为 base64（仍提示警告） */
+/** 使用系统安全存储或 Web 服务端 AES-GCM 加密敏感字段。 */
 export function encryptSecret(plain: string | undefined | null): string | null {
   if (plain == null || plain === '') return null
   const safeStorage = getSafeStorage()
@@ -94,8 +88,7 @@ export function encryptSecret(plain: string | undefined | null): string | null {
     return encryptForNodeRuntime(plain)
   }
 
-  console.warn('[secure-store] safeStorage unavailable, falling back to base64 only.')
-  return Buffer.from(plain, 'utf-8').toString('base64')
+  throw new Error('Electron safeStorage is unavailable; refusing to store the secret without encryption')
 }
 
 export function decryptSecret(cipher: string | null | undefined): string | null {

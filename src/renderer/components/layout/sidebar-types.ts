@@ -24,6 +24,17 @@ export interface DatabaseMenuState {
   database: string
 }
 
+export interface DatabaseCredentialDialogState {
+  connection: SafeConnection
+  database: string
+}
+
+export interface ConnectionMenuState {
+  x: number
+  y: number
+  connection: SafeConnection
+}
+
 export interface RenameDialogState {
   connection: SafeConnection
   database: string

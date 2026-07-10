@@ -11,6 +11,14 @@ export default defineConfig({
       '@shared': resolve(__dirname, 'src/shared')
     }
   },
+  server: {
+    proxy: {
+      '/api': {
+        target: process.env['MYSQL_COMPARE_WEB_API_PROXY'] || 'http://127.0.0.1:3000',
+        changeOrigin: true
+      }
+    }
+  },
   build: {
     outDir: 'dist-web',
     rollupOptions: {

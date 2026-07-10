@@ -11,6 +11,7 @@ import type {
   SSHTerminalWriteRequest
 } from '../../shared/types'
 import { connectionStore } from '../store/connection-store'
+import { createSSHHostVerifier } from './ssh-host-verifier'
 
 const DEFAULT_TERMINAL_COLS = 100
 const DEFAULT_TERMINAL_ROWS = 30
@@ -19,6 +20,7 @@ interface TerminalSession {
   client: Client
   channel: ClientChannel
   closed: boolean
+  ownerId: string
 }
 
 interface TerminalSessionEvents {
@@ -31,7 +33,8 @@ class SSHTerminalService {
 
   async createSession(
     req: SSHTerminalCreateRequest,
-    events: TerminalSessionEvents
+    events: TerminalSessionEvents,
+    ownerId = 'local'
   ): Promise<SSHTerminalCreateResult> {
     const conn = this.getSSHConnection(req.connectionId)
     const client = await connectSSH(buildSSHConfig(conn))
@@ -42,7 +45,7 @@ class SSHTerminalService {
         rows: clampTerminalSize(req.rows, DEFAULT_TERMINAL_ROWS)
       })
       const sessionId = randomUUID()
-      const session: TerminalSession = { client, channel, closed: false }
+      const session: TerminalSession = { client, channel, closed: false, ownerId }
 
       this.sessions.set(sessionId, session)
       channel.on('data', (chunk: Buffer | string) => {
@@ -75,19 +78,20 @@ class SSHTerminalService {
     }
   }
 
-  write(req: SSHTerminalWriteRequest): void {
-    const session = this.getSession(req.sessionId)
+  write(req: SSHTerminalWriteRequest, ownerId = 'local'): void {
+    const session = this.getSession(req.sessionId, ownerId)
     session.channel.write(req.data)
   }
 
-  resize(req: SSHTerminalResizeRequest): void {
-    const session = this.getSession(req.sessionId)
+  resize(req: SSHTerminalResizeRequest, ownerId = 'local'): void {
+    const session = this.getSession(req.sessionId, ownerId)
     const cols = clampTerminalSize(req.cols, DEFAULT_TERMINAL_COLS)
     const rows = clampTerminalSize(req.rows, DEFAULT_TERMINAL_ROWS)
     session.channel.setWindow(rows, cols, rows * 16, cols * 8)
   }
 
-  close(req: SSHTerminalCloseRequest): void {
+  close(req: SSHTerminalCloseRequest, ownerId = 'local'): void {
+    this.getSession(req.sessionId, ownerId)
     this.cleanupSession(req.sessionId)
   }
 
@@ -97,9 +101,10 @@ class SSHTerminalService {
     }
   }
 
-  private getSession(sessionId: string): TerminalSession {
+  private getSession(sessionId: string, ownerId: string): TerminalSession {
     const session = this.sessions.get(sessionId)
     if (!session || session.closed) throw new Error(`SSH terminal session ${sessionId} not found`)
+    if (session.ownerId !== ownerId) throw new Error('SSH terminal session is not owned by this client')
     return session
   }
 
@@ -136,7 +141,8 @@ function buildSSHConfig(conn: ConnectionConfig): ConnectConfig {
     port: conn.sshPort || 22,
     username: conn.sshUsername,
     readyTimeout: 15000,
-    keepaliveInterval: 30000
+    keepaliveInterval: 30000,
+    hostVerifier: createSSHHostVerifier(conn)
   }
 
   if (conn.sshPrivateKey) {

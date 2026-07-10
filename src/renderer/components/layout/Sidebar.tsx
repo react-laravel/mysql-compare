@@ -11,6 +11,8 @@ import type {
   CreateSQLDialogState,
   CreateRedisKeyDialogState,
   CreateRedisKeyPayload,
+  ConnectionMenuState,
+  DatabaseCredentialDialogState,
   DatabaseMenuState,
   DatabaseRowRefEntry,
   ExportDatabaseDialogState,
@@ -68,10 +70,11 @@ function loadStoredSidebarWidth(): number {
 }
 
 export function Sidebar() {
-  const { connections, refresh, remove } = useConnectionStore()
+  const { connections, refresh, remove, close, setDatabaseCredential } = useConnectionStore()
   const {
     rightView,
     setRightView,
+    closeConnectionDatabaseTabs,
     closeDatabaseTabs,
     closeTableTabs,
     markDatabaseDropped,
@@ -89,6 +92,15 @@ export function Sidebar() {
   const [tableFilters, setTableFilters] = useState<Record<string, string>>({})
   const [tableMenu, setTableMenu] = useState<TableMenuState | null>(null)
   const [databaseMenu, setDatabaseMenu] = useState<DatabaseMenuState | null>(null)
+  const [connectionMenu, setConnectionMenu] = useState<ConnectionMenuState | null>(null)
+  const [databaseCredentialDialog, setDatabaseCredentialDialog] = useState<DatabaseCredentialDialogState | null>(null)
+  const [databaseCredentialUsername, setDatabaseCredentialUsername] = useState('')
+  const [databaseCredentialPassword, setDatabaseCredentialPassword] = useState('')
+  const [databaseCredentialUseDefault, setDatabaseCredentialUseDefault] = useState(true)
+  const [databaseCredentialFeedback, setDatabaseCredentialFeedback] = useState<{
+    level: 'success' | 'error'
+    message: string
+  } | null>(null)
   const [renameDialog, setRenameDialog] = useState<RenameDialogState | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
   const [createSQLDialog, setCreateSQLDialog] = useState<CreateSQLDialogState | null>(null)
@@ -126,10 +138,11 @@ export function Sidebar() {
   }, [])
 
   useEffect(() => {
-    if (!tableMenu && !databaseMenu) return
+    if (!tableMenu && !databaseMenu && !connectionMenu) return
     const closeMenu = () => {
       setTableMenu(null)
       setDatabaseMenu(null)
+      setConnectionMenu(null)
     }
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') closeMenu()
@@ -142,7 +155,7 @@ export function Sidebar() {
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('scroll', closeMenu, true)
     }
-  }, [databaseMenu, tableMenu])
+  }, [connectionMenu, databaseMenu, tableMenu])
 
   useEffect(() => {
     const container = treeScrollRef.current
@@ -449,6 +462,40 @@ export function Sidebar() {
     })
   }
 
+  const openConnectionMenu = (
+    event: React.MouseEvent<HTMLDivElement>,
+    conn: SafeConnection
+  ) => {
+    event.preventDefault()
+    event.stopPropagation()
+    setConnectionMenu({
+      x: Math.min(event.clientX, window.innerWidth - 232),
+      y: Math.min(event.clientY, window.innerHeight - 144),
+      connection: conn
+    })
+  }
+
+  const closeDatabaseConnection = async (menu: ConnectionMenuState) => {
+    setConnectionMenu(null)
+    setNodes((state) => {
+      const { [menu.connection.id]: _removed, ...rest } = state
+      return rest
+    })
+    setTableFilters((state) => {
+      const prefix = `${menu.connection.id}:`
+      return Object.fromEntries(
+        Object.entries(state).filter(([key]) => !key.startsWith(prefix))
+      )
+    })
+    closeConnectionDatabaseTabs(menu.connection.id)
+    try {
+      await close(menu.connection.id)
+      showToast(t('sidebar.toast.connectionClosed', { name: menu.connection.name }), 'success')
+    } catch (err) {
+      showToast((err as Error).message, 'error')
+    }
+  }
+
   const openRenameDialog = (menu: TableMenuState) => {
     setTableMenu(null)
     setRenameDialog({ connection: menu.connection, database: menu.database, table: menu.table })
@@ -557,6 +604,114 @@ export function Sidebar() {
       connectionId: connection.id,
       database
     })
+  }
+
+  const openDatabaseCredential = (connection: SafeConnection, database: string) => {
+    const existing = connection.databaseCredentials?.[database]
+    setDatabaseCredentialDialog({ connection, database })
+    setDatabaseCredentialUsername(existing?.username ?? connection.username)
+    setDatabaseCredentialPassword('')
+    setDatabaseCredentialUseDefault(!existing)
+    setDatabaseCredentialFeedback(null)
+  }
+
+  const openDatabaseCredentialDialog = (menu: DatabaseMenuState) => {
+    setDatabaseMenu(null)
+    openDatabaseCredential(menu.connection, menu.database)
+  }
+
+  const submitDatabaseCredential = async () => {
+    if (!databaseCredentialDialog) return
+    const username = databaseCredentialUsername.trim()
+    if (!databaseCredentialUseDefault && !username) {
+      showToast(t('sidebar.toast.databaseUsernameRequired'), 'error')
+      return
+    }
+
+    const existing = databaseCredentialDialog.connection.databaseCredentials?.[databaseCredentialDialog.database]
+    if (!databaseCredentialUseDefault && !existing?.hasPassword && !databaseCredentialPassword) {
+      showToast(t('sidebar.toast.databasePasswordRequired'), 'error')
+      return
+    }
+
+    setActionBusy(true)
+    try {
+      await setDatabaseCredential(
+        databaseCredentialDialog.connection.id,
+        databaseCredentialDialog.database,
+        databaseCredentialUseDefault ? {} : {
+          username,
+          password: databaseCredentialPassword || undefined
+        }
+      )
+      setNodes((state) => {
+        const connectionNode = state[databaseCredentialDialog.connection.id]
+        if (!connectionNode) return state
+
+        const expandedDbs = new Set(connectionNode.expandedDbs)
+        expandedDbs.delete(databaseCredentialDialog.database)
+        const { [databaseCredentialDialog.database]: _removedTables, ...tables } = connectionNode.tables
+        return {
+          ...state,
+          [databaseCredentialDialog.connection.id]: {
+            ...connectionNode,
+            expandedDbs,
+            tables
+          }
+        }
+      })
+      closeDatabaseTabs(
+        databaseCredentialDialog.connection.id,
+        databaseCredentialDialog.database
+      )
+      showToast(
+        t(databaseCredentialUseDefault
+          ? 'sidebar.toast.databaseCredentialReset'
+          : 'sidebar.toast.databaseCredentialSaved', {
+          database: databaseCredentialDialog.database
+        }),
+        'success'
+      )
+      setDatabaseCredentialDialog(null)
+      setDatabaseCredentialPassword('')
+      setDatabaseCredentialFeedback(null)
+    } catch (err) {
+      showToast((err as Error).message, 'error')
+    } finally {
+      setActionBusy(false)
+    }
+  }
+
+  const testDatabaseCredential = async () => {
+    if (!databaseCredentialDialog) return
+    const username = databaseCredentialUsername.trim()
+    const existing = databaseCredentialDialog.connection.databaseCredentials?.[databaseCredentialDialog.database]
+    if (!databaseCredentialUseDefault && !username) {
+      setDatabaseCredentialFeedback({ level: 'error', message: t('sidebar.toast.databaseUsernameRequired') })
+      return
+    }
+    if (!databaseCredentialUseDefault && !existing?.hasPassword && !databaseCredentialPassword) {
+      setDatabaseCredentialFeedback({ level: 'error', message: t('sidebar.toast.databasePasswordRequired') })
+      return
+    }
+
+    setActionBusy(true)
+    setDatabaseCredentialFeedback(null)
+    try {
+      const result = await unwrap(api.connection.testDatabaseCredential(
+        databaseCredentialDialog.connection.id,
+        databaseCredentialDialog.database,
+        databaseCredentialUseDefault ? {} : {
+          username,
+          password: databaseCredentialPassword || undefined
+        }
+      ))
+      setDatabaseCredentialFeedback({ level: 'success', message: result.message })
+    } catch (err) {
+      setDatabaseCredentialFeedback({ level: 'error', message: (err as Error).message })
+    } finally {
+      setActionBusy(false)
+    }
   }
 
   const openCreateRedisKeyDialog = (connection: SafeConnection, database: string) => {
@@ -725,9 +880,11 @@ export function Sidebar() {
           onEditConnection={setEditing}
           onOpenSSHFiles={openSSHFiles}
           onOpenSSHTerminal={openSSHTerminal}
+          onOpenConnectionMenu={openConnectionMenu}
           onToggleDatabase={toggleDatabase}
           onOpenDatabaseDetails={openDatabaseDetails}
           onOpenSQLConsole={openSQLConsole}
+          onOpenDatabaseCredential={openDatabaseCredential}
           onExportDatabase={openExportDatabaseDialog}
           onCreateRedisKey={openCreateRedisKeyDialog}
           onRefreshDatabase={refreshDatabase}
@@ -762,6 +919,13 @@ export function Sidebar() {
         }}
         onConnectionSaved={refresh}
         onDeleteConnection={onDelete}
+        connectionMenu={connectionMenu}
+        onCloseConnectionMenu={() => setConnectionMenu(null)}
+        onCloseDatabaseConnection={closeDatabaseConnection}
+        onEditConnection={(connection) => {
+          setConnectionMenu(null)
+          setEditing(connection)
+        }}
         tableMenu={tableMenu}
         onCloseTableMenu={() => setTableMenu(null)}
         databaseMenu={databaseMenu}
@@ -774,6 +938,7 @@ export function Sidebar() {
           setDatabaseMenu(null)
           openSQLConsole(menu.connection, menu.database)
         }}
+        onOpenDatabaseCredentialDialog={openDatabaseCredentialDialog}
         onCreateRedisKey={(menu) => openCreateRedisKeyDialog(menu.connection, menu.database)}
         onExportDatabase={(menu) => openExportDatabaseDialog(menu.connection, menu.database)}
         onRefreshDatabase={(menu) => {
@@ -824,6 +989,32 @@ export function Sidebar() {
         onImported={() => {
           if (importDialog) return refreshDatabase(importDialog.connection, importDialog.database)
         }}
+        databaseCredentialDialog={databaseCredentialDialog}
+        databaseCredentialUsername={databaseCredentialUsername}
+        databaseCredentialPassword={databaseCredentialPassword}
+        databaseCredentialUseDefault={databaseCredentialUseDefault}
+        databaseCredentialFeedback={databaseCredentialFeedback}
+        onDatabaseCredentialUsernameChange={(value) => {
+          setDatabaseCredentialUsername(value)
+          setDatabaseCredentialFeedback(null)
+        }}
+        onDatabaseCredentialPasswordChange={(value) => {
+          setDatabaseCredentialPassword(value)
+          setDatabaseCredentialFeedback(null)
+        }}
+        onDatabaseCredentialUseDefaultChange={(value) => {
+          setDatabaseCredentialUseDefault(value)
+          setDatabaseCredentialFeedback(null)
+        }}
+        onDatabaseCredentialDialogOpenChange={(open) => {
+          if (!open && !actionBusy) {
+            setDatabaseCredentialDialog(null)
+            setDatabaseCredentialPassword('')
+            setDatabaseCredentialFeedback(null)
+          }
+        }}
+        onTestDatabaseCredential={testDatabaseCredential}
+        onSubmitDatabaseCredential={submitDatabaseCredential}
       />
     </>
   )
