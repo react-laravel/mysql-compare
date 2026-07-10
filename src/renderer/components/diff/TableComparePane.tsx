@@ -145,7 +145,7 @@ export function TableComparePane({
       </div>
 
       <div ref={scrollContainerRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-auto">
-        {!loading && error && <div className="break-all p-3 text-xs text-red-300">{error}</div>}
+        {!loading && error && <div className="break-all p-3 text-xs text-destructive dark:text-red-300">{error}</div>}
         {data && (
           <Table className="table-fixed" style={{ width: tableWidth }}>
             <colgroup>

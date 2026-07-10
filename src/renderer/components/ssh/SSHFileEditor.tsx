@@ -5,6 +5,7 @@ import { Button } from '@renderer/components/ui/button'
 import { api, unwrap } from '@renderer/lib/api'
 import { useI18n } from '@renderer/i18n'
 import { useUIStore } from '@renderer/store/ui-store'
+import { useTheme } from '@renderer/theme'
 
 interface SSHFileEditorProps {
   connectionId: string
@@ -60,6 +61,7 @@ function languageOf(path: string): string {
 
 export function SSHFileEditor({ connectionId, connectionName, remotePath }: SSHFileEditorProps) {
   const { t } = useI18n()
+  const { theme } = useTheme()
   const { registerTabCloseGuard, showToast } = useUIStore()
   const [content, setContent] = useState('')
   const [original, setOriginal] = useState('')
@@ -156,7 +158,7 @@ export function SSHFileEditor({ connectionId, connectionName, remotePath }: SSHF
       </div>
 
       {error && (
-        <div className="border-b border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-red-300">{error}</div>
+        <div className="border-b border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive dark:text-red-300">{error}</div>
       )}
 
       <div className="min-h-0 flex-1 overflow-hidden">
@@ -165,6 +167,7 @@ export function SSHFileEditor({ connectionId, connectionName, remotePath }: SSHF
           height="100%"
           path={`${connectionId}:${remotePath}`}
           language={language}
+          theme={theme === 'dark' ? 'vs-dark' : 'light'}
           loading={t('sshEditor.loadingAssets')}
           value={content}
           onChange={(value) => setContent(value ?? '')}

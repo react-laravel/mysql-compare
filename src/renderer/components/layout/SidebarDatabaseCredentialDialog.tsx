@@ -157,8 +157,8 @@ export function SidebarDatabaseCredentialDialog({
           <div className={cn(
             'flex items-start gap-2 rounded-md border px-3 py-2 text-xs',
             feedback.level === 'success'
-              ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
-              : 'border-destructive/50 bg-destructive/10 text-red-300'
+              ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+              : 'border-destructive/50 bg-destructive/10 text-destructive dark:text-red-300'
           )}>
             {feedback.level === 'success'
               ? <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />

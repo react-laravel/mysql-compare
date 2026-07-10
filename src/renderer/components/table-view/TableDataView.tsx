@@ -161,7 +161,7 @@ export function TableDataView({
       />
 
       {data && !data.hasPrimaryKey && !readOnly && (
-        <div className="flex items-center gap-2 px-3 py-1.5 bg-amber-500/10 border-b border-amber-500/30 text-amber-300 text-xs">
+        <div className="flex items-center gap-2 px-3 py-1.5 bg-amber-500/10 border-b border-amber-500/30 text-amber-700 dark:text-amber-300 text-xs">
           <AlertTriangle className="w-3.5 h-3.5" />
           {t('tableData.noPrimaryKeyHint')}
         </div>

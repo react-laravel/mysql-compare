@@ -17,8 +17,8 @@ export default function App() {
         <div
           className={cn(
             'fixed right-4 top-4 z-[70] flex w-[min(28rem,calc(100vw-2rem))] items-start gap-2 rounded-md border px-3 py-2 text-sm shadow-lg backdrop-blur',
-            toast.level === 'success' && 'bg-emerald-600/20 border-emerald-600/40 text-emerald-300',
-            toast.level === 'error' && 'bg-destructive/20 border-destructive/40 text-red-300',
+            toast.level === 'success' && 'bg-emerald-600/20 border-emerald-600/40 text-emerald-700 dark:text-emerald-300',
+            toast.level === 'error' && 'bg-destructive/20 border-destructive/40 text-destructive dark:text-red-300',
             toast.level === 'info' && 'bg-secondary border-border text-foreground'
           )}
           role={toast.level === 'error' ? 'alert' : 'status'}

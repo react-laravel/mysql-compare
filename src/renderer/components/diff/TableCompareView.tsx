@@ -593,7 +593,7 @@ export function TableCompareView({
           </span>
         </div>
         {sourceState.data && !sourceState.data.hasPrimaryKey && (
-          <div className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+          <div className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
             {t('diff.compareView.noPkCopyDisabled')}
           </div>
         )}

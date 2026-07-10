@@ -371,9 +371,9 @@ export function SSHFileManager({ connectionId, connectionName }: SSHFileManagerP
                 <Td className="max-w-none">
                   <div className="flex min-w-0 items-center gap-2">
                     {entry.type === 'directory' ? (
-                      <Folder className="h-4 w-4 shrink-0 text-amber-300" />
+                      <Folder className="h-4 w-4 shrink-0 text-amber-700 dark:text-amber-300" />
                     ) : (
-                      <File className="h-4 w-4 shrink-0 text-sky-300" />
+                      <File className="h-4 w-4 shrink-0 text-sky-700 dark:text-sky-300" />
                     )}
                     <span className="truncate font-medium">{entry.name}</span>
                   </div>

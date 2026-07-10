@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import { ChevronDown, Database, GitCompareArrows, Globe } from 'lucide-react'
+import { ChevronDown, Database, GitCompareArrows, Globe, Moon, Sun } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { useUIStore } from '@renderer/store/ui-store'
 import { useI18n, LOCALES } from '@renderer/i18n'
 import { cn } from '@renderer/lib/utils'
+import { useTheme } from '@renderer/theme'
 
 export function SidebarAppMenu() {
   const [open, setOpen] = useState(false)
@@ -11,6 +12,7 @@ export function SidebarAppMenu() {
   const buttonRef = useRef<HTMLButtonElement>(null)
   const { setRightView } = useUIStore()
   const { locale, setLocale, t } = useI18n()
+  const { theme, setTheme } = useTheme()
 
   useEffect(() => {
     if (!open) return
@@ -89,6 +91,24 @@ export function SidebarAppMenu() {
               {t('app.diffSync')}
             </button>
             <div className="my-1 h-px bg-border" />
+            <div className="px-2 py-1.5">
+              <div className="mb-1.5 text-xs text-muted-foreground">{t('theme.label')}</div>
+              <div className="grid grid-cols-2 rounded-md border border-border bg-background p-1">
+                <ThemeButton
+                  active={theme === 'light'}
+                  icon={<Sun className="h-3.5 w-3.5" />}
+                  label={t('theme.light')}
+                  onClick={() => setTheme('light')}
+                />
+                <ThemeButton
+                  active={theme === 'dark'}
+                  icon={<Moon className="h-3.5 w-3.5" />}
+                  label={t('theme.dark')}
+                  onClick={() => setTheme('dark')}
+                />
+              </div>
+            </div>
+            <div className="my-1 h-px bg-border" />
             <label className="flex items-center gap-2 rounded px-2 py-1.5 text-xs text-muted-foreground">
               <Globe className="h-3.5 w-3.5 shrink-0" />
               <span className="shrink-0">{t('language.label')}</span>
@@ -109,5 +129,35 @@ export function SidebarAppMenu() {
         </div>
       )}
     </>
+  )
+}
+
+function ThemeButton({
+  active,
+  icon,
+  label,
+  onClick
+}: {
+  active: boolean
+  icon: React.ReactNode
+  label: string
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitemradio"
+      aria-checked={active}
+      className={cn(
+        'flex h-7 items-center justify-center gap-1.5 rounded text-xs transition-colors',
+        active
+          ? 'bg-accent font-medium text-accent-foreground shadow-sm'
+          : 'text-muted-foreground hover:text-foreground'
+      )}
+      onClick={onClick}
+    >
+      {icon}
+      <span>{label}</span>
+    </button>
   )
 }

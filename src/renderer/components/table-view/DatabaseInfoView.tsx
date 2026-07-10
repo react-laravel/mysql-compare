@@ -89,7 +89,7 @@ export function DatabaseInfoView({ connectionId, database, readOnly = false }: P
         <section className="mt-4 rounded-lg border border-destructive/30 bg-destructive/5 p-4">
           <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
             <div className="min-w-0">
-              <div className="flex items-center gap-2 text-sm font-medium text-red-300">
+              <div className="flex items-center gap-2 text-sm font-medium text-destructive dark:text-red-300">
                 <AlertTriangle className="h-4 w-4" />
                 {t('databaseInfo.dangerZone')}
               </div>

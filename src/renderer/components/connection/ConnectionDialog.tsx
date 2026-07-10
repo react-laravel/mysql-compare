@@ -202,8 +202,8 @@ export function ConnectionDialog({ open, onOpenChange, connection, onSaved, onDe
         <div
           className={
             testFeedback.level === 'error'
-              ? 'mt-4 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300'
-              : 'mt-4 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-300'
+              ? 'mt-4 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-700 dark:text-red-300'
+              : 'mt-4 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-300'
           }
         >
           {testFeedback.message}

@@ -237,7 +237,7 @@ function MenuItem({
       type="button"
       className={cn(
         'flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-accent',
-        danger && 'text-red-300 hover:bg-red-500/10'
+        danger && 'text-red-700 hover:bg-red-500/10 dark:text-red-300'
       )}
       onClick={onClick}
     >

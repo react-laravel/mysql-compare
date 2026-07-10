@@ -150,7 +150,7 @@ export function SyncPanel({
             </label>
           </div>
           {crossEngine && (
-            <div className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-300">
+            <div className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-700 dark:text-amber-300">
               {t('diff.sync.crossEngineHint')}
             </div>
           )}

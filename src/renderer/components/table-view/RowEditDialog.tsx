@@ -113,7 +113,7 @@ export function RowEditDialog({ mode, columns, primaryKey, row, onClose, onSubmi
                 {column.isPrimaryKey && <span className="text-[10px] text-amber-400">{t('rowEdit.pk')}</span>}
                 {!column.nullable && <span className="text-[10px] text-red-400">*</span>}
                 {column.comment && (
-                  <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-300">
+                  <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300">
                     {t('common.comment')}
                   </span>
                 )}
@@ -132,7 +132,7 @@ export function RowEditDialog({ mode, columns, primaryKey, row, onClose, onSubmi
         ))}
       </div>
       {error && (
-        <div className="mt-3 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+        <div className="mt-3 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-700 dark:text-red-300">
           {error}
         </div>
       )}

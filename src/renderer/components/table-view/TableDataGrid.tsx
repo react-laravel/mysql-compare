@@ -119,7 +119,7 @@ export function TableDataGrid({
                     </div>
                     {column.comment && (
                       <span
-                        className="max-w-[14rem] truncate text-[10px] font-normal text-amber-300/90"
+                        className="max-w-[14rem] truncate text-[10px] font-normal text-amber-700/90 dark:text-amber-300/90"
                         title={column.comment}
                       >
                         {column.comment}

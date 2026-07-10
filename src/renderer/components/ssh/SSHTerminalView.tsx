@@ -5,6 +5,22 @@ import '@xterm/xterm/css/xterm.css'
 import { api, unwrap } from '@renderer/lib/api'
 import { cn } from '@renderer/lib/utils'
 import { useI18n } from '@renderer/i18n'
+import { useTheme, type Theme } from '@renderer/theme'
+
+const TERMINAL_THEMES = {
+  dark: {
+    background: '#09090b',
+    foreground: '#f4f4f5',
+    cursor: '#f4f4f5',
+    selectionBackground: '#3f3f46'
+  },
+  light: {
+    background: '#ffffff',
+    foreground: '#18181b',
+    cursor: '#18181b',
+    selectionBackground: '#d4d4d8'
+  }
+} satisfies Record<Theme, NonNullable<ConstructorParameters<typeof XTermTerminal>[0]>['theme']>
 
 interface SSHTerminalViewProps {
   connectionId: string
@@ -14,6 +30,8 @@ interface SSHTerminalViewProps {
 
 export function SSHTerminalView({ connectionId, connectionName, active }: SSHTerminalViewProps) {
   const { t } = useI18n()
+  const { theme } = useTheme()
+  const initialThemeRef = useRef(theme)
   const containerRef = useRef<HTMLDivElement | null>(null)
   const terminalRef = useRef<XTermTerminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
@@ -34,12 +52,7 @@ export function SSHTerminalView({ connectionId, connectionName, active }: SSHTer
       fontSize: 13,
       lineHeight: 1.15,
       scrollback: 5000,
-      theme: {
-        background: '#09090b',
-        foreground: '#f4f4f5',
-        cursor: '#f4f4f5',
-        selectionBackground: '#3f3f46'
-      }
+      theme: TERMINAL_THEMES[initialThemeRef.current]
     })
     const fitAddon = new FitAddon()
 
@@ -126,6 +139,11 @@ export function SSHTerminalView({ connectionId, connectionName, active }: SSHTer
   }, [connectionId, connectionName, t])
 
   useEffect(() => {
+    const terminal = terminalRef.current
+    if (terminal) terminal.options.theme = TERMINAL_THEMES[theme]
+  }, [theme])
+
+  useEffect(() => {
     if (!active) return
 
     const handle = window.requestAnimationFrame(() => {
@@ -144,16 +162,20 @@ export function SSHTerminalView({ connectionId, connectionName, active }: SSHTer
         </div>
         <div className={cn('rounded-full px-2 py-0.5', statusClassName(status))}>{t(`sshTerminal.status.${status}`)}</div>
       </div>
-      <div className="min-h-0 flex-1 bg-[#09090b] p-2">
-        <div ref={containerRef} className="h-full min-h-0 w-full overflow-hidden rounded border border-border/60 bg-[#09090b]" />
+      <div className="min-h-0 flex-1 bg-background p-2">
+        <div
+          ref={containerRef}
+          className="h-full min-h-0 w-full overflow-hidden rounded border border-border/60"
+          style={{ backgroundColor: TERMINAL_THEMES[theme].background }}
+        />
       </div>
     </div>
   )
 }
 
 function statusClassName(status: 'connecting' | 'connected' | 'closed' | 'error'): string {
-  if (status === 'connected') return 'bg-emerald-500/15 text-emerald-300'
+  if (status === 'connected') return 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
   if (status === 'error') return 'bg-destructive/15 text-destructive'
-  if (status === 'closed') return 'bg-amber-500/15 text-amber-300'
-  return 'bg-sky-500/15 text-sky-300'
+  if (status === 'closed') return 'bg-amber-500/15 text-amber-700 dark:text-amber-300'
+  return 'bg-sky-500/15 text-sky-700 dark:text-sky-300'
 }

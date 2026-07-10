@@ -134,7 +134,7 @@ function ComparisonDetailDrawer({
       </div>
       <div className="space-y-3 px-4 py-3 text-xs">
         {entry.error && (
-          <div className="rounded border border-destructive/40 bg-destructive/10 px-3 py-2 text-red-300 break-all">
+          <div className="rounded border border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive dark:text-red-300 break-all">
             {entry.error}
           </div>
         )}
@@ -289,13 +289,13 @@ function formatRowComparisonSummary(rowComparison: TableRowComparison, t: Transl
 
 function TableStatusIcon({ status }: { status: TableCompareEntry['status'] }) {
   if (status === 'comparing') {
-    return <LoaderCircle className="h-3.5 w-3.5 animate-spin text-sky-300" />
+    return <LoaderCircle className="h-3.5 w-3.5 animate-spin text-sky-700 dark:text-sky-300" />
   }
   if (status === 'done') {
     return <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
   }
   if (status === 'error') {
-    return <AlertCircle className="h-3.5 w-3.5 text-red-300" />
+    return <AlertCircle className="h-3.5 w-3.5 text-destructive dark:text-red-300" />
   }
   return <CircleDashed className="h-3.5 w-3.5 text-muted-foreground" />
 }

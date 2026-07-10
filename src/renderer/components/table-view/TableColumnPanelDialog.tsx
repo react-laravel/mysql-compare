@@ -83,7 +83,7 @@ export function TableColumnPanelDialog({
                 </span>
                 <span className="block truncate text-[10px] text-muted-foreground">{column.type}</span>
                 {column.comment && (
-                  <span className="block truncate text-[10px] text-amber-300/90">{column.comment}</span>
+                  <span className="block truncate text-[10px] text-amber-700/90 dark:text-amber-300/90">{column.comment}</span>
                 )}
               </span>
             </Label>

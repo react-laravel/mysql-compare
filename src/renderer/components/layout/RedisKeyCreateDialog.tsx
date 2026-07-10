@@ -178,7 +178,7 @@ export function RedisKeyCreateDialog({
         ) : null}
       </div>
       {error && (
-        <div className="mt-3 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+        <div className="mt-3 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-700 dark:text-red-300">
           {error}
         </div>
       )}

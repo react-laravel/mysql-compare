@@ -791,6 +791,11 @@ export const en = {
   language: {
     label: 'Language',
   },
+  theme: {
+    label: 'Appearance',
+    light: 'Light',
+    dark: 'Dark',
+  },
 } as const
 
 type DeepStringify<T> = {

@@ -259,7 +259,7 @@ export function SidebarTree({
                                 <span className="flex-1 truncate">{database}</span>
                                 {customCredential && (
                                   <span
-                                    className="ml-1 inline-flex max-w-24 items-center gap-1 rounded border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] text-emerald-300"
+                                    className="ml-1 inline-flex max-w-24 items-center gap-1 rounded border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] text-emerald-700 dark:text-emerald-300"
                                     title={t('sidebar.customDatabaseCredential', { username: customCredential.username ?? '' })}
                                   >
                                     <KeyRound className="h-2.5 w-2.5 shrink-0" />

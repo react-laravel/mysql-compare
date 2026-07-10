@@ -778,4 +778,9 @@ export const zhCN: Dictionary = {
   language: {
     label: '语言',
   },
+  theme: {
+    label: '外观',
+    light: '浅色',
+    dark: '深色',
+  },
 }
