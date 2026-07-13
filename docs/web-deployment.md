@@ -60,6 +60,22 @@ Start the standalone web server:
 npm run web:start
 ```
 
+For a self-hosted PM2 deployment, keep the production-only values in a server
+file that is readable by the service account but not stored in the repository:
+
+```bash
+sudo install -d -o root -g www-data -m 0750 /etc/mysql-compare
+sudo install -o root -g www-data -m 0640 /dev/null /etc/mysql-compare/web.env
+sudoedit /etc/mysql-compare/web.env
+```
+
+Use `KEY=value` lines for the required variables and set
+`MYSQL_COMPARE_DATA_DIR` to a persistent, service-account-owned directory. The
+self-hosted deployment reads `/etc/mysql-compare/web.env` by default; override
+it with `MYSQL_COMPARE_ENV_FILE` when needed. Keep `MYSQL_COMPARE_SECRET`
+stable across deployments, because changing it makes existing encrypted
+connection secrets unreadable.
+
 By default the server:
 
 - requires HTTP Basic authentication
@@ -142,6 +158,9 @@ After the server starts, verify the health endpoint:
 ```bash
 curl http://127.0.0.1:3000/api/health
 ```
+
+Use this unauthenticated endpoint for deployment and uptime checks. The root
+page intentionally returns `401` until valid HTTP Basic credentials are sent.
 
 Expected shape:
 
