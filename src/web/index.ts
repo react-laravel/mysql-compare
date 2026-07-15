@@ -23,6 +23,13 @@ import {
   requireMutationProtection,
   securityHeaders
 } from './security'
+import {
+  buildSsoProviderUrl,
+  createSsoAuthCookie,
+  exchangeSsoTicket,
+  normalizeSsoReturnTo,
+  requireSsoAuthentication
+} from './sso'
 import type {
   ConnectionConfig,
   CopyTableRequest,
@@ -96,7 +103,36 @@ app.get(`${API_PREFIX}/health`, (_req, res) => {
   })
 })
 
-app.use(requireBasicAuth(webSecurity))
+if (webSecurity.authMode === 'sso') {
+  app.get('/auth/login', (req, res) => {
+    const returnTo = getQueryString(req, 'return_to')
+    res.setHeader('Cache-Control', 'no-store')
+    res.redirect(302, buildSsoProviderUrl(webSecurity, returnTo))
+  })
+
+  app.get('/auth/callback', (req, res) => {
+    const ticket = getQueryString(req, 'ticket')
+    const returnTo = getQueryString(req, 'return_to')
+    if (!ticket) {
+      sendError(res, new Error('Missing SSO ticket'), 400)
+      return
+    }
+
+    void exchangeSsoTicket(webSecurity, ticket)
+      .then((identity) => {
+        res.setHeader('Cache-Control', 'no-store')
+        res.setHeader('Set-Cookie', createSsoAuthCookie(webSecurity, identity))
+        res.redirect(302, normalizeSsoReturnTo(webSecurity, returnTo))
+      })
+      .catch((error) => sendError(res, error, 401))
+  })
+}
+
+app.use(
+  webSecurity.authMode === 'sso'
+    ? requireSsoAuthentication(webSecurity)
+    : requireBasicAuth(webSecurity)
+)
 app.use(establishWebSession(webSecurity))
 app.use(API_PREFIX, requireMutationProtection(webSecurity))
 app.use(API_PREFIX, express.json({ limit: JSON_LIMIT }))
@@ -558,6 +594,11 @@ function sanitizeFileName(value: string): string {
 function getParam(req: Request, key: string): string {
   const value = req.params[key]
   return decodeURIComponent(Array.isArray(value) ? value[0] || '' : value || '')
+}
+
+function getQueryString(req: Request, key: string): string | undefined {
+  const value = req.query[key]
+  return Array.isArray(value) ? String(value[0] || '') : typeof value === 'string' ? value : undefined
 }
 
 async function shutdown(): Promise<void> {

@@ -29,6 +29,7 @@ npm run dev
 ## Web Mode
 
 Browser deployment is now supported with a standalone web API server plus a Vite-built frontend.
+Web mode supports either standalone HTTP Basic authentication or DogeOW one-time-ticket SSO.
 
 Local development:
 

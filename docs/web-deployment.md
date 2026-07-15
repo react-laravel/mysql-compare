@@ -88,11 +88,29 @@ By default the server:
 
 ## 4. Production Environment Variables
 
-Required variables:
+Always required:
 
 - `MYSQL_COMPARE_SECRET`: secret used to encrypt stored connection secrets in web mode
+- `MYSQL_COMPARE_WEB_AUTH_MODE`: `basic` (default) or `sso`
+
+Basic authentication variables:
+
 - `MYSQL_COMPARE_WEB_USERNAME`: HTTP Basic authentication username
 - `MYSQL_COMPARE_WEB_PASSWORD`: HTTP Basic authentication password, at least 12 characters
+
+DogeOW SSO variables:
+
+- `MYSQL_COMPARE_PUBLIC_URL`: public MySQL Compare origin, for example `https://mysql-compare.dogeow.com`
+- `MYSQL_COMPARE_SSO_ACCOUNT_URL`: central login origin, for example `https://next.dogeow.com`
+- `MYSQL_COMPARE_SSO_API_URL`: central API origin, for example `https://next-api.dogeow.com`
+- `MYSQL_COMPARE_SSO_CLIENT`: SSO client id; defaults to `mysql-compare`
+- `MYSQL_COMPARE_SSO_CLIENT_SECRET`: private client secret shared only with the central API, at least 32 characters
+- `MYSQL_COMPARE_SSO_SESSION_TTL_SECONDS`: local signed session lifetime, from 300 to 86400 seconds; defaults to 28800
+
+SSO redirects unauthenticated browser requests to the central account, exchanges the 60-second
+one-time ticket on the server, and then issues a MySQL Compare-only `Secure`, `HttpOnly` cookie.
+The exchanged identity must be an administrator. The central DogeOW bearer token and password are
+never sent to MySQL Compare.
 
 Deployment variables:
 
@@ -113,6 +131,21 @@ export MYSQL_COMPARE_SECRET='replace-this-with-a-long-random-secret'
 export MYSQL_COMPARE_WEB_USERNAME='admin'
 export MYSQL_COMPARE_WEB_PASSWORD='replace-this-with-a-long-unique-password'
 export MYSQL_COMPARE_DATA_DIR='/var/lib/mysql-compare'
+npm run web:build
+npm run web:start
+```
+
+DogeOW SSO production example:
+
+```bash
+export MYSQL_COMPARE_WEB_AUTH_MODE=sso
+export MYSQL_COMPARE_PUBLIC_URL=https://mysql-compare.dogeow.com
+export MYSQL_COMPARE_SSO_ACCOUNT_URL=https://next.dogeow.com
+export MYSQL_COMPARE_SSO_API_URL=https://next-api.dogeow.com
+export MYSQL_COMPARE_SSO_CLIENT=mysql-compare
+export MYSQL_COMPARE_SSO_CLIENT_SECRET='use-the-same-random-secret-as-dogeow-api'
+export MYSQL_COMPARE_SECRET='replace-this-with-a-long-random-secret'
+export MYSQL_COMPARE_ALLOWED_ORIGINS=https://mysql-compare.dogeow.com
 npm run web:build
 npm run web:start
 ```
@@ -159,8 +192,9 @@ After the server starts, verify the health endpoint:
 curl http://127.0.0.1:3000/api/health
 ```
 
-Use this unauthenticated endpoint for deployment and uptime checks. The root
-page intentionally returns `401` until valid HTTP Basic credentials are sent.
+Use this unauthenticated endpoint for deployment and uptime checks. In Basic mode the root returns
+`401` until valid credentials are sent. In SSO mode the root redirects to the DogeOW account when
+the local signed session is absent or expired.
 
 Expected shape:
 

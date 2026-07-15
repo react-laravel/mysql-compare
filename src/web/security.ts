@@ -5,6 +5,7 @@ const WEB_SESSION_COOKIE = 'mysql_compare_session'
 const requestSessionIds = new WeakMap<Request, string>()
 
 export interface WebSecurityConfig {
+  authMode: 'basic' | 'sso'
   username: string
   password: string
   host: string
@@ -12,20 +13,37 @@ export interface WebSecurityConfig {
   allowedOrigins: Set<string>
   sessionSecret: string
   secureCookies: boolean
+  sso: {
+    accountUrl: string
+    apiUrl: string
+    client: string
+    clientSecret: string
+    publicUrl: string
+    sessionTtlSeconds: number
+  } | null
 }
 
 export function loadWebSecurityConfig(
   env: NodeJS.ProcessEnv = process.env
 ): WebSecurityConfig {
-  const username = env['MYSQL_COMPARE_WEB_USERNAME']?.trim()
+  const authMode = (env['MYSQL_COMPARE_WEB_AUTH_MODE']?.trim().toLowerCase() || 'basic') as
+    | 'basic'
+    | 'sso'
+  if (authMode !== 'basic' && authMode !== 'sso') {
+    throw new Error('MYSQL_COMPARE_WEB_AUTH_MODE must be basic or sso')
+  }
+
+  const username = env['MYSQL_COMPARE_WEB_USERNAME']?.trim() || ''
   const password = env['MYSQL_COMPARE_WEB_PASSWORD'] ?? ''
   const host = env['MYSQL_COMPARE_WEB_HOST']?.trim() || '127.0.0.1'
   const port = Number(env['PORT'] || env['MYSQL_COMPARE_WEB_PORT'] || 3000)
   const sessionSecret = env['MYSQL_COMPARE_SECRET']?.trim() || env['WEB_SECRET_KEY']?.trim()
 
-  if (!username) throw new Error('MYSQL_COMPARE_WEB_USERNAME is required')
-  if (password.length < 12) {
-    throw new Error('MYSQL_COMPARE_WEB_PASSWORD must contain at least 12 characters')
+  if (authMode === 'basic') {
+    if (!username) throw new Error('MYSQL_COMPARE_WEB_USERNAME is required')
+    if (password.length < 12) {
+      throw new Error('MYSQL_COMPARE_WEB_PASSWORD must contain at least 12 characters')
+    }
   }
   if (!sessionSecret) {
     throw new Error('MYSQL_COMPARE_SECRET is required in web runtime')
@@ -60,7 +78,19 @@ export function loadWebSecurityConfig(
 
   const secureCookies =
     !loopback || normalizedConfiguredOrigins.some((origin) => new URL(origin).protocol === 'https:')
-  return { username, password, host, port, allowedOrigins, sessionSecret, secureCookies }
+  const sso = authMode === 'sso' ? loadSsoConfig(env) : null
+
+  return {
+    authMode,
+    username,
+    password,
+    host,
+    port,
+    allowedOrigins,
+    sessionSecret,
+    secureCookies,
+    sso
+  }
 }
 
 export function securityHeaders(): RequestHandler {
@@ -204,6 +234,57 @@ function normalizeOrigin(value: string): string {
 
 function isLoopbackHost(host: string): boolean {
   return host === '127.0.0.1' || host === 'localhost' || host === '::1'
+}
+
+function loadSsoConfig(env: NodeJS.ProcessEnv): NonNullable<WebSecurityConfig['sso']> {
+  const clientSecret = env['MYSQL_COMPARE_SSO_CLIENT_SECRET']?.trim() || ''
+  if (clientSecret.length < 32) {
+    throw new Error('MYSQL_COMPARE_SSO_CLIENT_SECRET must contain at least 32 characters')
+  }
+
+  const publicUrl = requireSecureServiceUrl(
+    env['MYSQL_COMPARE_PUBLIC_URL'],
+    'MYSQL_COMPARE_PUBLIC_URL'
+  )
+  const accountUrl = requireSecureServiceUrl(
+    env['MYSQL_COMPARE_SSO_ACCOUNT_URL'],
+    'MYSQL_COMPARE_SSO_ACCOUNT_URL'
+  )
+  const apiUrl = requireSecureServiceUrl(
+    env['MYSQL_COMPARE_SSO_API_URL'],
+    'MYSQL_COMPARE_SSO_API_URL'
+  )
+  const client = env['MYSQL_COMPARE_SSO_CLIENT']?.trim() || 'mysql-compare'
+  const configuredTtl = Number(env['MYSQL_COMPARE_SSO_SESSION_TTL_SECONDS'] || 28800)
+  if (!Number.isInteger(configuredTtl) || configuredTtl < 300 || configuredTtl > 86400) {
+    throw new Error('MYSQL_COMPARE_SSO_SESSION_TTL_SECONDS must be between 300 and 86400')
+  }
+
+  return {
+    accountUrl,
+    apiUrl,
+    client,
+    clientSecret,
+    publicUrl,
+    sessionTtlSeconds: configuredTtl
+  }
+}
+
+function requireSecureServiceUrl(value: string | undefined, name: string): string {
+  if (!value?.trim()) throw new Error(`${name} is required in SSO mode`)
+
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    throw new Error(`${name} must be a valid URL`)
+  }
+
+  if (url.protocol !== 'https:' && !isLoopbackHost(url.hostname)) {
+    throw new Error(`${name} must use HTTPS outside loopback`)
+  }
+
+  return url.origin
 }
 
 function sendSecurityError(res: Response, status: number, message: string): void {
