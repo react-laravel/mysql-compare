@@ -21,15 +21,23 @@ describe('PostgresDriver', () => {
   beforeEach(() => {
     Client.mockReset()
     Pool.mockReset()
-    Client.mockImplementation(() => ({
-      connect: vi.fn(async () => undefined),
-      query: vi.fn(async () => ({ rows: [{ server_version: '16.4' }] })),
-      end: vi.fn(async () => undefined)
-    }))
-    Pool.mockImplementation(() => ({
-      query: vi.fn(async () => ({ rows: [{ table_name: 'users' }] })),
-      end: vi.fn(async () => undefined)
-    }))
+    // Vitest 4 + Vite SSR: use classic functions so `new pg.Client()` works.
+    Client.mockImplementation(function MockClient(this: {
+      connect: ReturnType<typeof vi.fn>
+      query: ReturnType<typeof vi.fn>
+      end: ReturnType<typeof vi.fn>
+    }) {
+      this.connect = vi.fn(async () => undefined)
+      this.query = vi.fn(async () => ({ rows: [{ server_version: '16.4' }] }))
+      this.end = vi.fn(async () => undefined)
+    })
+    Pool.mockImplementation(function MockPool(this: {
+      query: ReturnType<typeof vi.fn>
+      end: ReturnType<typeof vi.fn>
+    }) {
+      this.query = vi.fn(async () => ({ rows: [{ table_name: 'users' }] }))
+      this.end = vi.fn(async () => undefined)
+    })
   })
 
   it('passes an empty string password to pg when no password is configured', async () => {
@@ -58,11 +66,15 @@ describe('PostgresDriver', () => {
     const query = vi.fn(async () => ({
       rows: [{ datname: 'app_a' }, { datname: 'app_b' }]
     }))
-    Client.mockImplementation(() => ({
-      connect: vi.fn(async () => undefined),
-      query,
-      end: vi.fn(async () => undefined)
-    }))
+    Client.mockImplementation(function MockClient(this: {
+      connect: ReturnType<typeof vi.fn>
+      query: ReturnType<typeof vi.fn>
+      end: ReturnType<typeof vi.fn>
+    }) {
+      this.connect = vi.fn(async () => undefined)
+      this.query = query
+      this.end = vi.fn(async () => undefined)
+    })
     const driver = new PostgresDriver({
       connection: createConnectionConfig({ username: 'app_user', password: 'secret' })
     })
@@ -120,12 +132,15 @@ describe('PostgresDriver', () => {
   })
 
   it('reports a clear error when SCRAM authentication has no database password', async () => {
-    Client.mockImplementation(() => ({
-      connect: vi.fn(async () => {
+    Client.mockImplementation(function MockClient(this: {
+      connect: ReturnType<typeof vi.fn>
+      end: ReturnType<typeof vi.fn>
+    }) {
+      this.connect = vi.fn(async () => {
         throw new Error('SASL: SCRAM-SERVER-FIRST-MESSAGE: client password must be a non-empty string')
-      }),
-      end: vi.fn(async () => undefined)
-    }))
+      })
+      this.end = vi.fn(async () => undefined)
+    })
     const driver = new PostgresDriver({
       connection: createConnectionConfig({ password: undefined })
     })

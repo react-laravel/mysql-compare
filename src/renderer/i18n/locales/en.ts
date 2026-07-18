@@ -90,7 +90,6 @@ export const en = {
     openSshFiles: 'Open SSH files',
     openSshTerminal: 'Open SSH terminal',
     exportDatabase: 'Export database {{database}}',
-    customDatabaseCredential: 'Custom account: {{username}}',
     editCustomDatabaseCredential: 'Edit custom account {{username}}',
     addCustomDatabaseCredential: 'Set a custom database account',
     confirm: {

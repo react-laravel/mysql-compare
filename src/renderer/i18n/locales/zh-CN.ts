@@ -92,7 +92,6 @@ export const zhCN: Dictionary = {
     openSshFiles: '打开 SSH 文件',
     openSshTerminal: '打开 SSH 终端',
     exportDatabase: '导出数据库 {{database}}',
-    customDatabaseCredential: '独立账号：{{username}}',
     editCustomDatabaseCredential: '编辑独立账号 {{username}}',
     addCustomDatabaseCredential: '设置数据库独立账号',
     confirm: {

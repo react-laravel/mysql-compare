@@ -257,15 +257,6 @@ export function SidebarTree({
                                 )}
                                 <Database className="mx-1 h-3 w-3 text-emerald-400" />
                                 <span className="flex-1 truncate">{database}</span>
-                                {customCredential && (
-                                  <span
-                                    className="ml-1 inline-flex max-w-24 items-center gap-1 rounded border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] text-emerald-700 dark:text-emerald-300"
-                                    title={t('sidebar.customDatabaseCredential', { username: customCredential.username ?? '' })}
-                                  >
-                                    <KeyRound className="h-2.5 w-2.5 shrink-0" />
-                                    <span className="truncate">{customCredential.username}</span>
-                                  </span>
-                                )}
                                 {isRedis && keyCount !== undefined && (
                                   <span className="ml-1 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground">
                                     {keyCount.toLocaleString()}
@@ -280,9 +271,9 @@ export function SidebarTree({
                                     onOpenDatabaseCredential(connection, database)
                                   }}
                                   className={cn(
-                                    'mr-1 p-1 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+                                    'mr-1 shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-background/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
                                     customCredential
-                                      ? 'text-emerald-400'
+                                      ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
                                       : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'
                                   )}
                                   title={customCredential
@@ -292,7 +283,7 @@ export function SidebarTree({
                                     ? t('sidebar.editCustomDatabaseCredential', { username: customCredential.username ?? '' })
                                     : t('sidebar.addCustomDatabaseCredential')}
                                 >
-                                  <KeyRound className="h-3 w-3" />
+                                  <KeyRound className="h-3.5 w-3.5" />
                                 </button>
                               )}
                               {dbExpanded && (
