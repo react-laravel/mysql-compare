@@ -5,6 +5,7 @@ import { useUIStore } from '@renderer/store/ui-store'
 import { api, unwrap } from '@renderer/lib/api'
 import { useI18n } from '@renderer/i18n'
 import type { SafeConnection, TableSchema } from '../../../shared/types'
+import { REDIS_MAX_LISTED_KEYS } from '../../../shared/constants'
 import { SidebarOverlays } from './SidebarOverlays'
 import { SidebarTree } from './SidebarTree'
 import type {
@@ -58,6 +59,10 @@ async function loadDatabaseKeyCounts(connectionId: string, databases: string[]):
   return Object.fromEntries(
     entries.flatMap(([database, count]) => count === undefined ? [] : [[database, count]])
   )
+}
+
+function isRedisKeyListTruncated(listedCount: number, totalCount: number | undefined): boolean {
+  return listedCount >= REDIS_MAX_LISTED_KEYS && (totalCount ?? listedCount) > listedCount
 }
 
 function loadStoredSidebarWidth(): number {
@@ -379,6 +384,15 @@ export function Sidebar() {
             }
           }
         })
+        if (conn.engine === 'redis' && isRedisKeyListTruncated(tables.length, keyCount)) {
+          showToast(
+            t('sidebar.redisKeysTruncated', {
+              shown: tables.length.toLocaleString(),
+              total: (keyCount ?? tables.length).toLocaleString()
+            }),
+            'info'
+          )
+        }
       } catch (err) {
         showToast((err as Error).message, 'error')
       }
@@ -404,6 +418,15 @@ export function Sidebar() {
           }
         }
       })
+      if (conn.engine === 'redis' && isRedisKeyListTruncated(tables.length, keyCount)) {
+        showToast(
+          t('sidebar.redisKeysTruncated', {
+            shown: tables.length.toLocaleString(),
+            total: (keyCount ?? tables.length).toLocaleString()
+          }),
+          'info'
+        )
+      }
     } catch (err) {
       showToast((err as Error).message, 'error')
     }

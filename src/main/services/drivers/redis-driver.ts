@@ -14,6 +14,7 @@ import type {
   TableSchema,
   UpdateRowRequest
 } from '../../../shared/types'
+import { REDIS_MAX_LISTED_KEYS } from '../../../shared/constants'
 import type { DbDriver, Dialect, StreamRowsOptions } from './types'
 
 type RedisClient = ReturnType<typeof createClient>
@@ -21,7 +22,7 @@ type RedisKeyType = 'string' | 'hash' | 'list' | 'set' | 'zset' | 'stream' | 'no
 type WritableRedisKeyType = Exclude<RedisKeyType, 'none'>
 
 const MAX_PAGE_SIZE = 1000
-const MAX_LISTED_KEYS = 10000
+export const MAX_LISTED_KEYS = REDIS_MAX_LISTED_KEYS
 
 const redisDialect: Dialect = {
   engine: 'redis',
@@ -116,6 +117,10 @@ export class RedisDriver implements DbDriver {
       if (keys.length >= MAX_LISTED_KEYS) break
     }
     return keys.sort((left, right) => left.localeCompare(right))
+  }
+
+  async listForeignKeyEdges(_database: string): Promise<Array<{ fromTable: string; toTable: string }>> {
+    return []
   }
 
   async getTableSchema(database: string, table: string): Promise<TableSchema> {

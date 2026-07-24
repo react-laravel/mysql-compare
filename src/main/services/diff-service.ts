@@ -1,5 +1,4 @@
-// 数据库结构对比：MVP 阶段只对比表 / 列 / 索引的存在与定义。
-// 数据级 diff 留为第二阶段，可以新增 dataDiff 接口。
+// 数据库结构 / 数据对比：表 / 列 / 索引定义 + 主键配对的行级 data diff。
 import type {
   DatabaseDiff,
   TableDataDiff,
@@ -167,7 +166,7 @@ async function compareSharedTable(params: {
 
 function assertDiffSupported(sourceDriver: DbDriver, targetDriver: DbDriver): void {
   if (sourceDriver.engine === 'redis' || targetDriver.engine === 'redis') {
-    throw new Error('Redis connections are read-only browsing targets and do not support diff')
+    throw new Error('Redis connections do not support schema/data diff')
   }
 }
 

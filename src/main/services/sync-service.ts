@@ -1,5 +1,6 @@
 // 同步：根据 SyncRequest 生成 SQL 计划，可 dry-run（仅返回 SQL）或真实执行。
 // 所有方言相关的 DDL / 字面量格式化都委托给目标 driver 的 Dialect。
+// 表顺序按源库外键拓扑排序（被引用表优先）；MySQL 目标额外关闭 FOREIGN_KEY_CHECKS。
 import type {
   SyncPlan,
   SyncProgressEvent,
@@ -10,6 +11,7 @@ import type {
 import { dbService } from './db-service'
 import type { DbDriver } from './drivers/types'
 import { buildCreateTableSQL } from './export-service'
+import { orderTablesByForeignKeys, type ForeignKeyEdge } from './fk-order'
 import { schemaService } from './schema-service'
 
 const PREVIEW_ROW_LIMIT = 50
@@ -30,6 +32,7 @@ interface SyncContext {
   sourceTables: Set<string>
   targetTables: Set<string>
   crossEngine: boolean
+  orderedTables: string[]
 }
 
 interface ExecuteSyncOptions {
@@ -42,8 +45,25 @@ export class SyncService {
     const steps: SyncStep[] = []
     const context = await this.loadSyncContext(req)
 
-    for (const table of req.tables) {
-      const prepared = await this.prepareTableSync(table, req, context, true)
+    for (const sql of this.buildForeignKeyGuardSQLs(context.targetDriver, 'begin')) {
+      steps.push({
+        table: '*',
+        description: 'disable foreign key checks',
+        sqls: [sql]
+      })
+    }
+
+    const truncateSQL = this.buildBatchTruncateSQL(req, context)
+    if (truncateSQL) {
+      steps.push({
+        table: '*',
+        description: 'truncate selected tables (FK-safe batch)',
+        sqls: [truncateSQL]
+      })
+    }
+
+    for (const table of context.orderedTables) {
+      const prepared = await this.prepareTableSync(table, req, context, true, Boolean(truncateSQL))
       const sqls = [...prepared.setupSQLs]
 
       if (!prepared.skip && req.syncData) {
@@ -53,6 +73,14 @@ export class SyncService {
       }
 
       steps.push({ table, description: prepared.description, sqls })
+    }
+
+    for (const sql of this.buildForeignKeyGuardSQLs(context.targetDriver, 'end')) {
+      steps.push({
+        table: '*',
+        description: 'restore foreign key checks',
+        sqls: [sql]
+      })
     }
 
     return { steps }
@@ -73,8 +101,42 @@ export class SyncService {
     let done = 0
     let total = 0
 
-    for (const table of req.tables) {
-      const prepared = await this.prepareTableSync(table, req, context, false)
+    const runSQL = async (table: string, sql: string, message?: string) => {
+      total++
+      if (message) {
+        emit({ table, step: 'start', done, total, level: 'info', message })
+      }
+      try {
+        await context.targetDriver.executeSQL(sql, req.targetDatabase)
+        executed++
+      } catch (err) {
+        errors++
+        emit({
+          table,
+          step: 'error',
+          done,
+          total,
+          level: 'error',
+          message: `${(err as Error).message} :: ${sql.slice(0, 200)}`
+        })
+      }
+      done++
+      if (done % 20 === 0 || done === total) {
+        emit({ table, step: 'progress', done, total, level: 'info' })
+      }
+    }
+
+    for (const sql of this.buildForeignKeyGuardSQLs(context.targetDriver, 'begin')) {
+      await runSQL('*', sql, 'disable foreign key checks')
+    }
+
+    const truncateSQL = this.buildBatchTruncateSQL(req, context)
+    if (truncateSQL) {
+      await runSQL('*', truncateSQL, 'truncate selected tables (FK-safe batch)')
+    }
+
+    for (const table of context.orderedTables) {
+      const prepared = await this.prepareTableSync(table, req, context, false, Boolean(truncateSQL))
       emit({
         table: prepared.table,
         step: 'start',
@@ -86,27 +148,13 @@ export class SyncService {
 
       const statements = this.iterateStatements(prepared, req, context)
       for await (const sql of statements) {
-        total++
-        try {
-          await context.targetDriver.executeSQL(sql, req.targetDatabase)
-          executed++
-        } catch (err) {
-          errors++
-          emit({
-            table: prepared.table,
-            step: 'error',
-            done,
-            total,
-            level: 'error',
-            message: `${(err as Error).message} :: ${sql.slice(0, 200)}`
-          })
-        }
-        done++
-        if (done % 20 === 0 || done === total) {
-          emit({ table: prepared.table, step: 'progress', done, total, level: 'info' })
-        }
+        await runSQL(prepared.table, sql)
       }
       emit({ table: prepared.table, step: 'done', done, total, level: 'info' })
+    }
+
+    for (const sql of this.buildForeignKeyGuardSQLs(context.targetDriver, 'end')) {
+      await runSQL('*', sql, 'restore foreign key checks')
     }
 
     return { executed, errors }
@@ -117,24 +165,58 @@ export class SyncService {
       dbService.getDriver(req.sourceConnectionId),
       dbService.getDriver(req.targetConnectionId)
     ])
-    const [sourceTableList, targetTableList] = await Promise.all([
+    const [sourceTableList, targetTableList, edges] = await Promise.all([
       sourceDriver.listTables(req.sourceDatabase),
-      targetDriver.listTables(req.targetDatabase)
+      targetDriver.listTables(req.targetDatabase),
+      this.loadForeignKeyEdges(sourceDriver, req.sourceDatabase)
     ])
     return {
       sourceDriver,
       targetDriver,
       sourceTables: new Set(sourceTableList),
       targetTables: new Set(targetTableList),
-      crossEngine: sourceDriver.engine !== targetDriver.engine
+      crossEngine: sourceDriver.engine !== targetDriver.engine,
+      orderedTables: orderTablesByForeignKeys(req.tables, edges)
     }
+  }
+
+  private async loadForeignKeyEdges(driver: DbDriver, database: string): Promise<ForeignKeyEdge[]> {
+    if (!driver.listForeignKeyEdges) return []
+    try {
+      return await driver.listForeignKeyEdges(database)
+    } catch {
+      return []
+    }
+  }
+
+  private buildForeignKeyGuardSQLs(targetDriver: DbDriver, phase: 'begin' | 'end'): string[] {
+    if (targetDriver.engine !== 'mysql') return []
+    return [phase === 'begin' ? 'SET FOREIGN_KEY_CHECKS=0;' : 'SET FOREIGN_KEY_CHECKS=1;']
+  }
+
+  private buildBatchTruncateSQL(req: SyncRequest, context: SyncContext): string | null {
+    if (!req.syncData || req.existingTableStrategy !== 'truncate-and-import') return null
+
+    const tables = context.orderedTables.filter((table) => context.targetTables.has(table))
+    if (tables.length === 0) return null
+
+    const targetScope = getTargetTableScope(context.targetDriver, req.targetDatabase)
+    const dialect = context.targetDriver.dialect
+
+    if (context.targetDriver.engine === 'postgres') {
+      // Single multi-table TRUNCATE is FK-safe when all related selected tables are listed.
+      return `TRUNCATE TABLE ${tables.map((table) => dialect.quoteTable(targetScope, table)).join(', ')};`
+    }
+
+    return tables.map((table) => dialect.renderTruncate(targetScope, table)).join('\n')
   }
 
   private async prepareTableSync(
     table: string,
     req: SyncRequest,
     context: SyncContext,
-    preview: boolean
+    preview: boolean,
+    truncateAlreadyHandled: boolean
   ): Promise<PreparedTableSync> {
     const targetDialect = context.targetDriver.dialect
     const existsInTarget = context.targetTables.has(table)
@@ -175,7 +257,11 @@ export class SyncService {
       if (existsInTarget) {
         switch (req.existingTableStrategy) {
           case 'overwrite-structure':
-            setupSQLs.push(targetDialect.renderDropIfExists(targetScope, table))
+            setupSQLs.push(
+              context.targetDriver.engine === 'postgres'
+                ? `DROP TABLE IF EXISTS ${targetDialect.quoteTable(targetScope, table)} CASCADE;`
+                : targetDialect.renderDropIfExists(targetScope, table)
+            )
             setupSQLs.push(buildTargetCreateTableSQL(schema, req, context, targetScope))
             description.push('drop & recreate target table')
             break
@@ -193,7 +279,11 @@ export class SyncService {
     }
 
     if (req.syncData) {
-      if (existsInTarget && req.existingTableStrategy === 'truncate-and-import') {
+      if (
+        existsInTarget &&
+        req.existingTableStrategy === 'truncate-and-import' &&
+        !truncateAlreadyHandled
+      ) {
         setupSQLs.push(targetDialect.renderTruncate(targetScope, table))
       }
       description.push(preview ? `data preview (${PREVIEW_ROW_LIMIT} rows)` : 'data sync')

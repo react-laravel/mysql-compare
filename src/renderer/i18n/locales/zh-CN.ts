@@ -88,6 +88,7 @@ export const zhCN: Dictionary = {
     noTablesMatch: '没有匹配的数据表',
     noKeys: '暂无 Key',
     noKeysMatch: '没有匹配的 Key',
+    redisKeysTruncated: '仅显示前 {{shown}} 个 Key（共 {{total}}）。请用筛选缩小范围。',
     openSqlConsole: '为 {{database}} 打开 SQL 控制台',
     openSshFiles: '打开 SSH 文件',
     openSshTerminal: '打开 SSH 终端',

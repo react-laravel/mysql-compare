@@ -183,6 +183,28 @@ export class PostgresDriver implements DbDriver {
     return res.rows.map((r) => r.table_name)
   }
 
+  async listForeignKeyEdges(database: string): Promise<Array<{ fromTable: string; toTable: string }>> {
+    const pool = await this.getPool(database)
+    const res = await pool.query<{ from_table: string; to_table: string }>(
+      `SELECT DISTINCT
+         tc.table_name AS from_table,
+         ccu.table_name AS to_table
+       FROM information_schema.table_constraints AS tc
+       JOIN information_schema.constraint_column_usage AS ccu
+         ON ccu.constraint_name = tc.constraint_name
+        AND ccu.constraint_schema = tc.constraint_schema
+       WHERE tc.constraint_type = 'FOREIGN KEY'
+         AND tc.table_schema = $1
+         AND ccu.table_schema = $1
+       ORDER BY tc.table_name, ccu.table_name`,
+      [DEFAULT_SCHEMA]
+    )
+    return res.rows.map((row) => ({
+      fromTable: row.from_table,
+      toTable: row.to_table
+    }))
+  }
+
   async getTableSchema(database: string, table: string): Promise<TableSchema> {
     const pool = await this.getPool(database)
 

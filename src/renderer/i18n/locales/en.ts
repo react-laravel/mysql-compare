@@ -86,6 +86,7 @@ export const en = {
     noTablesMatch: 'No tables match',
     noKeys: 'No keys',
     noKeysMatch: 'No keys match',
+    redisKeysTruncated: 'Showing first {{shown}} keys of {{total}}. Use filter to narrow the list.',
     openSqlConsole: 'Open SQL console for {{database}}',
     openSshFiles: 'Open SSH files',
     openSshTerminal: 'Open SSH terminal',

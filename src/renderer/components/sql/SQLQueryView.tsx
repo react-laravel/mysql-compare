@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import Editor, { type OnMount } from '@monaco-editor/react'
+import type { editor as MonacoEditor } from 'monaco-editor'
 import { ClipboardCopy, FileUp, FolderOpen, History, Play, RotateCcw, Rows3, ScanSearch, SplitSquareVertical } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Dialog } from '@renderer/components/ui/dialog'
@@ -7,6 +9,7 @@ import { api, unwrap } from '@renderer/lib/api'
 import { cn, formatCellValue } from '@renderer/lib/utils'
 import { useUIStore } from '@renderer/store/ui-store'
 import { useI18n, type Translator } from '@renderer/i18n'
+import { useTheme } from '@renderer/theme'
 import type { DbEngine, ExplainPlanNode, ExplainSQLResult } from '../../../shared/types'
 
 interface Props {
@@ -73,6 +76,7 @@ function writeSQLHistory(connectionId: string, database: string, history: SQLHis
 export function SQLQueryView({ connectionId, connectionName, database, engine }: Props) {
   const { showToast } = useUIStore()
   const { t } = useI18n()
+  const { theme } = useTheme()
   const [sql, setSQL] = useState(() => t('sql.placeholder'))
   const [selectedSQL, setSelectedSQL] = useState('')
   const [running, setRunning] = useState(false)
@@ -83,7 +87,8 @@ export function SQLQueryView({ connectionId, connectionName, database, engine }:
   const [history, setHistory] = useState<SQLHistoryEntry[]>(() => readSQLHistory(connectionId, database))
   const [editorPercent, setEditorPercent] = useState(() => readStoredEditorPercent())
   const fileInputRef = useRef<HTMLInputElement | null>(null)
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null)
+  const runSQLRef = useRef<(statementOverride?: string) => Promise<void>>(async () => undefined)
   const splitContainerRef = useRef<HTMLDivElement | null>(null)
   const resizeStateRef = useRef<{ top: number; height: number } | null>(null)
 
@@ -126,12 +131,18 @@ export function SQLQueryView({ connectionId, connectionName, database, engine }:
   }, [])
 
   const syncSelectedSQL = () => {
-    const textarea = textareaRef.current
-    if (!textarea) {
+    const editor = editorRef.current
+    if (!editor) {
       setSelectedSQL('')
       return
     }
-    setSelectedSQL(textarea.value.slice(textarea.selectionStart, textarea.selectionEnd).trim())
+    const selection = editor.getSelection()
+    const model = editor.getModel()
+    if (!selection || !model || selection.isEmpty()) {
+      setSelectedSQL('')
+      return
+    }
+    setSelectedSQL(model.getValueInRange(selection).trim())
   }
 
   const rememberStatement = (statement: string) => {
@@ -168,6 +179,18 @@ export function SQLQueryView({ connectionId, connectionName, database, engine }:
     } finally {
       setRunning(false)
     }
+  }
+
+  runSQLRef.current = runSQL
+
+  const onEditorMount: OnMount = (editor, monaco) => {
+    editorRef.current = editor
+    editor.onDidChangeCursorSelection(() => {
+      syncSelectedSQL()
+    })
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => {
+      void runSQLRef.current()
+    })
   }
 
   const runExplain = async () => {
@@ -297,25 +320,30 @@ export function SQLQueryView({ connectionId, connectionName, database, engine }:
               event.currentTarget.value = ''
             }}
           />
-          <textarea
-            ref={textareaRef}
-            value={sql}
-            onChange={(event) => {
-              setSQL(event.target.value)
-              requestAnimationFrame(syncSelectedSQL)
-            }}
-            onSelect={syncSelectedSQL}
-            onMouseUp={syncSelectedSQL}
-            onKeyUp={syncSelectedSQL}
-            onKeyDown={(event) => {
-              if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
-                event.preventDefault()
-                void runSQL()
-              }
-            }}
-            spellCheck={false}
-            className="min-h-0 flex-1 w-full resize-none rounded-md border border-input bg-background p-3 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-ring"
-          />
+          <div className="min-h-0 flex-1 overflow-hidden rounded-md border border-input">
+            <Editor
+              height="100%"
+              language="sql"
+              theme={theme === 'dark' ? 'vs-dark' : 'light'}
+              value={sql}
+              onChange={(value) => {
+                setSQL(value ?? '')
+                requestAnimationFrame(syncSelectedSQL)
+              }}
+              onMount={onEditorMount}
+              options={{
+                minimap: { enabled: false },
+                fontSize: 13,
+                wordWrap: 'on',
+                automaticLayout: true,
+                smoothScrolling: true,
+                scrollBeyondLastLine: false,
+                tabSize: 2,
+                renderLineHighlight: 'line',
+                padding: { top: 12, bottom: 12 }
+              }}
+            />
+          </div>
           <div className="mt-2 flex shrink-0 items-center gap-2 text-xs leading-5 text-muted-foreground">
             <FileUp className="h-3.5 w-3.5" />
             <span className="truncate">

@@ -126,6 +126,24 @@ export class MySQLDriver implements DbDriver {
     })
   }
 
+  async listForeignKeyEdges(database: string): Promise<Array<{ fromTable: string; toTable: string }>> {
+    return this.poolCache.withPool(database, async (pool) => {
+      const [rows] = await pool.query<RowDataPacket[]>(
+        `SELECT DISTINCT TABLE_NAME AS from_table, REFERENCED_TABLE_NAME AS to_table
+         FROM information_schema.KEY_COLUMN_USAGE
+         WHERE TABLE_SCHEMA = ?
+           AND REFERENCED_TABLE_SCHEMA = ?
+           AND REFERENCED_TABLE_NAME IS NOT NULL
+         ORDER BY TABLE_NAME, REFERENCED_TABLE_NAME`,
+        [database, database]
+      )
+      return rows.map((row) => ({
+        fromTable: String(row['from_table']),
+        toTable: String(row['to_table'])
+      }))
+    })
+  }
+
   async getTableSchema(database: string, table: string): Promise<TableSchema> {
     return this.poolCache.withPool(database, async (pool) => {
       const [colRows] = await pool.query<RowDataPacket[]>(

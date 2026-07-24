@@ -75,9 +75,19 @@ describe('SyncService', () => {
 
     expect(plan.steps).toEqual([
       {
+        table: '*',
+        description: 'disable foreign key checks',
+        sqls: ['SET FOREIGN_KEY_CHECKS=0;']
+      },
+      {
         table: 'users',
         description: 'drop & recreate target table, data preview (50 rows)',
         sqls: ['DROP target_db.users', 'CREATE TABLE `target_db`.`users` (id int);', 'INSERT target_db.users rows:1']
+      },
+      {
+        table: '*',
+        description: 'restore foreign key checks',
+        sqls: ['SET FOREIGN_KEY_CHECKS=1;']
       }
     ])
     expect(sourceDriver.streamRows).toHaveBeenCalledTimes(1)
@@ -103,9 +113,19 @@ describe('SyncService', () => {
 
     expect(plan.steps).toEqual([
       {
+        table: '*',
+        description: 'disable foreign key checks',
+        sqls: ['SET FOREIGN_KEY_CHECKS=0;']
+      },
+      {
         table: 'users',
         description: 'skip existing table',
         sqls: []
+      },
+      {
+        table: '*',
+        description: 'restore foreign key checks',
+        sqls: ['SET FOREIGN_KEY_CHECKS=1;']
       }
     ])
     expect(sourceDriver.streamRows).not.toHaveBeenCalled()
@@ -131,9 +151,19 @@ describe('SyncService', () => {
 
     expect(plan.steps).toEqual([
       {
+        table: '*',
+        description: 'disable foreign key checks',
+        sqls: ['SET FOREIGN_KEY_CHECKS=0;']
+      },
+      {
         table: 'users',
         description: 'keep target structure, data preview (50 rows)',
         sqls: ['INSERT target_db.users rows:1']
+      },
+      {
+        table: '*',
+        description: 'restore foreign key checks',
+        sqls: ['SET FOREIGN_KEY_CHECKS=1;']
       }
     ])
   })
@@ -157,9 +187,24 @@ describe('SyncService', () => {
 
     expect(plan.steps).toEqual([
       {
+        table: '*',
+        description: 'disable foreign key checks',
+        sqls: ['SET FOREIGN_KEY_CHECKS=0;']
+      },
+      {
+        table: '*',
+        description: 'truncate selected tables (FK-safe batch)',
+        sqls: ['TRUNCATE target_db.users']
+      },
+      {
         table: 'users',
         description: 'keep target structure, data preview (50 rows)',
-        sqls: ['TRUNCATE target_db.users', 'INSERT target_db.users rows:1']
+        sqls: ['INSERT target_db.users rows:1']
+      },
+      {
+        table: '*',
+        description: 'restore foreign key checks',
+        sqls: ['SET FOREIGN_KEY_CHECKS=1;']
       }
     ])
   })
@@ -231,6 +276,39 @@ describe('SyncService', () => {
       }
     ])
   })
+
+  it('orders tables by foreign keys and batches truncate', async () => {
+    const sourceDriver = createFakeDriver({
+      connectionId: 'source',
+      tablesByDatabase: { source_db: ['orders', 'users', 'order_items'] },
+      foreignKeyEdges: [
+        { fromTable: 'orders', toTable: 'users' },
+        { fromTable: 'order_items', toTable: 'orders' }
+      ],
+      streamBatches: [[{ id: 1 }]]
+    })
+    const targetDriver = createFakeDriver({
+      connectionId: 'target',
+      tablesByDatabase: { target_db: ['orders', 'users', 'order_items'] }
+    })
+
+    mockDrivers(sourceDriver.driver, targetDriver.driver)
+    getTableSchema.mockImplementation(async (_connectionId, _database, table) => buildSchema(table))
+
+    const plan = await syncService.buildPlan(
+      createSyncRequest({
+        tables: ['orders', 'users', 'order_items'],
+        existingTableStrategy: 'truncate-and-import'
+      })
+    )
+
+    expect(plan.steps.map((step) => step.table)).toEqual(['*', '*', 'users', 'orders', 'order_items', '*'])
+    expect(plan.steps[1]).toEqual({
+      table: '*',
+      description: 'truncate selected tables (FK-safe batch)',
+      sqls: ['TRUNCATE target_db.users\nTRUNCATE target_db.orders\nTRUNCATE target_db.order_items']
+    })
+  })
 })
 
 function mockDrivers(sourceDriver: DbDriver, targetDriver: DbDriver): void {
@@ -244,6 +322,7 @@ function createFakeDriver(options: {
   engine?: DbDriver['engine']
   dialect?: Dialect
   tablesByDatabase?: Record<string, string[]>
+  foreignKeyEdges?: Array<{ fromTable: string; toTable: string }>
   streamBatches?: Record<string, unknown>[][]
 }): {
   driver: DbDriver
@@ -254,6 +333,7 @@ function createFakeDriver(options: {
   const listTables = vi.fn(async (database: string) => {
     return options.tablesByDatabase?.[database] ?? []
   })
+  const listForeignKeyEdges = vi.fn(async () => options.foreignKeyEdges ?? [])
   const streamRows = vi.fn(async function* () {
     for (const batch of options.streamBatches ?? []) {
       yield batch
@@ -275,6 +355,7 @@ function createFakeDriver(options: {
       totalSize: 0
     }),
     listTables,
+    listForeignKeyEdges,
     getTableSchema: async () => buildSchema('unused'),
     queryRows: async () => ({ rows: [], total: 0 }),
     insertRow: async () => ({ insertId: 0, affectedRows: 0 }),

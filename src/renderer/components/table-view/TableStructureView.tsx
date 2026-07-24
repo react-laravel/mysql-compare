@@ -9,17 +9,24 @@ import { Badge } from '@renderer/components/ui/badge'
 import { useUIStore } from '@renderer/store/ui-store'
 import { useI18n } from '@renderer/i18n'
 import { cn } from '@renderer/lib/utils'
-import type { ColumnInfo, IndexInfo, TableSchema } from '../../../shared/types'
+import type { ColumnInfo, DbEngine, IndexInfo, TableSchema } from '../../../shared/types'
 import { TableStructureDialogs } from './TableStructureDialogs'
+import {
+  buildAlterColumnSQL,
+  buildDropIndexSQL,
+  buildIndexSQL
+} from './table-structure-sql'
 import type { ColumnDraft, IndexDraft, PendingAction } from './table-structure-types'
 
 interface Props {
   connectionId: string
   database: string
   table: string
+  engine?: DbEngine
 }
 
-export function TableStructureView({ connectionId, database, table }: Props) {
+export function TableStructureView({ connectionId, database, table, engine = 'mysql' }: Props) {
+  const sqlEngine = engine === 'postgres' ? 'postgres' : 'mysql'
   const { showToast } = useUIStore()
   const { t } = useI18n()
   const [schema, setSchema] = useState<TableSchema | null>(null)
@@ -46,13 +53,13 @@ export function TableStructureView({ connectionId, database, table }: Props) {
 
   const pendingColumnSQL = useMemo(() => {
     if (!editingColumn) return ''
-    return buildAlterColumnSQL(database, table, editingColumn)
-  }, [database, editingColumn, table])
+    return buildAlterColumnSQL(sqlEngine, database, table, editingColumn)
+  }, [database, editingColumn, sqlEngine, table])
 
   const pendingIndexSQL = useMemo(() => {
     if (!editingIndex) return ''
-    return buildIndexSQL(database, table, editingIndex)
-  }, [database, editingIndex, table])
+    return buildIndexSQL(sqlEngine, database, table, editingIndex)
+  }, [database, editingIndex, sqlEngine, table])
 
   const filteredColumns = useMemo(() => {
     if (!schema) return []
@@ -158,7 +165,7 @@ export function TableStructureView({ connectionId, database, table }: Props) {
     setPendingAction({
       title: t('tableStructure.confirmDeleteIndex'),
       description: `${database}.${table}.${index.name}`,
-      sql: buildDropIndexSQL(database, table, index.name),
+      sql: buildDropIndexSQL(sqlEngine, database, table, index.name),
       successMessage: t('tableStructure.indexDeleted', { name: index.name })
     })
   }
@@ -370,80 +377,4 @@ export function TableStructureView({ connectionId, database, table }: Props) {
       />
     </div>
   )
-}
-
-function buildAlterColumnSQL(database: string, table: string, draft: ColumnDraft): string {
-  const definition = [
-    quoteIdent(draft.name.trim()),
-    draft.type.trim(),
-    draft.nullable ? 'NULL' : 'NOT NULL',
-    buildDefaultClause(draft),
-    draft.isAutoIncrement ? 'AUTO_INCREMENT' : '',
-    `COMMENT ${quoteString(draft.comment)}`
-  ]
-    .filter(Boolean)
-    .join(' ')
-
-  const action =
-    draft.originalName === draft.name.trim()
-      ? 'MODIFY COLUMN'
-      : `CHANGE COLUMN ${quoteIdent(draft.originalName)}`
-  return `ALTER TABLE ${quoteTable(database, table)} ${action} ${definition};`
-}
-
-function buildIndexSQL(database: string, table: string, draft: IndexDraft): string {
-  const addClause = buildAddIndexClause(draft)
-  if (draft.mode === 'add') {
-    return `ALTER TABLE ${quoteTable(database, table)} ${addClause};`
-  }
-  return `ALTER TABLE ${quoteTable(database, table)} ${buildDropIndexClausePart(draft.originalName || draft.name)}, ${addClause};`
-}
-
-function buildDropIndexSQL(database: string, table: string, indexName: string): string {
-  return `ALTER TABLE ${quoteTable(database, table)} ${buildDropIndexClausePart(indexName)};`
-}
-
-function buildAddIndexClause(draft: IndexDraft): string {
-  const columns = draft.columns.map((column) => quoteIdent(column)).join(', ')
-  const usingClause = !draft.primary && draft.type.trim() ? `USING ${draft.type.trim().toUpperCase()} ` : ''
-  if (draft.primary) {
-    return `ADD PRIMARY KEY (${columns})`
-  }
-  if (draft.unique) {
-    return `ADD UNIQUE INDEX ${quoteIdent(draft.name.trim())} ${usingClause}(${columns})`
-  }
-  return `ADD INDEX ${quoteIdent(draft.name.trim())} ${usingClause}(${columns})`
-}
-
-function buildDropIndexClausePart(indexName: string): string {
-  return indexName === 'PRIMARY' ? 'DROP PRIMARY KEY' : `DROP INDEX ${quoteIdent(indexName)}`
-}
-
-function buildDefaultClause(draft: ColumnDraft): string {
-  if (!draft.useDefault) return ''
-  const value = draft.defaultValue.trim()
-  if (!value) return 'DEFAULT NULL'
-  if (isSQLKeywordDefault(value)) return `DEFAULT ${value}`
-  if (isNumericLike(draft.type, value)) return `DEFAULT ${value}`
-  return `DEFAULT ${quoteString(value)}`
-}
-
-function isSQLKeywordDefault(value: string): boolean {
-  return /^(null|current_timestamp(?:\(\))?|current_date(?:\(\))?|current_time(?:\(\))?)$/i.test(value)
-}
-
-function isNumericLike(type: string, value: string): boolean {
-  return /^(tinyint|smallint|mediumint|int|bigint|decimal|numeric|float|double|real|bit)/i.test(type) && /^-?\d+(\.\d+)?$/.test(value)
-}
-
-function quoteIdent(name: string): string {
-  return `\`${name.replace(/`/g, '``')}\``
-}
-
-function quoteTable(database: string, table: string): string {
-  return `${quoteIdent(database)}.${quoteIdent(table)}`
-}
-
-function quoteString(value: string): string {
-  return `'${value.replace(/\\/g, '\\\\').replace(/'/g, "''")}'`
 }

@@ -59,6 +59,8 @@ export interface DbDriver {
   listDatabases(): Promise<string[]>
   getDatabaseInfo(database: string): Promise<DatabaseInfo>
   listTables(database: string): Promise<string[]>
+  /** Optional: FK edges where fromTable references toTable. Missing => treated as no FKs. */
+  listForeignKeyEdges?(database: string): Promise<Array<{ fromTable: string; toTable: string }>>
   getTableSchema(database: string, table: string): Promise<TableSchema>
 
   queryRows(
