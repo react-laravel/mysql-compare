@@ -54,7 +54,7 @@ import type {
 } from './types'
 
 export interface AppRuntimeInfo {
-  readonly mode: 'electron' | 'web'
+  readonly mode: 'electron' | 'web' | 'tauri'
   readonly supportsNativeFilePicker: boolean
   readonly supportsDirectoryUpload: boolean
   readonly supportsTerminalStreaming: boolean

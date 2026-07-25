@@ -17,7 +17,8 @@ interface StoredDatabaseCredential {
 }
 
 interface StoredConnection extends Omit<ConnectionConfig,
-  'password' | 'databaseCredentials' | 'sshPassword' | 'sshPrivateKey' | 'sshPassphrase'> {
+  'password' | 'databaseCredentials' | 'sshPassword' | 'sshPrivateKey' | 'sshPassphrase' |
+  'sshSourceConnectionId'> {
   passwordCipher: string | null
   databaseCredentials?: Record<string, StoredDatabaseCredential>
   sshPasswordCipher: string | null
@@ -148,6 +149,14 @@ function pickSecret(nextValue: string | undefined, previousValue: string | undef
   return previousValue
 }
 
+function pickSSHSecret(
+  nextValue: string | undefined,
+  previousValue: string | undefined
+): string | undefined {
+  if (nextValue === undefined) return previousValue
+  return nextValue.trim() ? nextValue : undefined
+}
+
 /** 主进程内部使用：拿到包含明文密码的完整 ConnectionConfig */
 function toFull(s: StoredConnection): ConnectionConfig {
   return {
@@ -186,16 +195,28 @@ export const connectionStore = {
   },
 
   resolveSecrets(conn: ConnectionConfig): ConnectionConfig {
-    if (!conn.id) return conn
-    const previous = this.getFull(conn.id)
-    if (!previous) return conn
+    const sshSource = conn.sshSourceConnectionId
+      ? this.getFull(conn.sshSourceConnectionId)
+      : null
+    const withSharedSSH = sshSource
+      ? {
+          ...conn,
+          sshPassword: sshSource.sshPassword,
+          sshPrivateKey: sshSource.sshPrivateKey,
+          sshPassphrase: sshSource.sshPassphrase,
+          sshSourceConnectionId: undefined
+        }
+      : conn
+    if (!withSharedSSH.id) return withSharedSSH
+    const previous = this.getFull(withSharedSSH.id)
+    if (!previous) return withSharedSSH
     return {
       ...previous,
-      ...conn,
-      password: pickSecret(conn.password, previous.password),
-      sshPassword: pickSecret(conn.sshPassword, previous.sshPassword),
-      sshPrivateKey: pickSecret(conn.sshPrivateKey, previous.sshPrivateKey),
-      sshPassphrase: pickSecret(conn.sshPassphrase, previous.sshPassphrase)
+      ...withSharedSSH,
+      password: pickSecret(withSharedSSH.password, previous.password),
+      sshPassword: pickSSHSecret(withSharedSSH.sshPassword, previous.sshPassword),
+      sshPrivateKey: pickSSHSecret(withSharedSSH.sshPrivateKey, previous.sshPrivateKey),
+      sshPassphrase: pickSSHSecret(withSharedSSH.sshPassphrase, previous.sshPassphrase)
     }
   },
 

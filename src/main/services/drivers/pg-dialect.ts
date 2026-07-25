@@ -44,7 +44,7 @@ export const pgDialect: Dialect = {
   },
 
   renderTruncate(database, table) {
-    return `TRUNCATE TABLE ${this.quoteTable(database, table)};`
+    return `TRUNCATE TABLE ${this.quoteTable(database, table)} RESTART IDENTITY;`
   },
 
   renderDropIfExists(database, table) {

@@ -8,7 +8,7 @@ export function registerConnectionIPC(): void {
   handle(IPC.ConnectionList, () => connectionStore.list())
 
   handle(IPC.ConnectionUpsert, async (conn: ConnectionConfig) => {
-    const saved = connectionStore.upsert(conn)
+    const saved = connectionStore.upsert(connectionStore.resolveSecrets(conn))
     await dbService.closeConnection(saved.id)
     return saved
   })

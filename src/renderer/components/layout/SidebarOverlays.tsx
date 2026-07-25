@@ -28,6 +28,7 @@ import type {
 interface SidebarOverlaysProps {
   creating: boolean
   editing: SafeConnection | null
+  sshSource: SafeConnection | null
   onConnectionDialogOpenChange: (open: boolean) => void
   onConnectionSaved: () => void
   onDeleteConnection: (connection: SafeConnection) => boolean | Promise<boolean>
@@ -35,6 +36,7 @@ interface SidebarOverlaysProps {
   onCloseConnectionMenu: () => void
   onCloseDatabaseConnection: (menu: ConnectionMenuState) => void | Promise<void>
   onEditConnection: (connection: SafeConnection) => void
+  onCreateWithSSH: (connection: SafeConnection) => void
   tableMenu: TableMenuState | null
   onCloseTableMenu: () => void
   databaseMenu: DatabaseMenuState | null
@@ -51,7 +53,7 @@ interface SidebarOverlaysProps {
   onShowCreateSQL: (menu: TableMenuState) => void | Promise<void>
   onExportTable: (menu: TableMenuState) => void
   onImportTable: (menu: TableMenuState) => void
-  onTruncateTable: (menu: TableMenuState) => void | Promise<void>
+  onTruncateTable: (menu: TableMenuState, resetIdentity: boolean) => void | Promise<void>
   onDropTable: (menu: TableMenuState) => void | Promise<void>
   renameDialog: RenameDialogState | null
   renameDraft: string
@@ -88,6 +90,7 @@ interface SidebarOverlaysProps {
 export function SidebarOverlays({
   creating,
   editing,
+  sshSource,
   onConnectionDialogOpenChange,
   onConnectionSaved,
   onDeleteConnection,
@@ -95,6 +98,7 @@ export function SidebarOverlays({
   onCloseConnectionMenu,
   onCloseDatabaseConnection,
   onEditConnection,
+  onCreateWithSSH,
   tableMenu,
   onCloseTableMenu,
   databaseMenu,
@@ -147,10 +151,11 @@ export function SidebarOverlays({
   const { t } = useI18n()
   return (
     <>
-      {(creating || editing) && (
+      {(creating || editing || sshSource) && (
         <ConnectionDialog
           open
           connection={editing}
+          sshSource={sshSource}
           onOpenChange={onConnectionDialogOpenChange}
           onSaved={onConnectionSaved}
           onDelete={onDeleteConnection}
@@ -162,6 +167,7 @@ export function SidebarOverlays({
         onCloseConnectionMenu={onCloseConnectionMenu}
         onCloseDatabaseConnection={onCloseDatabaseConnection}
         onEditConnection={onEditConnection}
+        onCreateWithSSH={onCreateWithSSH}
         tableMenu={tableMenu}
         onCloseTableMenu={onCloseTableMenu}
         onOpenTableDetails={onOpenTableDetails}

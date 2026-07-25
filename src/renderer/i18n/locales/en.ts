@@ -96,8 +96,10 @@ export const en = {
     confirm: {
       dropDatabase: 'Drop database "{{database}}"? This removes all tables and cannot be undone.',
       copyTable: 'Copy "{{table}}" and its data to "{{targetTable}}"?',
-      dropTable: 'Drop table "{{table}}"? This cannot be undone.',
-      truncateTable: 'Truncate table "{{table}}"? All rows will be removed.',
+      dropTable:
+        'Drop table "{{database}}.{{table}}"? Its structure and all data will be permanently deleted. This cannot be undone.',
+      truncateTable:
+        'Truncate table "{{database}}.{{table}}"? All rows will be permanently deleted. This cannot be undone.',
       deleteConnection: 'Delete connection "{{name}}"?',
     },
     toast: {
@@ -115,6 +117,7 @@ export const en = {
       databasePasswordRequired: 'Database password is required',
     },
     overlays: {
+      createPostgresWithSsh: 'New Connection with This SSH',
       closeDatabaseConnection: 'Close Database Connection',
       databaseCredential: 'Database Credentials...',
       databaseCredentialTitle: 'Database Access Account',
@@ -136,6 +139,8 @@ export const en = {
       exportEllipsis: 'Export...',
       importEllipsis: 'Import...',
       truncateTable: 'Truncate Table',
+      clearKeepIdentity: 'Clear, Keep ID',
+      truncateResetIdentity: 'TRUNCATE, Reset ID',
       dropTable: 'Drop Table',
       newRedisKey: 'New Redis Key',
       renameRedisKey: 'Rename Key',
@@ -238,13 +243,15 @@ export const en = {
     editTitle: 'Edit Connection',
     newTitle: 'New Connection',
     description: 'Connect to MySQL, PostgreSQL, or Redis, directly or through an SSH tunnel.',
+    reusingSsh: 'Reusing the saved SSH settings and credentials from “{{name}}”.',
     sshKeyLoaded: 'Loaded SSH key: {{name}}',
     sshKeyReadFailed: 'Failed to read SSH key file',
     form: {
-      engine: 'Engine',
+      engine: 'Database type',
       mysql: 'MySQL',
       postgres: 'PostgreSQL',
       redis: 'Redis',
+      namePlaceholder: 'Uses the host IP when left blank',
       group: 'Group',
       host: 'Host',
       port: 'Port',
@@ -256,6 +263,9 @@ export const en = {
       sshHost: 'SSH Host',
       sshPort: 'SSH Port',
       sshUsername: 'SSH Username',
+      sshAuthMethod: 'SSH authentication',
+      sshAuthPassword: 'Password',
+      sshAuthPrivateKey: 'Private key',
       sshPassword: 'SSH Password',
       sshPasswordKeep: 'SSH Password (leave blank to keep)',
       sshPrivateKey: 'SSH Private Key',
@@ -519,6 +529,9 @@ export const en = {
     clearSelection: 'Clear',
     copySelected: 'Copy JSON',
     copiedRows: 'Copied {{count}} row(s)',
+    copyInsertWithId: 'Copy as INSERT (with ID)',
+    copyInsertWithoutId: 'Copy as INSERT (without ID)',
+    insertCopied: 'INSERT statement copied',
     selectRow: 'Select row {{index}}',
     selectPageRows: 'Select rows on this page',
     columnsPanel: 'Columns',
@@ -616,6 +629,7 @@ export const en = {
     created: 'Created',
     updated: 'Updated',
     columnsIndexes: 'Columns / Indexes',
+    createStatement: 'Create table statement',
     tableComment: 'Table Comment',
     visibleHint: 'Visible in MySQL metadata and schema tools.',
     editComment: 'Edit Comment',
@@ -649,6 +663,8 @@ export const en = {
     dropDatabaseDescription:
       'Delete database {{database}} permanently. This closes related tabs and cannot be undone.',
     dropDatabase: 'Delete Database',
+    confirmDropTitle: 'Confirm database deletion',
+    confirmDropAction: 'Delete permanently',
     droppingDatabase: 'Deleting...'
   },
   exportDialog: {

@@ -630,6 +630,7 @@ export function Workspace() {
                         connectionId={tab.view.connectionId}
                         database={tab.view.database}
                         table={tab.view.table}
+                        engine={tab.view.engine}
                         readOnly={false}
                         filterEnabled={!isRedisTable}
                         sortable={!isRedisTable}

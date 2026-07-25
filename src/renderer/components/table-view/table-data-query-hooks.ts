@@ -9,6 +9,7 @@ export type TableDataSortOrder = { column: string; dir: 'ASC' | 'DESC' } | undef
 
 const DOUBLE_QUOTED_COMPARISON_VALUE =
   /((?:^|[\s(])(?:[A-Za-z_][\w.]*|"[^"]+"|`[^`]+`|\[[^\]]+\])\s*(?:=|<>|!=|<=|>=|<|>|\bLIKE\b|\bILIKE\b)\s*)"((?:[^"\\]|\\.)*)"/gi
+const HIDDEN_COLUMNS_STORAGE_PREFIX = 'mysql-compare:table-hidden-columns:v1'
 
 interface UseTableDataQueryArgs {
   connectionId: string
@@ -65,12 +66,13 @@ export function useTableDataQuery({
   const [appliedWhere, setAppliedWhere] = useState('')
   const [orderBy, setOrderBy] = useState<TableDataSortOrder>()
   const [loading, setLoading] = useState(false)
-  const [visibleColumns, setVisibleColumns] = useState<Set<string>>(new Set())
+  const [visibleColumns, setVisibleColumnsState] = useState<Set<string>>(new Set())
   const [wrapCells, setWrapCells] = useState(false)
   const [density, setDensity] = useState<'compact' | 'comfortable'>('compact')
   const [reloadToken, setReloadToken] = useState(0)
   const requestIdRef = useRef(0)
   const orderByKey = orderBy ? `${orderBy.column}:${orderBy.dir}` : ''
+  const hiddenColumnsStorageKey = getHiddenColumnsStorageKey(connectionId, database, table)
 
   const refresh = () => setReloadToken((current) => current + 1)
 
@@ -80,7 +82,7 @@ export function useTableDataQuery({
     setOrderBy(undefined)
     setWhere('')
     setAppliedWhere('')
-    setVisibleColumns(new Set())
+    setVisibleColumnsState(new Set())
     setData(null)
   }, [connectionId, database, table])
 
@@ -144,13 +146,12 @@ export function useTableDataQuery({
   useEffect(() => {
     if (!data) return
     const allColumns = data.columns.map((column) => column.name)
-    setVisibleColumns((current) => {
-      if (current.size === 0) return new Set(allColumns)
-
-      const next = new Set(allColumns.filter((column) => current.has(column)))
-      return next.size > 0 ? next : new Set(allColumns)
-    })
-  }, [data])
+    const hiddenColumns = readHiddenColumns(hiddenColumnsStorageKey)
+    const activeHiddenColumns = allColumns.filter((column) => hiddenColumns.has(column))
+    const next = new Set(allColumns.filter((column) => !hiddenColumns.has(column)))
+    setVisibleColumnsState(next.size > 0 ? next : new Set(allColumns))
+    writeHiddenColumns(hiddenColumnsStorageKey, activeHiddenColumns)
+  }, [data, hiddenColumnsStorageKey])
 
   const visibleDataColumns = useMemo(
     () => (data ? data.columns.filter((column) => visibleColumns.has(column.name)) : []),
@@ -205,6 +206,19 @@ export function useTableDataQuery({
     })
   }
 
+  const setVisibleColumns: Dispatch<SetStateAction<Set<string>>> = (value) => {
+    setVisibleColumnsState((current) => {
+      const next = typeof value === 'function' ? value(current) : value
+      if (data) {
+        const hiddenColumns = data.columns
+          .map((column) => column.name)
+          .filter((column) => !next.has(column))
+        writeHiddenColumns(hiddenColumnsStorageKey, hiddenColumns)
+      }
+      return next
+    })
+  }
+
   const setColumnVisibility = (columnName: string, visible: boolean) => {
     setVisibleColumns((current) => {
       const next = new Set(current)
@@ -256,4 +270,35 @@ export function normalizeWhereClauseInput(where: string): string {
     const normalizedValue = value.replace(/\\"/g, '"').replace(/'/g, "''")
     return `${prefix}'${normalizedValue}'`
   })
+}
+
+function getHiddenColumnsStorageKey(connectionId: string, database: string, table: string): string {
+  return [
+    HIDDEN_COLUMNS_STORAGE_PREFIX,
+    encodeURIComponent(connectionId),
+    encodeURIComponent(database),
+    encodeURIComponent(table)
+  ].join(':')
+}
+
+function readHiddenColumns(storageKey: string): Set<string> {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(storageKey) ?? '[]')
+    if (!Array.isArray(parsed)) return new Set()
+    return new Set(parsed.filter((column): column is string => typeof column === 'string'))
+  } catch {
+    return new Set()
+  }
+}
+
+function writeHiddenColumns(storageKey: string, columns: string[]): void {
+  try {
+    if (columns.length === 0) {
+      window.localStorage.removeItem(storageKey)
+      return
+    }
+    window.localStorage.setItem(storageKey, JSON.stringify(columns))
+  } catch {
+    // Column visibility still works for this session when storage is unavailable.
+  }
 }

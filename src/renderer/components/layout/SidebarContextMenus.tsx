@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import {
   CircleEllipsis,
   Copy,
@@ -7,6 +7,7 @@ import {
   FileCode2,
   KeyRound,
   Pencil,
+  Plus,
   RefreshCw,
   Trash2,
   Unplug,
@@ -14,6 +15,8 @@ import {
 } from 'lucide-react'
 import { useI18n } from '@renderer/i18n'
 import { cn } from '@renderer/lib/utils'
+import { Button } from '@renderer/components/ui/button'
+import { Dialog } from '@renderer/components/ui/dialog'
 import type { SafeConnection } from '../../../shared/types'
 import type { ConnectionMenuState, DatabaseMenuState, TableMenuState } from './sidebar-types'
 
@@ -22,6 +25,7 @@ interface SidebarContextMenusProps {
   onCloseConnectionMenu: () => void
   onCloseDatabaseConnection: (menu: ConnectionMenuState) => void | Promise<void>
   onEditConnection: (connection: SafeConnection) => void
+  onCreateWithSSH: (connection: SafeConnection) => void
   tableMenu: TableMenuState | null
   onCloseTableMenu: () => void
   onOpenTableDetails: (menu: TableMenuState) => void
@@ -30,7 +34,7 @@ interface SidebarContextMenusProps {
   onShowCreateSQL: (menu: TableMenuState) => void | Promise<void>
   onExportTable: (menu: TableMenuState) => void
   onImportTable: (menu: TableMenuState) => void
-  onTruncateTable: (menu: TableMenuState) => void | Promise<void>
+  onTruncateTable: (menu: TableMenuState, resetIdentity: boolean) => void | Promise<void>
   onDropTable: (menu: TableMenuState) => void | Promise<void>
   databaseMenu: DatabaseMenuState | null
   onCloseDatabaseMenu: () => void
@@ -47,6 +51,7 @@ export function SidebarContextMenus({
   onCloseConnectionMenu,
   onCloseDatabaseConnection,
   onEditConnection,
+  onCreateWithSSH,
   tableMenu,
   onCloseTableMenu,
   onOpenTableDetails,
@@ -67,6 +72,31 @@ export function SidebarContextMenus({
   onRefreshDatabase
 }: SidebarContextMenusProps) {
   const { t } = useI18n()
+  const [pendingDangerAction, setPendingDangerAction] = useState<{
+    kind: 'truncate' | 'drop'
+    menu: TableMenuState
+  } | null>(null)
+  const [confirmingAction, setConfirmingAction] = useState(false)
+
+  const requestDangerAction = (kind: 'truncate' | 'drop', menu: TableMenuState) => {
+    onCloseTableMenu()
+    setPendingDangerAction({ kind, menu })
+  }
+
+  const confirmDangerAction = async (resetIdentity = true) => {
+    if (!pendingDangerAction || confirmingAction) return
+    setConfirmingAction(true)
+    try {
+      if (pendingDangerAction.kind === 'truncate') {
+        await onTruncateTable(pendingDangerAction.menu, resetIdentity)
+      } else {
+        await onDropTable(pendingDangerAction.menu)
+      }
+      setPendingDangerAction(null)
+    } finally {
+      setConfirmingAction(false)
+    }
+  }
 
   return (
     <>
@@ -78,6 +108,13 @@ export function SidebarContextMenus({
             onClick={() => onCloseDatabaseConnection(connectionMenu)}
           />
           <MenuDivider />
+          {connectionMenu.connection.useSSH && (
+            <MenuItem
+              icon={<Plus className="h-3.5 w-3.5" />}
+              label={t('sidebar.overlays.createPostgresWithSsh')}
+              onClick={() => onCreateWithSSH(connectionMenu.connection)}
+            />
+          )}
           <MenuItem
             icon={<Pencil className="h-3.5 w-3.5" />}
             label={t('common.edit')}
@@ -86,7 +123,7 @@ export function SidebarContextMenus({
         </ContextMenu>
       )}
 
-      {tableMenu && (
+      {tableMenu && !pendingDangerAction && (
         <ContextMenu x={tableMenu.x} y={tableMenu.y} onClose={onCloseTableMenu}>
           <MenuItem
             icon={<CircleEllipsis className="h-3.5 w-3.5" />}
@@ -104,7 +141,7 @@ export function SidebarContextMenus({
               <MenuItem
                 icon={<Trash2 className="h-3.5 w-3.5" />}
                 label={t('sidebar.overlays.deleteRedisKey')}
-                onClick={() => onDropTable(tableMenu)}
+                onClick={() => requestDangerAction('drop', tableMenu)}
                 danger
               />
             </>
@@ -139,7 +176,13 @@ export function SidebarContextMenus({
               <MenuItem
                 icon={<Eraser className="h-3.5 w-3.5" />}
                 label={t('sidebar.overlays.truncateTable')}
-                onClick={() => onTruncateTable(tableMenu)}
+                onClick={() => requestDangerAction('truncate', tableMenu)}
+                danger
+              />
+              <MenuItem
+                icon={<Trash2 className="h-3.5 w-3.5" />}
+                label={t('sidebar.overlays.dropTable')}
+                onClick={() => requestDangerAction('drop', tableMenu)}
                 danger
               />
             </>
@@ -189,6 +232,79 @@ export function SidebarContextMenus({
           />
         </ContextMenu>
       )}
+
+      {pendingDangerAction && (
+        <Dialog
+          open
+          onOpenChange={(open) => {
+            if (!open && !confirmingAction) setPendingDangerAction(null)
+          }}
+          title={
+            pendingDangerAction.menu.connection.engine === 'redis'
+              ? t('sidebar.overlays.deleteRedisKey')
+              : pendingDangerAction.kind === 'truncate'
+                ? t('sidebar.overlays.truncateTable')
+                : t('sidebar.overlays.dropTable')
+          }
+          description={
+            pendingDangerAction.menu.connection.engine === 'redis'
+              ? t('redis.confirmDeleteKey', { key: pendingDangerAction.menu.table })
+              : pendingDangerAction.kind === 'truncate'
+                ? t('sidebar.confirm.truncateTable', {
+                    database: pendingDangerAction.menu.database,
+                    table: pendingDangerAction.menu.table
+                  })
+                : t('sidebar.confirm.dropTable', {
+                    database: pendingDangerAction.menu.database,
+                    table: pendingDangerAction.menu.table
+                  })
+          }
+          className="max-w-md"
+          footer={
+            <>
+              <Button
+                variant="outline"
+                onClick={() => setPendingDangerAction(null)}
+                disabled={confirmingAction}
+              >
+                {t('common.cancel')}
+              </Button>
+              {pendingDangerAction.kind === 'truncate' ? (
+                <>
+                  <Button
+                    variant="destructive"
+                    onClick={() => confirmDangerAction(false)}
+                    disabled={confirmingAction}
+                  >
+                    {t('sidebar.overlays.clearKeepIdentity')}
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    onClick={() => confirmDangerAction(true)}
+                    disabled={confirmingAction}
+                  >
+                    {t('sidebar.overlays.truncateResetIdentity')}
+                  </Button>
+                </>
+              ) : (
+                <Button
+                  variant="destructive"
+                  onClick={() => confirmDangerAction()}
+                  disabled={confirmingAction}
+                >
+                  {pendingDangerAction.menu.connection.engine === 'redis'
+                    ? t('sidebar.overlays.deleteRedisKey')
+                    : t('sidebar.overlays.dropTable')}
+                </Button>
+              )}
+            </>
+          }
+        >
+          <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive dark:text-red-300">
+            {pendingDangerAction.menu.database}.{pendingDangerAction.menu.table}
+          </div>
+        </Dialog>
+      )}
     </>
   )
 }
@@ -204,11 +320,38 @@ function ContextMenu({
   onClose: () => void
   children: ReactNode
 }) {
+  const menuRef = useRef<HTMLDivElement | null>(null)
+  const [position, setPosition] = useState({ x, y })
+
+  useLayoutEffect(() => {
+    const menu = menuRef.current
+    if (!menu) return
+    const viewportPadding = 8
+    const width = menu.offsetWidth
+    const height = menu.offsetHeight
+    const nextX = Math.max(
+      viewportPadding,
+      Math.min(x, window.innerWidth - width - viewportPadding)
+    )
+    const nextY = Math.max(
+      viewportPadding,
+      Math.min(y, window.innerHeight - height - viewportPadding)
+    )
+    setPosition((current) =>
+      current.x === nextX && current.y === nextY ? current : { x: nextX, y: nextY }
+    )
+  }, [x, y])
+
   return (
     <div className="fixed inset-0 z-[80]" onClick={onClose}>
       <div
-        className="absolute w-56 rounded-md border border-border bg-card p-1 shadow-xl"
-        style={{ left: x, top: y }}
+        ref={menuRef}
+        className="absolute w-56 overflow-y-auto rounded-md border border-border bg-card p-1 shadow-xl"
+        style={{
+          left: position.x,
+          top: position.y,
+          maxHeight: 'calc(100vh - 16px)'
+        }}
         onClick={(event) => event.stopPropagation()}
       >
         {children}

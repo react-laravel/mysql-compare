@@ -349,6 +349,65 @@ describe('MySQLDriver', () => {
     expect(poolA.end).toHaveBeenCalledTimes(1)
     expect(poolB.end).toHaveBeenCalledTimes(1)
   })
+
+  it('uses an exact count instead of the InnoDB row estimate for table info', async () => {
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes('information_schema.COLUMNS')) {
+        return [[{
+          COLUMN_NAME: 'id',
+          COLUMN_TYPE: 'bigint',
+          IS_NULLABLE: 'NO',
+          COLUMN_DEFAULT: null,
+          COLUMN_KEY: 'PRI',
+          EXTRA: 'auto_increment',
+          COLUMN_COMMENT: ''
+        }]]
+      }
+      if (sql.includes('information_schema.STATISTICS')) {
+        return [[{
+          INDEX_NAME: 'PRIMARY',
+          NON_UNIQUE: 0,
+          INDEX_TYPE: 'BTREE',
+          COLUMN_NAME: 'id',
+          SEQ_IN_INDEX: 1
+        }]]
+      }
+      if (sql.startsWith('SHOW CREATE TABLE')) {
+        return [[{ 'Create Table': 'CREATE TABLE `users` (`id` bigint)' }]]
+      }
+      if (sql.startsWith('SELECT COUNT(*) AS ROW_COUNT')) {
+        return [[{ ROW_COUNT: 1 }]]
+      }
+      if (sql.includes('information_schema.TABLES')) {
+        return [[{
+          TABLE_ROWS: 0,
+          ENGINE: 'InnoDB',
+          TABLE_COLLATION: 'utf8mb4_unicode_ci',
+          TABLE_COMMENT: '',
+          DATA_LENGTH: 16384,
+          INDEX_LENGTH: 32768,
+          DATA_FREE: 0,
+          AVG_ROW_LENGTH: 0,
+          AUTO_INCREMENT: 2,
+          CREATE_TIME: '2026-03-30 12:42:59',
+          UPDATE_TIME: null
+        }]]
+      }
+      throw new Error(`Unexpected SQL: ${sql}`)
+    })
+    createPool.mockReturnValue({
+      query,
+      execute: vi.fn(async () => [undefined]),
+      getConnection: vi.fn(),
+      end: vi.fn(async () => undefined)
+    })
+
+    const driver = new MySQLDriver({ connection: createConnectionConfig() })
+    const result = await driver.getTableSchema('rpg', 'users')
+
+    expect(result.rowEstimate).toBe(1)
+    expect(query).toHaveBeenCalledWith('SELECT COUNT(*) AS ROW_COUNT FROM `rpg`.`users`')
+  })
 })
 
 function createPoolDouble(queryResult: unknown, onQuery?: () => void, getConnection?: ReturnType<typeof vi.fn>) {

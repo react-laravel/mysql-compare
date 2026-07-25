@@ -4,11 +4,17 @@ import './monaco'
 import App from './App'
 import './index.css'
 import { initializeTheme } from './theme'
+import { bootstrapApi } from './lib/api'
 
 initializeTheme()
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>
-)
+async function main(): Promise<void> {
+  await bootstrapApi()
+  ReactDOM.createRoot(document.getElementById('root')!).render(
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>
+  )
+}
+
+void main()

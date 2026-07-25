@@ -1,10 +1,10 @@
-import { type MutableRefObject } from 'react'
+import { useState, type MutableRefObject } from 'react'
 import { Badge } from '@renderer/components/ui/badge'
 import { Checkbox } from '@renderer/components/ui/checkbox'
 import { Table, TBody, THead, Th, Tr, Td } from '@renderer/components/ui/table'
 import { useI18n } from '@renderer/i18n'
 import { cn, formatCellValue } from '@renderer/lib/utils'
-import { Pencil, RefreshCw } from 'lucide-react'
+import { Copy, Pencil, RefreshCw } from 'lucide-react'
 import type { ColumnInfo, QueryRowsResult } from '../../../shared/types'
 import { JsonViewerTrigger } from './JsonViewerTrigger'
 import { getFormattedJsonDisplay } from './row-edit-dialog-utils'
@@ -28,6 +28,7 @@ interface TableDataGridProps {
   onRowClick: (rowIndex: number, shiftKey: boolean) => void
   onStartEdit: (row: Record<string, unknown>) => void
   onToggleSelect: (rowIndex: number, shiftKey: boolean) => void
+  onCopyInsert?: (row: Record<string, unknown>, includeId: boolean) => void
   onSaveJsonCell?: (row: Record<string, unknown>, column: string, value: string) => Promise<void>
 }
 
@@ -49,9 +50,15 @@ export function TableDataGrid({
   onRowClick,
   onStartEdit,
   onToggleSelect,
+  onCopyInsert,
   onSaveJsonCell
 }: TableDataGridProps) {
   const { t } = useI18n()
+  const [rowMenu, setRowMenu] = useState<{
+    x: number
+    y: number
+    row: Record<string, unknown>
+  } | null>(null)
 
   return (
     <div className="relative flex-1 overflow-auto">
@@ -111,11 +118,13 @@ export function TableDataGrid({
                   <div className="flex flex-col items-start gap-1 whitespace-normal py-1 leading-tight">
                     <div className="flex flex-wrap items-center gap-1">
                       {column.isPrimaryKey && <Badge variant="warning">PK</Badge>}
-                      <span>{column.name}</span>
+                      <span className="inline-flex items-center gap-1 whitespace-nowrap">
+                        <span>{column.name}</span>
+                        {orderBy?.column === column.name && (
+                          <span className="text-[10px]">{orderBy.dir === 'ASC' ? '▲' : '▼'}</span>
+                        )}
+                      </span>
                       <span className="text-[10px] text-muted-foreground">{column.type}</span>
-                      {orderBy?.column === column.name && (
-                        <span className="text-[10px]">{orderBy.dir === 'ASC' ? '▲' : '▼'}</span>
-                      )}
                     </div>
                     {column.comment && (
                       <span
@@ -144,6 +153,15 @@ export function TableDataGrid({
                 }}
                 onDoubleClick={() => {
                   if (!readOnly && data.hasPrimaryKey) onStartEdit(row)
+                }}
+                onContextMenu={(event) => {
+                  if (!onCopyInsert) return
+                  event.preventDefault()
+                  setRowMenu({
+                    x: Math.max(8, Math.min(event.clientX, window.innerWidth - 296)),
+                    y: Math.max(8, Math.min(event.clientY, window.innerHeight - 104)),
+                    row
+                  })
                 }}
               >
                 {!readOnly && (
@@ -220,6 +238,48 @@ export function TableDataGrid({
             ))}
           </TBody>
         </Table>
+      )}
+      {rowMenu && (
+        <div
+          className="fixed inset-0 z-[90]"
+          onClick={() => setRowMenu(null)}
+          onContextMenu={(event) => {
+            event.preventDefault()
+            setRowMenu(null)
+          }}
+        >
+          <div
+            role="menu"
+            className="absolute w-72 rounded-md border border-border bg-card p-1 shadow-xl"
+            style={{ left: rowMenu.x, top: rowMenu.y }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button
+              type="button"
+              role="menuitem"
+              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-accent"
+              onClick={() => {
+                onCopyInsert?.(rowMenu.row, true)
+                setRowMenu(null)
+              }}
+            >
+              <Copy className="h-3.5 w-3.5 text-muted-foreground" />
+              {t('tableData.copyInsertWithId')}
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-accent"
+              onClick={() => {
+                onCopyInsert?.(rowMenu.row, false)
+                setRowMenu(null)
+              }}
+            >
+              <Copy className="h-3.5 w-3.5 text-muted-foreground" />
+              {t('tableData.copyInsertWithoutId')}
+            </button>
+          </div>
+        </div>
       )}
     </div>
   )

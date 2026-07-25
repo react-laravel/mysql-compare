@@ -51,7 +51,9 @@ export function ExportTableDialog({
   const initialSqlDialect: ExportSqlDialect = sourceEngine === 'postgres' ? 'postgres' : 'mysql'
   const [format, setFormat] = useState<ExportFormat>('sql')
   const [sqlDialect, setSqlDialect] = useState<ExportSqlDialect>(initialSqlDialect)
-  const [scope, setScope] = useState<ExportScope>(availableScopes[0] ?? 'all')
+  const [scope, setScope] = useState<ExportScope>(() =>
+    getDefaultScope(availableScopes, selectedRows.length)
+  )
   const [includeCreateTable, setIncludeCreateTable] = useState(true)
   const [includeData, setIncludeData] = useState(true)
   const [includeHeaders, setIncludeHeaders] = useState(true)
@@ -77,11 +79,11 @@ export function ExportTableDialog({
     if (!open) return
     setFormat('sql')
     setSqlDialect(sourceEngine === 'postgres' ? 'postgres' : 'mysql')
-    setScope(availableScopes[0] ?? 'all')
+    setScope(getDefaultScope(availableScopes, selectedRows.length))
     setIncludeCreateTable(true)
     setIncludeData(true)
     setIncludeHeaders(true)
-  }, [availableScopes, connectionId, database, open, sourceEngine, table])
+  }, [availableScopes, connectionId, database, open, selectedRows.length, sourceEngine, table])
 
   const canExport = format === 'sql' ? includeCreateTable || includeData : true
 
@@ -172,6 +174,7 @@ export function ExportTableDialog({
         <div>
           <Label className="block mb-1">{t('exportDialog.scope')}</Label>
           <Select
+            aria-label={t('exportDialog.scope')}
             value={scope}
             onChange={(event) => setScope(event.target.value as ExportScope)}
             options={scopeOptions}
@@ -209,4 +212,9 @@ export function ExportTableDialog({
       </div>
     </Dialog>
   )
+}
+
+function getDefaultScope(availableScopes: ExportScope[], selectedRowCount: number): ExportScope {
+  if (selectedRowCount > 0 && availableScopes.includes('selected')) return 'selected'
+  return availableScopes[0] ?? 'all'
 }

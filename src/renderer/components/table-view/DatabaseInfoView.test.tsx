@@ -74,8 +74,6 @@ describe('DatabaseInfoView', () => {
   })
 
   it('renders database details and deletes the database from the danger zone', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
-
     render(<DatabaseInfoView connectionId="conn-1" database="app_db" />)
 
     await screen.findByText('Primary application database')
@@ -87,6 +85,19 @@ describe('DatabaseInfoView', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Delete Database' }))
 
+    expect(dropDatabaseMock).not.toHaveBeenCalled()
+    expect(screen.getByText('Confirm database deletion')).toBeTruthy()
+    expect(
+      screen.getByText('Drop database "app_db"? This removes all tables and cannot be undone.')
+    ).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(dropDatabaseMock).not.toHaveBeenCalled()
+    expect(screen.queryByText('Confirm database deletion')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Database' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Delete permanently' }))
+
     await waitFor(() =>
       expect(dropDatabaseMock).toHaveBeenCalledWith({
         connectionId: 'conn-1',
@@ -94,9 +105,6 @@ describe('DatabaseInfoView', () => {
       })
     )
 
-    expect(confirmSpy).toHaveBeenCalledWith(
-      'Drop database "app_db"? This removes all tables and cannot be undone.'
-    )
     expect(useUIStore.getState().markDatabaseDropped).toHaveBeenCalledWith('conn-1', 'app_db')
     expect(useUIStore.getState().closeDatabaseTabs).toHaveBeenCalledWith('conn-1', 'app_db')
     expect(useUIStore.getState().showToast).toHaveBeenCalledWith(

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useI18nStore } from '@renderer/i18n'
 import type { SafeConnection } from '../../../shared/types'
@@ -37,6 +37,7 @@ function createProps(overrides: Partial<React.ComponentProps<typeof SidebarOverl
   return {
     creating: false,
     editing: null,
+    sshSource: null,
     onConnectionDialogOpenChange: vi.fn(),
     onConnectionSaved: vi.fn(),
     onDeleteConnection: vi.fn(() => true),
@@ -44,6 +45,7 @@ function createProps(overrides: Partial<React.ComponentProps<typeof SidebarOverl
     onCloseConnectionMenu: vi.fn(),
     onCloseDatabaseConnection: vi.fn(),
     onEditConnection: vi.fn(),
+    onCreateWithSSH: vi.fn(),
     tableMenu: {
       x: 120,
       y: 80,
@@ -107,7 +109,7 @@ describe('SidebarOverlays menus', () => {
     useI18nStore.getState().setLocale('en')
   })
 
-  it('opens table details from the table menu and no longer exposes direct table deletion there', () => {
+  it('opens table details and exposes both destructive table actions', () => {
     const props = createProps()
 
     render(<SidebarOverlays {...props} />)
@@ -115,8 +117,80 @@ describe('SidebarOverlays menus', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Table Details' }))
 
     expect(props.onOpenTableDetails).toHaveBeenCalledWith(props.tableMenu)
-    expect(screen.queryByText('Drop Table')).toBeNull()
     expect(screen.getByText('Truncate Table')).toBeTruthy()
+    expect(screen.getByText('Drop Table')).toBeTruthy()
+  })
+
+  it('offers a PostgreSQL connection that reuses saved SSH credentials', () => {
+    const sshConnection = {
+      ...connection,
+      useSSH: true,
+      sshHost: 'server.example.com',
+      sshPort: 22,
+      sshUsername: 'ubuntu',
+      hasSSHPrivateKey: true
+    }
+    const props = createProps({
+      tableMenu: null,
+      connectionMenu: {
+        x: 120,
+        y: 80,
+        connection: sshConnection
+      }
+    })
+
+    render(<SidebarOverlays {...props} />)
+
+    fireEvent.click(screen.getByRole('button', {
+      name: 'New Connection with This SSH'
+    }))
+
+    expect(props.onCreateWithSSH).toHaveBeenCalledWith(sshConnection)
+  })
+
+  it('requires confirmation before truncating a table', async () => {
+    const props = createProps()
+    render(<SidebarOverlays {...props} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Truncate Table' }))
+
+    expect(props.onTruncateTable).not.toHaveBeenCalled()
+    expect(
+      screen.getByText(
+        'Truncate table "app_db.users"? All rows will be permanently deleted. This cannot be undone.'
+      )
+    ).toBeTruthy()
+
+    expect(screen.getByRole('button', { name: 'Clear, Keep ID' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'TRUNCATE, Reset ID' })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear, Keep ID' }))
+    await waitFor(() =>
+      expect(props.onTruncateTable).toHaveBeenCalledWith(props.tableMenu, false)
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Truncate Table' }))
+    fireEvent.click(screen.getByRole('button', { name: 'TRUNCATE, Reset ID' }))
+    await waitFor(() =>
+      expect(props.onTruncateTable).toHaveBeenLastCalledWith(props.tableMenu, true)
+    )
+  })
+
+  it('requires confirmation before dropping a table', async () => {
+    const props = createProps()
+    render(<SidebarOverlays {...props} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Drop Table' }))
+
+    expect(props.onDropTable).not.toHaveBeenCalled()
+    expect(
+      screen.getByText(
+        'Drop table "app_db.users"? Its structure and all data will be permanently deleted. This cannot be undone.'
+      )
+    ).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Drop Table' }))
+    await waitFor(() => expect(props.onDropTable).toHaveBeenCalledWith(props.tableMenu))
   })
 
   it('opens database details from the database menu', () => {

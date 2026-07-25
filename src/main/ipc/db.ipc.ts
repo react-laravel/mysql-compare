@@ -96,7 +96,11 @@ export function registerDbIPC(): void {
   handle(IPC.TruncateTable, async (req: TruncateTableRequest) => {
     const driver = await dbService.getDriver(req.connectionId)
     const tableScope = driver.engine === 'postgres' ? 'public' : req.database
-    return driver.executeSQL(driver.dialect.renderTruncate(tableScope, req.table), req.database)
+    const sql =
+      req.resetIdentity === false
+        ? `DELETE FROM ${driver.dialect.quoteTable(tableScope, req.table)};`
+        : driver.dialect.renderTruncate(tableScope, req.table)
+    return driver.executeSQL(sql, req.database)
   })
   handle(
     IPC.ExportTable,

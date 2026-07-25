@@ -10,6 +10,22 @@ import {
 } from './security'
 
 describe('web security', () => {
+  it('loads desktop auth mode without Basic credentials', () => {
+    const config = loadWebSecurityConfig({
+      MYSQL_COMPARE_DESKTOP: '1',
+      MYSQL_COMPARE_SECRET: 'desktop-test-session-secret'
+    })
+    expect(config.authMode).toBe('desktop')
+    expect(config.host).toBe('127.0.0.1')
+    expect(config.port).toBe(0)
+    expect(config.allowedOrigins.has('http://localhost:5173')).toBe(true)
+
+    const middleware = requireBasicAuth(config)
+    const next = vi.fn()
+    middleware(createRequest({}), createResponse().response, next)
+    expect(next).toHaveBeenCalledTimes(1)
+  })
+
   it('requires credentials and explicit HTTPS origins for network exposure', () => {
     expect(() => loadWebSecurityConfig({})).toThrow('MYSQL_COMPARE_WEB_USERNAME is required')
     expect(() => loadWebSecurityConfig({

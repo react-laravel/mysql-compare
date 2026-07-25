@@ -104,6 +104,8 @@ describe('TableInfoView', () => {
 
     expect(screen.getByText('1,234')).toBeTruthy()
     expect(screen.getByText('2,048')).toBeTruthy()
+    expect(screen.getByText('Create table statement')).toBeTruthy()
+    expect(screen.getByText('CREATE TABLE users (id int primary key)')).toBeTruthy()
     expect(screen.getByText('Danger Zone')).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: 'Delete Table' }))
@@ -116,7 +118,9 @@ describe('TableInfoView', () => {
       })
     )
 
-    expect(confirmSpy).toHaveBeenCalledWith('Drop table "users"? This cannot be undone.')
+    expect(confirmSpy).toHaveBeenCalledWith(
+      'Drop table "app_db.users"? Its structure and all data will be permanently deleted. This cannot be undone.'
+    )
     expect(useUIStore.getState().markTableDropped).toHaveBeenCalledWith('conn-1', 'app_db', 'users')
     expect(useUIStore.getState().closeTableTabs).toHaveBeenCalledWith('conn-1', 'app_db', 'users')
     expect(useUIStore.getState().showToast).toHaveBeenCalledWith('Dropped table users', 'success')

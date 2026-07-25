@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { AlertTriangle, Trash2 } from 'lucide-react'
 import { api, unwrap } from '@renderer/lib/api'
 import { Button } from '@renderer/components/ui/button'
+import { Dialog } from '@renderer/components/ui/dialog'
 import { useUIStore } from '@renderer/store/ui-store'
 import { useI18n } from '@renderer/i18n'
 import type { DatabaseInfo } from '../../../shared/types'
@@ -17,12 +18,14 @@ export function DatabaseInfoView({ connectionId, database, readOnly = false }: P
   const { t } = useI18n()
   const [info, setInfo] = useState<DatabaseInfo | null>(null)
   const [deleting, setDeleting] = useState(false)
+  const [confirmingDrop, setConfirmingDrop] = useState(false)
   const requestIdRef = useRef(0)
 
   useEffect(() => {
     const requestId = ++requestIdRef.current
     setInfo(null)
     setDeleting(false)
+    setConfirmingDrop(false)
 
     void (async () => {
       try {
@@ -38,7 +41,6 @@ export function DatabaseInfoView({ connectionId, database, readOnly = false }: P
 
   const dropCurrentDatabase = async () => {
     if (deleting) return
-    if (!confirm(t('sidebar.confirm.dropDatabase', { database }))) return
 
     setDeleting(true)
     try {
@@ -97,13 +99,48 @@ export function DatabaseInfoView({ connectionId, database, readOnly = false }: P
                 {t('databaseInfo.dropDatabaseDescription', { database })}
               </div>
             </div>
-            <Button variant="destructive" onClick={dropCurrentDatabase} disabled={deleting}>
+            <Button
+              variant="destructive"
+              onClick={() => setConfirmingDrop(true)}
+              disabled={deleting}
+            >
               <Trash2 className="h-3.5 w-3.5" />
               {deleting ? t('databaseInfo.droppingDatabase') : t('databaseInfo.dropDatabase')}
             </Button>
           </div>
         </section>
       )}
+
+      <Dialog
+        open={confirmingDrop}
+        onOpenChange={(open) => {
+          if (!deleting) setConfirmingDrop(open)
+        }}
+        title={t('databaseInfo.confirmDropTitle')}
+        description={t('sidebar.confirm.dropDatabase', { database })}
+        className="max-w-md"
+        footer={
+          <>
+            <Button
+              variant="outline"
+              onClick={() => setConfirmingDrop(false)}
+              disabled={deleting}
+            >
+              {t('common.cancel')}
+            </Button>
+            <Button variant="destructive" onClick={dropCurrentDatabase} disabled={deleting}>
+              <Trash2 className="h-3.5 w-3.5" />
+              {deleting
+                ? t('databaseInfo.droppingDatabase')
+                : t('databaseInfo.confirmDropAction')}
+            </Button>
+          </>
+        }
+      >
+        <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive dark:text-red-300">
+          {t('databaseInfo.dropDatabaseDescription', { database })}
+        </div>
+      </Dialog>
     </div>
   )
 }

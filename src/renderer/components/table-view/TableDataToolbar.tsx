@@ -3,9 +3,9 @@ import {
   Copy,
   Download,
   Filter,
-  ListRestart,
   Plus,
   RefreshCw,
+  Rows3,
   Trash2,
   WrapText,
   X
@@ -143,7 +143,7 @@ export function TableDataToolbar({
                 onClick={onToggleDensity}
                 title={t('tableData.toggleDensity')}
               >
-                <ListRestart className="h-4 w-4" />
+                <Rows3 className="h-4 w-4" />
               </Button>
             </>
           )}

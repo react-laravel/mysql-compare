@@ -37,6 +37,8 @@ export interface ConnectionConfig {
   /** 本地私钥文件路径（非敏感，用于编辑时展示与校验） */
   sshPrivateKeyPath?: string
   sshPassphrase?: string
+  /** 新建连接时复用另一连接的已保存 SSH 凭据；仅用于写入/测试，不持久化。 */
+  sshSourceConnectionId?: string
   createdAt: number
   updatedAt: number
 }
@@ -183,6 +185,8 @@ export interface TruncateTableRequest {
   connectionId: string
   database: string
   table: string
+  /** false uses DELETE FROM and preserves the current auto-increment / sequence value. */
+  resetIdentity?: boolean
 }
 
 export type ExportFormat = 'sql' | 'csv' | 'txt'

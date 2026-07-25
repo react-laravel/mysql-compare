@@ -16,6 +16,7 @@ import { sshService } from '../main/services/ssh-service'
 import { sshTerminalService } from '../main/services/ssh-terminal-service'
 import { syncService } from '../main/services/sync-service'
 import {
+  desktopCors,
   establishWebSession,
   getRequestSessionId,
   loadWebSecurityConfig,
@@ -88,6 +89,7 @@ const terminalExitClients = new Map<string, Set<Response>>()
 const app = express()
 app.disable('x-powered-by')
 app.use(securityHeaders())
+app.use(desktopCors(webSecurity))
 
 const heartbeat = setInterval(() => {
   broadcastAllSSE(syncClients, null)
@@ -142,7 +144,7 @@ app.get(`${API_PREFIX}/session`, asyncHandler(async () => ({ authenticated: true
 app.get(`${API_PREFIX}/connections`, asyncHandler(async () => connectionStore.list()))
 
 app.post(`${API_PREFIX}/connections`, asyncHandler(async (req) => {
-  const payload = req.body as ConnectionConfig
+  const payload = connectionStore.resolveSecrets(req.body as ConnectionConfig)
   const saved = connectionStore.upsert(payload)
   await dbService.closeConnection(saved.id)
   return saved
@@ -278,7 +280,11 @@ app.post(`${API_PREFIX}/db/truncate-table`, asyncHandler(async (req) => {
   const payload = req.body as TruncateTableRequest
   const driver = await dbService.getDriver(payload.connectionId)
   const tableScope = driver.engine === 'postgres' ? 'public' : payload.database
-  return driver.executeSQL(driver.dialect.renderTruncate(tableScope, payload.table), payload.database)
+  const sql =
+    payload.resetIdentity === false
+      ? `DELETE FROM ${driver.dialect.quoteTable(tableScope, payload.table)};`
+      : driver.dialect.renderTruncate(tableScope, payload.table)
+  return driver.executeSQL(sql, payload.database)
 }))
 
 app.post(`${API_PREFIX}/db/export-table`, async (req, res) => {
@@ -484,10 +490,17 @@ if (existsSync(STATIC_INDEX_FILE)) {
 }
 
 const server = app.listen(PORT, HOST, () => {
-  console.log(`[web] MySQL Compare web server listening on http://${HOST}:${PORT}`)
+  const address = server.address()
+  const actualPort = typeof address === 'object' && address ? address.port : PORT
+  const origin = `http://${HOST}:${actualPort}`
+  webSecurity.allowedOrigins.add(origin)
+  webSecurity.allowedOrigins.add(`http://127.0.0.1:${actualPort}`)
+  webSecurity.allowedOrigins.add(`http://localhost:${actualPort}`)
+  console.log(`MYSQL_COMPARE_READY ${origin}`)
+  console.log(`[web] MySQL Compare server listening on ${origin} (mode=${webSecurity.authMode})`)
   if (existsSync(STATIC_INDEX_FILE)) {
     console.log(`[web] Serving static frontend from ${STATIC_DIST_DIR}`)
-  } else {
+  } else if (webSecurity.authMode !== 'desktop') {
     console.log('[web] Static frontend not found; run "npm run web:build" for production assets.')
   }
 })

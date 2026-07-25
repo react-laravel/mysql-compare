@@ -1,8 +1,6 @@
-// 渲染端 IPC 入口：从 preload 暴露的 window.api 读取强类型方法。
 import type { AppAPI } from '../../shared/app-api'
 import type { IPCResult } from '../../shared/types'
-import { createWebApi } from './web-api'
-import { isElectronRenderer } from './runtime'
+import { createTauriApi, isTauriRuntime } from './tauri-api'
 
 declare global {
   interface Window {
@@ -10,9 +8,39 @@ declare global {
   }
 }
 
-export const api: AppAPI = isElectronRenderer() ? window.api : createWebApi()
+function unresolvedApi(): AppAPI {
+  return new Proxy({} as AppAPI, {
+    get(_target, prop) {
+      if (prop === 'runtime') {
+        return {
+          mode: 'tauri' as const,
+          supportsNativeFilePicker: true,
+          supportsDirectoryUpload: true,
+          supportsTerminalStreaming: true,
+          supportsDownload: true
+        }
+      }
+      if (typeof window !== 'undefined' && window.api) {
+        return Reflect.get(window.api, prop)
+      }
+      return () => {
+        throw new Error('App API is not ready yet')
+      }
+    }
+  })
+}
 
-/** 解包 IPCResult，错误时抛出 */
+export const api: AppAPI = unresolvedApi()
+
+export async function bootstrapApi(): Promise<AppAPI> {
+  if (!isTauriRuntime()) {
+    throw new Error('MySQL Compare desktop requires the Tauri runtime')
+  }
+  const tauriApi = createTauriApi()
+  window.api = tauriApi
+  return tauriApi
+}
+
 export async function unwrap<T>(p: Promise<IPCResult<T>>): Promise<T> {
   const r = await p
   if (!r.ok) throw new Error(r.error || 'IPC error')

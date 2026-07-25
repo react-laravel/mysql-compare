@@ -24,6 +24,7 @@ import { SidebarConnectionRow } from './SidebarConnectionRow'
 import type {
   DatabaseRowRefEntry,
   NodeState,
+  RenameDialogState,
   StickyDatabaseContext
 } from './sidebar-types'
 
@@ -56,6 +57,13 @@ interface SidebarTreeProps {
   onRefreshDatabase: (connection: SafeConnection, database: string) => void | Promise<void>
   onTableFilterChange: (connectionId: string, database: string, value: string) => void
   onSelectTable: (connection: SafeConnection, database: string, table: string) => void
+  renamingTable: RenameDialogState | null
+  renameDraft: string
+  renameBusy: boolean
+  onStartRenameTable: (connection: SafeConnection, database: string, table: string) => void
+  onRenameDraftChange: (value: string) => void
+  onSubmitTableRename: () => void | Promise<void>
+  onCancelTableRename: () => void
   onOpenDatabaseMenu: (
     event: MouseEvent<HTMLDivElement>,
     connection: SafeConnection,
@@ -95,6 +103,13 @@ export function SidebarTree({
   onRefreshDatabase,
   onTableFilterChange,
   onSelectTable,
+  renamingTable,
+  renameDraft,
+  renameBusy,
+  onStartRenameTable,
+  onRenameDraftChange,
+  onSubmitTableRename,
+  onCancelTableRename,
   onOpenDatabaseMenu,
   onOpenTableMenu
 }: SidebarTreeProps) {
@@ -399,15 +414,54 @@ export function SidebarTree({
                                       )}
                                       onClick={() => onSelectTable(connection, database, table)}
                                       onKeyDown={(event) => {
-                                        if (event.key !== 'Enter' && event.key !== ' ') return
-                                        event.preventDefault()
-                                        onSelectTable(connection, database, table)
+                                        if (event.key === 'Enter' || event.key === 'F2') {
+                                          event.preventDefault()
+                                          onStartRenameTable(connection, database, table)
+                                          return
+                                        }
+                                        if (event.key === ' ') {
+                                          event.preventDefault()
+                                          onSelectTable(connection, database, table)
+                                        }
                                       }}
                                       onContextMenu={(event) => onOpenTableMenu(event, connection, database, table)}
                                       title={t('sidebar.rightClickHint')}
                                     >
                                       <TableIcon className="mr-1 h-3 w-3 text-muted-foreground" />
-                                      <span className="flex-1 truncate text-xs">{table}</span>
+                                      {renamingTable?.connection.id === connection.id &&
+                                      renamingTable.database === database &&
+                                      renamingTable.table === table ? (
+                                        <Input
+                                          autoFocus
+                                          value={renameDraft}
+                                          readOnly={renameBusy}
+                                          className="h-6 min-w-0 flex-1 px-1 text-xs"
+                                          aria-label={t('sidebar.overlays.newTableName')}
+                                          onFocus={(event) => event.currentTarget.select()}
+                                          onClick={(event) => event.stopPropagation()}
+                                          onChange={(event) => onRenameDraftChange(event.target.value)}
+                                          onKeyDown={(event) => {
+                                            event.stopPropagation()
+                                            if (event.key === 'Enter' && renameDraft.trim()) {
+                                              event.preventDefault()
+                                              void onSubmitTableRename()
+                                            } else if (event.key === 'Escape') {
+                                              event.preventDefault()
+                                              onCancelTableRename()
+                                            }
+                                          }}
+                                          onBlur={() => {
+                                            if (renameBusy) return
+                                            if (renameDraft.trim()) {
+                                              void onSubmitTableRename()
+                                            } else {
+                                              onCancelTableRename()
+                                            }
+                                          }}
+                                        />
+                                      ) : (
+                                        <span className="flex-1 truncate text-xs">{table}</span>
+                                      )}
                                     </div>
                                   ))
                                 )}

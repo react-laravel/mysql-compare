@@ -195,6 +195,10 @@ export class MySQLDriver implements DbDriver {
       )
       const createSQL = (createRows[0]?.['Create Table'] as string) || ''
 
+      const [countRows] = await pool.query<RowDataPacket[]>(
+        `SELECT COUNT(*) AS ROW_COUNT FROM ${this.dialect.quoteTable(database, table)}`
+      )
+
       const [statRows] = await pool.query<RowDataPacket[]>(
         `SELECT TABLE_ROWS, ENGINE, TABLE_COLLATION, TABLE_COMMENT,
                 DATA_LENGTH, INDEX_LENGTH, DATA_FREE, AVG_ROW_LENGTH,
@@ -210,7 +214,7 @@ export class MySQLDriver implements DbDriver {
         indexes,
         primaryKey,
         createSQL,
-        rowEstimate: Number(statRows[0]?.['TABLE_ROWS'] ?? 0),
+        rowEstimate: Number(countRows[0]?.['ROW_COUNT'] ?? 0),
         engine: statRows[0]?.['ENGINE'] as string,
         charset: statRows[0]?.['TABLE_COLLATION'] as string,
         tableComment: (statRows[0]?.['TABLE_COMMENT'] as string) || '',

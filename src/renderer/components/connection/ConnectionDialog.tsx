@@ -12,6 +12,8 @@ import {
   createInitialForm,
   DEFAULT_PORT,
   DEFAULT_USERNAME,
+  getInitialSSHAuthMethod,
+  type SSHAuthMethod,
   validateConnectionForm
 } from './connection-dialog-utils'
 
@@ -19,11 +21,12 @@ interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
   connection?: SafeConnection | null
+  sshSource?: SafeConnection | null
   onSaved?: () => void
   onDelete?: (connection: SafeConnection) => boolean | Promise<boolean>
 }
 
-export function ConnectionDialog({ open, onOpenChange, connection, onSaved, onDelete }: Props) {
+export function ConnectionDialog({ open, onOpenChange, connection, sshSource, onSaved, onDelete }: Props) {
   const { showToast } = useUIStore()
   const { t } = useI18n()
   const sshKeyInputRef = useRef<HTMLInputElement>(null)
@@ -32,16 +35,20 @@ export function ConnectionDialog({ open, onOpenChange, connection, onSaved, onDe
     message: string
   } | null>(null)
   const [draggingSSHKey, setDraggingSSHKey] = useState(false)
-  const [form, setForm] = useState<ConnectionConfig>(createInitialForm(connection))
+  const [form, setForm] = useState<ConnectionConfig>(createInitialForm(connection, sshSource))
+  const [sshAuthMethod, setSSHAuthMethod] = useState<SSHAuthMethod>(
+    getInitialSSHAuthMethod(connection || sshSource)
+  )
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
     if (!open) return
-    setForm(createInitialForm(connection))
+    setForm(createInitialForm(connection, sshSource))
+    setSSHAuthMethod(getInitialSSHAuthMethod(connection || sshSource))
     setBusy(false)
     setDraggingSSHKey(false)
     setTestFeedback(null)
-  }, [connection, open])
+  }, [connection, open, sshSource])
 
   const update = <K extends keyof ConnectionConfig>(key: K, value: ConnectionConfig[K]) => {
     setTestFeedback(null)
@@ -56,7 +63,8 @@ export function ConnectionDialog({ open, onOpenChange, connection, onSaved, onDe
           sshPassword: '',
           sshPrivateKey: '',
           sshPrivateKeyPath: '',
-          sshPassphrase: ''
+          sshPassphrase: '',
+          sshSourceConnectionId: undefined
         }
       }
       if (key === 'engine') {
@@ -73,9 +81,26 @@ export function ConnectionDialog({ open, onOpenChange, connection, onSaved, onDe
     })
   }
 
+  const updateSSHAuthMethod = (method: SSHAuthMethod) => {
+    setTestFeedback(null)
+    setSSHAuthMethod(method)
+    setForm((current) => method === 'password'
+      ? {
+          ...current,
+          sshPrivateKey: '',
+          sshPrivateKeyPath: '',
+          sshPassphrase: ''
+        }
+      : {
+          ...current,
+          sshPassword: ''
+        })
+  }
+
   const validationOptions = {
-    hasSSHPassword: connection?.hasSSHPassword,
-    hasSSHPrivateKey: connection?.hasSSHPrivateKey
+    hasSSHPassword: connection?.hasSSHPassword || sshSource?.hasSSHPassword,
+    hasSSHPrivateKey: connection?.hasSSHPrivateKey || sshSource?.hasSSHPrivateKey,
+    sshAuthMethod
   }
 
   const loadSSHKeyFile = async (file: File) => {
@@ -118,7 +143,7 @@ export function ConnectionDialog({ open, onOpenChange, connection, onSaved, onDe
     setBusy(true)
     setTestFeedback(null)
     try {
-      const result = await unwrap(api.connection.test(buildPayload(form)))
+      const result = await unwrap(api.connection.test(buildPayload(form, sshAuthMethod)))
       setTestFeedback({ level: 'success', message: result.message })
       showToast(result.message, 'success')
     } catch (err) {
@@ -139,7 +164,7 @@ export function ConnectionDialog({ open, onOpenChange, connection, onSaved, onDe
 
     setBusy(true)
     try {
-      await unwrap(api.connection.upsert(buildPayload(form)))
+      await unwrap(api.connection.upsert(buildPayload(form, sshAuthMethod)))
       showToast(t('common.saved'), 'success')
       onSaved?.()
       onOpenChange(false)
@@ -191,13 +216,20 @@ export function ConnectionDialog({ open, onOpenChange, connection, onSaved, onDe
       <ConnectionDialogForm
         connection={connection}
         form={form}
+        sshAuthMethod={sshAuthMethod}
         draggingSSHKey={draggingSSHKey}
         onChange={update}
+        onSSHAuthMethodChange={updateSSHAuthMethod}
         onSSHKeyInputChange={onSSHKeyInputChange}
         onSSHKeyDrop={onSSHKeyDrop}
         onSSHKeyDraggingChange={setDraggingSSHKey}
         sshKeyInputRef={sshKeyInputRef}
       />
+      {sshSource && (
+        <div className="mt-4 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+          {t('connection.reusingSsh', { name: sshSource.name })}
+        </div>
+      )}
       {testFeedback && (
         <div
           className={

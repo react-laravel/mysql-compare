@@ -23,6 +23,7 @@ afterEach(cleanup)
 describe('useTableDataQuery', () => {
   beforeEach(() => {
     queryRowsMock.mockReset()
+    window.localStorage.clear()
   })
 
   it('loads rows and initializes all columns as visible', async () => {
@@ -228,6 +229,81 @@ describe('useTableDataQuery', () => {
     })
 
     await waitFor(() => expect(queryRowsMock.mock.calls.length).toBeGreaterThan(beforeRefreshCalls))
+  })
+
+  it('restores hidden columns for the same connection, database, and table', async () => {
+    queryRowsMock.mockResolvedValue(createQueryRowsResult())
+
+    const firstView = renderHook(() =>
+      useTableDataQuery({
+        connectionId: 'conn-1',
+        database: 'db_main',
+        table: 'users',
+        tableReloadToken: 0,
+        showToast: vi.fn()
+      })
+    )
+
+    await waitFor(() => expect(firstView.result.current.data).not.toBeNull())
+    act(() => {
+      firstView.result.current.setColumnVisibility('name', false)
+    })
+    expect(Array.from(firstView.result.current.visibleColumns)).toEqual(['id', 'active'])
+    firstView.unmount()
+
+    const schemaWithNewColumn = createQueryRowsResult()
+    schemaWithNewColumn.columns = [
+      ...schemaWithNewColumn.columns,
+      {
+        name: 'created_at',
+        type: 'timestamp',
+        nullable: true,
+        defaultValue: null,
+        isPrimaryKey: false,
+        isAutoIncrement: false,
+        comment: '',
+        columnKey: ''
+      }
+    ]
+    queryRowsMock.mockResolvedValue(schemaWithNewColumn)
+
+    const reopenedView = renderHook(() =>
+      useTableDataQuery({
+        connectionId: 'conn-1',
+        database: 'db_main',
+        table: 'users',
+        tableReloadToken: 0,
+        showToast: vi.fn()
+      })
+    )
+
+    await waitFor(() =>
+      expect(Array.from(reopenedView.result.current.visibleColumns)).toEqual([
+        'id',
+        'active',
+        'created_at'
+      ])
+    )
+    reopenedView.unmount()
+
+    const otherServerView = renderHook(() =>
+      useTableDataQuery({
+        connectionId: 'conn-2',
+        database: 'db_main',
+        table: 'users',
+        tableReloadToken: 0,
+        showToast: vi.fn()
+      })
+    )
+
+    await waitFor(() =>
+      expect(Array.from(otherServerView.result.current.visibleColumns)).toEqual([
+        'id',
+        'name',
+        'active',
+        'created_at'
+      ])
+    )
   })
 })
 

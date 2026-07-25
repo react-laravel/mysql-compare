@@ -94,6 +94,7 @@ export function Sidebar() {
   const [keyword, setKeyword] = useState('')
   const [editing, setEditing] = useState<SafeConnection | null>(null)
   const [creating, setCreating] = useState(false)
+  const [sshSource, setSSHSource] = useState<SafeConnection | null>(null)
   const [tableFilters, setTableFilters] = useState<Record<string, string>>({})
   const [tableMenu, setTableMenu] = useState<TableMenuState | null>(null)
   const [databaseMenu, setDatabaseMenu] = useState<DatabaseMenuState | null>(null)
@@ -107,6 +108,7 @@ export function Sidebar() {
     message: string
   } | null>(null)
   const [renameDialog, setRenameDialog] = useState<RenameDialogState | null>(null)
+  const [inlineRename, setInlineRename] = useState<RenameDialogState | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
   const [createSQLDialog, setCreateSQLDialog] = useState<CreateSQLDialogState | null>(null)
   const [createRedisKeyDialog, setCreateRedisKeyDialog] = useState<CreateRedisKeyDialogState | null>(null)
@@ -462,8 +464,8 @@ export function Sidebar() {
     event.preventDefault()
     event.stopPropagation()
     setTableMenu({
-      x: Math.min(event.clientX, window.innerWidth - 232),
-      y: Math.min(event.clientY, window.innerHeight - 220),
+      x: event.clientX,
+      y: event.clientY,
       connection: conn,
       database,
       table
@@ -478,8 +480,8 @@ export function Sidebar() {
     event.preventDefault()
     event.stopPropagation()
     setDatabaseMenu({
-      x: Math.min(event.clientX, window.innerWidth - 232),
-      y: Math.min(event.clientY, window.innerHeight - 208),
+      x: event.clientX,
+      y: event.clientY,
       connection: conn,
       database
     })
@@ -492,8 +494,8 @@ export function Sidebar() {
     event.preventDefault()
     event.stopPropagation()
     setConnectionMenu({
-      x: Math.min(event.clientX, window.innerWidth - 232),
-      y: Math.min(event.clientY, window.innerHeight - 144),
+      x: event.clientX,
+      y: event.clientY,
       connection: conn
     })
   }
@@ -521,36 +523,49 @@ export function Sidebar() {
 
   const openRenameDialog = (menu: TableMenuState) => {
     setTableMenu(null)
-    setRenameDialog({ connection: menu.connection, database: menu.database, table: menu.table })
+    const target = { connection: menu.connection, database: menu.database, table: menu.table }
+    if (menu.connection.engine === 'redis') {
+      setRenameDialog(target)
+    } else {
+      setInlineRename(target)
+    }
     setRenameDraft(menu.table)
   }
 
   const submitRename = async () => {
-    if (!renameDialog) return
+    if (actionBusy) return
+    const target = inlineRename ?? renameDialog
+    if (!target) return
     const nextName = renameDraft.trim()
     if (!nextName) {
       showToast(t('sidebar.toast.newTableNameRequired'), 'error')
+      return
+    }
+    if (nextName === target.table) {
+      setInlineRename(null)
+      setRenameDialog(null)
       return
     }
     setActionBusy(true)
     try {
       const result = await unwrap(
         api.db.renameTable({
-          connectionId: renameDialog.connection.id,
-          database: renameDialog.database,
-          table: renameDialog.table,
+          connectionId: target.connection.id,
+          database: target.database,
+          table: target.table,
           newTable: nextName
         })
       )
-      await refreshDatabase(renameDialog.connection, renameDialog.database)
+      await refreshDatabase(target.connection, target.database)
       renameTableTabs(
-        renameDialog.connection.id,
-        renameDialog.database,
-        renameDialog.table,
+        target.connection.id,
+        target.database,
+        target.table,
         result.table
       )
       showToast(t('sidebar.toast.renamedTo', { table: result.table }), 'success')
       setRenameDialog(null)
+      setInlineRename(null)
     } catch (err) {
       showToast((err as Error).message, 'error')
     } finally {
@@ -783,16 +798,16 @@ export function Sidebar() {
     })
   }
 
-  const truncateTable = async (menu: TableMenuState) => {
+  const truncateTable = async (menu: TableMenuState, resetIdentity: boolean) => {
     setTableMenu(null)
-    if (!confirm(t('sidebar.confirm.truncateTable', { table: menu.table }))) return
     setActionBusy(true)
     try {
       await unwrap(
         api.db.truncateTable({
           connectionId: menu.connection.id,
           database: menu.database,
-          table: menu.table
+          table: menu.table,
+          resetIdentity
         })
       )
       await refreshDatabase(menu.connection, menu.database)
@@ -807,10 +822,6 @@ export function Sidebar() {
 
   const dropTable = async (menu: TableMenuState) => {
     setTableMenu(null)
-    const confirmMessage = menu.connection.engine === 'redis'
-      ? t('redis.confirmDeleteKey', { key: menu.table })
-      : t('sidebar.confirm.dropTable', { table: menu.table })
-    if (!confirm(confirmMessage)) return
     setActionBusy(true)
     try {
       await unwrap(api.db.dropTable({
@@ -913,6 +924,19 @@ export function Sidebar() {
           onRefreshDatabase={refreshDatabase}
           onTableFilterChange={setTableFilter}
           onSelectTable={onSelectTable}
+          renamingTable={inlineRename}
+          renameDraft={renameDraft}
+          renameBusy={actionBusy}
+          onStartRenameTable={(connection, database, table) => {
+            if (connection.engine === 'redis') return
+            setInlineRename({ connection, database, table })
+            setRenameDraft(table)
+          }}
+          onRenameDraftChange={setRenameDraft}
+          onSubmitTableRename={submitRename}
+          onCancelTableRename={() => {
+            if (!actionBusy) setInlineRename(null)
+          }}
           onOpenDatabaseMenu={openDatabaseMenu}
           onOpenTableMenu={openTableMenu}
         />
@@ -934,10 +958,12 @@ export function Sidebar() {
       <SidebarOverlays
         creating={creating}
         editing={editing}
+        sshSource={sshSource}
         onConnectionDialogOpenChange={(open) => {
           if (!open) {
             setCreating(false)
             setEditing(null)
+            setSSHSource(null)
           }
         }}
         onConnectionSaved={refresh}
@@ -948,6 +974,12 @@ export function Sidebar() {
         onEditConnection={(connection) => {
           setConnectionMenu(null)
           setEditing(connection)
+        }}
+        onCreateWithSSH={(connection) => {
+          setConnectionMenu(null)
+          setCreating(false)
+          setEditing(null)
+          setSSHSource(connection)
         }}
         tableMenu={tableMenu}
         onCloseTableMenu={() => setTableMenu(null)}

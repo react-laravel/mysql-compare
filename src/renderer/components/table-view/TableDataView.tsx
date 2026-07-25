@@ -13,11 +13,14 @@ import { TableDataPagination } from './TableDataPagination'
 import { TableDataToolbar } from './TableDataToolbar'
 import { useTableDataQuery } from './table-data-query-hooks'
 import { useTableDataRowActions } from './table-data-row-hooks'
+import { buildRowInsertSQL } from './table-row-insert-sql'
+import type { DbEngine } from '../../../shared/types'
 
 interface Props {
   connectionId: string
   database: string
   table: string
+  engine?: DbEngine
   readOnly?: boolean
   filterEnabled?: boolean
   sortable?: boolean
@@ -28,6 +31,7 @@ export function TableDataView({
   connectionId,
   database,
   table,
+  engine = 'mysql',
   readOnly = false,
   filterEnabled = true,
   sortable = true,
@@ -123,6 +127,25 @@ export function TableDataView({
     refresh()
   }
 
+  const copyRowAsInsert = async (row: Record<string, unknown>, includeId: boolean) => {
+    if (!data || engine === 'redis') return
+
+    try {
+      const sql = buildRowInsertSQL({
+        engine,
+        database,
+        table,
+        columns: data.columns,
+        row,
+        includeId
+      })
+      await navigator.clipboard.writeText(sql)
+      showToast(t('tableData.insertCopied'), 'success')
+    } catch (error) {
+      showToast((error as Error).message, 'error')
+    }
+  }
+
   return (
     <div className="flex flex-col h-full">
       <TableDataToolbar
@@ -187,6 +210,7 @@ export function TableDataView({
           if (!readOnly) setEditing({ mode: 'edit', row })
         }}
         onToggleSelect={onToggleSelect}
+        onCopyInsert={engine === 'redis' ? undefined : copyRowAsInsert}
         onSaveJsonCell={readOnly ? undefined : saveJsonCell}
       />
 

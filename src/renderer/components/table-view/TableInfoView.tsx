@@ -68,7 +68,7 @@ export function TableInfoView({ connectionId, database, table, readOnly = false 
 
   const dropCurrentTable = async () => {
     if (actionBusy) return
-    if (!confirm(t('sidebar.confirm.dropTable', { table }))) return
+    if (!confirm(t('sidebar.confirm.dropTable', { database, table }))) return
 
     setDeleting(true)
     try {
@@ -126,9 +126,22 @@ export function TableInfoView({ connectionId, database, table, readOnly = false 
         </section>
       )}
 
-      {readOnly && schema.createSQL && (
+      {schema.createSQL && (
         <section className="mt-4 rounded-lg border border-border bg-card p-4">
-          <h3 className="mb-2 text-sm font-medium">{t('common.summary')}</h3>
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <h3 className="text-sm font-medium">{t('tableInfo.createStatement')}</h3>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                navigator.clipboard.writeText(schema.createSQL)
+                showToast(t('common.sqlCopied'), 'success')
+              }}
+            >
+              <Copy className="h-3.5 w-3.5" />
+              {t('common.copy')}
+            </Button>
+          </div>
           <pre className="max-h-[40vh] overflow-auto whitespace-pre-wrap rounded border border-border bg-background p-3 text-xs">
             {schema.createSQL}
           </pre>

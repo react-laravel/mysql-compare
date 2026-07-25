@@ -4,6 +4,7 @@ import {
   buildPayload,
   createInitialForm,
   DEFAULT_PORT,
+  getInitialSSHAuthMethod,
   parsePortValue,
   validateConnectionForm
 } from './connection-dialog-utils'
@@ -53,6 +54,7 @@ describe('connection-dialog-utils', () => {
       sshPrivateKey: '',
       sshPrivateKeyPath: '',
       sshPassphrase: '',
+      sshSourceConnectionId: undefined,
       createdAt: 0,
       updatedAt: 0
     })
@@ -120,8 +122,44 @@ describe('connection-dialog-utils', () => {
       sshPrivateKey: '',
       sshPrivateKeyPath: '/Users/sam/.ssh/id_rsa',
       sshPassphrase: '',
+      sshSourceConnectionId: undefined,
       createdAt: savedConnection.createdAt,
       updatedAt: 0
+    })
+  })
+
+  it('creates PostgreSQL defaults while reusing an SSH connection', () => {
+    const sshSource: SafeConnection = {
+      id: 'ssh-source',
+      engine: 'mysql',
+      name: 'DogeOW',
+      group: 'Production',
+      host: '127.0.0.1',
+      port: 3306,
+      username: 'root',
+      useSSH: true,
+      sshHost: 'server.example.com',
+      sshPort: 22,
+      sshUsername: 'ubuntu',
+      createdAt: 1,
+      updatedAt: 2,
+      hasPassword: true,
+      hasSSHPassword: false,
+      hasSSHPrivateKey: true
+    }
+
+    expect(createInitialForm(null, sshSource)).toMatchObject({
+      id: '',
+      engine: 'postgres',
+      group: 'Production',
+      host: '127.0.0.1',
+      port: DEFAULT_PORT.postgres,
+      username: 'postgres',
+      useSSH: true,
+      sshHost: 'server.example.com',
+      sshPort: 22,
+      sshUsername: 'ubuntu',
+      sshSourceConnectionId: 'ssh-source'
     })
   })
 
@@ -167,12 +205,13 @@ describe('connection-dialog-utils', () => {
         sshPassword: '',
         sshPrivateKey: '  PRIVATE KEY  ',
         sshPassphrase: 'phrase'
-      })
+      }),
+      'privateKey'
     )
 
     expect(payload.sshHost).toBe('bastion')
     expect(payload.sshUsername).toBe('deploy')
-    expect(payload.sshPassword).toBeUndefined()
+    expect(payload.sshPassword).toBe('')
     expect(payload.sshPrivateKey).toBe('PRIVATE KEY')
     expect(payload.sshPassphrase).toBe('phrase')
   })
@@ -185,7 +224,8 @@ describe('connection-dialog-utils', () => {
         sshUsername: 'deploy',
         sshPassword: 'secret',
         sshPrivateKeyPath: ' /Users/sam/.ssh/id_rsa '
-      })
+      }),
+      'privateKey'
     )
 
     expect(payload.sshPrivateKeyPath).toBe('/Users/sam/.ssh/id_rsa')
@@ -193,6 +233,16 @@ describe('connection-dialog-utils', () => {
 
   it('accepts a valid direct connection form', () => {
     expect(validateConnectionForm(createForm())).toBeNull()
+  })
+
+  it('uses the trimmed host as the name when the name is empty', () => {
+    const form = createForm({ name: '   ', host: ' 192.168.1.10 ' })
+
+    expect(validateConnectionForm(form)).toBeNull()
+    expect(buildPayload(form)).toMatchObject({
+      name: '192.168.1.10',
+      host: '192.168.1.10'
+    })
   })
 
   it('requires SSH authentication details when an SSH tunnel is enabled', () => {
@@ -207,7 +257,7 @@ describe('connection-dialog-utils', () => {
           sshPrivateKeyPath: ''
         })
       )
-    ).toBe('SSH password or private key is required when SSH tunnel is enabled')
+    ).toBe('SSH password is required when password authentication is selected')
   })
 
   it('allows editing an existing SSH key connection without re-entering the private key', () => {
@@ -220,7 +270,8 @@ describe('connection-dialog-utils', () => {
           sshPassword: '',
           sshPrivateKey: '',
           sshPrivateKeyPath: '/Users/sam/.ssh/id_rsa'
-        })
+        }),
+        { sshAuthMethod: 'privateKey' }
       )
     ).toBeNull()
 
@@ -233,9 +284,61 @@ describe('connection-dialog-utils', () => {
           sshPassword: '',
           sshPrivateKey: ''
         }),
-        { hasSSHPrivateKey: true }
+        { hasSSHPrivateKey: true, sshAuthMethod: 'privateKey' }
       )
     ).toBeNull()
+  })
+
+  it('shows only the saved SSH authentication method when editing', () => {
+    expect(getInitialSSHAuthMethod()).toBe('password')
+    expect(
+      getInitialSSHAuthMethod({
+        id: 'conn-2',
+        engine: 'mysql',
+        name: 'Primary',
+        host: '127.0.0.1',
+        port: 3306,
+        username: 'root',
+        useSSH: true,
+        createdAt: 1,
+        updatedAt: 2,
+        hasPassword: false,
+        hasSSHPassword: false,
+        hasSSHPrivateKey: true
+      })
+    ).toBe('privateKey')
+  })
+
+  it('clears credentials belonging to the unselected SSH authentication method', () => {
+    const passwordPayload = buildPayload(
+      createForm({
+        useSSH: true,
+        sshPassword: 'secret',
+        sshPrivateKey: 'PRIVATE KEY',
+        sshPrivateKeyPath: '/tmp/id_rsa',
+        sshPassphrase: 'phrase'
+      }),
+      'password'
+    )
+    expect(passwordPayload.sshPassword).toBe('secret')
+    expect(passwordPayload.sshPrivateKey).toBe('')
+    expect(passwordPayload.sshPrivateKeyPath).toBe('')
+    expect(passwordPayload.sshPassphrase).toBe('')
+
+    const privateKeyPayload = buildPayload(
+      createForm({
+        useSSH: true,
+        sshPassword: 'secret',
+        sshPrivateKey: ' PRIVATE KEY ',
+        sshPrivateKeyPath: ' /tmp/id_rsa ',
+        sshPassphrase: 'phrase'
+      }),
+      'privateKey'
+    )
+    expect(privateKeyPayload.sshPassword).toBe('')
+    expect(privateKeyPayload.sshPrivateKey).toBe('PRIVATE KEY')
+    expect(privateKeyPayload.sshPrivateKeyPath).toBe('/tmp/id_rsa')
+    expect(privateKeyPayload.sshPassphrase).toBe('phrase')
   })
 
   it('validates direct and SSH port ranges', () => {

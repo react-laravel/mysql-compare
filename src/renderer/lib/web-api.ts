@@ -54,7 +54,17 @@ import type {
   UpdateRowRequest
 } from '../../shared/types'
 
-const WEB_API_BASE = (import.meta.env.VITE_WEB_API_BASE || '/api').replace(/\/$/, '')
+export interface WebApiOptions {
+  /** Absolute or relative API base, e.g. `/api` or `http://127.0.0.1:3456/api` */
+  baseUrl?: string
+  /** Include cookies (web same-origin / Vite proxy). Desktop Tauri uses false. */
+  withCredentials?: boolean
+}
+
+let activeWebApiOptions: Required<WebApiOptions> = {
+  baseUrl: (import.meta.env.VITE_WEB_API_BASE || '/api').replace(/\/$/, ''),
+  withCredentials: true
+}
 let webSessionReady: Promise<void> | null = null
 
 interface BrowserUploadFile {
@@ -66,14 +76,18 @@ type BrowserFile = File
 type BrowserDirectoryInput = HTMLInputElement
 
 function makeUrl(path: string): string {
-  return `${WEB_API_BASE}${path.startsWith('/') ? path : `/${path}`}`
+  return `${activeWebApiOptions.baseUrl}${path.startsWith('/') ? path : `/${path}`}`
+}
+
+function credentialsMode(): RequestCredentials {
+  return activeWebApiOptions.withCredentials ? 'include' : 'omit'
 }
 
 function ensureWebSession(): Promise<void> {
   if (webSessionReady) return webSessionReady
 
   webSessionReady = fetch(makeUrl('/session'), {
-    credentials: 'include',
+    credentials: credentialsMode(),
     headers: { Accept: 'application/json' }
   })
     .then(async (response) => {
@@ -92,7 +106,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<IPCResult<T
   try {
     await ensureWebSession()
     const response = await fetch(makeUrl(path), {
-      credentials: 'include',
+      credentials: credentialsMode(),
       headers: {
         Accept: 'application/json',
         ...(typeof init?.body === 'string' ? { 'Content-Type': 'application/json' } : {}),
@@ -141,7 +155,7 @@ function subscribeToEvents<T>(path: string, onEvent: (value: T) => void): () => 
   let closed = false
   void ensureWebSession().then(() => {
     if (closed) return
-    source = new EventSource(makeUrl(path), { withCredentials: true })
+    source = new EventSource(makeUrl(path), { withCredentials: activeWebApiOptions.withCredentials })
     source.onmessage = (event) => {
       onEvent(JSON.parse(event.data) as T)
     }
@@ -186,7 +200,7 @@ async function postAndDownload(path: string, body: unknown): Promise<Response> {
   await ensureWebSession()
   const response = await fetch(makeUrl(path), {
     method: 'POST',
-    credentials: 'include',
+    credentials: credentialsMode(),
     headers: {
       Accept: 'application/octet-stream,application/json',
       'Content-Type': 'application/json'
@@ -345,7 +359,13 @@ async function uploadBrowserFiles(
   })
 }
 
-export function createWebApi(): AppAPI {
+export function createWebApi(options: WebApiOptions = {}): AppAPI {
+  activeWebApiOptions = {
+    baseUrl: (options.baseUrl || import.meta.env.VITE_WEB_API_BASE || '/api').replace(/\/$/, ''),
+    withCredentials: options.withCredentials ?? true
+  }
+  webSessionReady = null
+
   return {
     runtime: {
       mode: 'web',

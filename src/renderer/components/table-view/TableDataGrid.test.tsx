@@ -59,6 +59,9 @@ describe('TableDataGrid', () => {
 
     render(<TableDataGrid {...props} />)
 
+    expect(screen.getByText('name').parentElement?.className).toContain('whitespace-nowrap')
+    expect(screen.getByText('▲').parentElement).toBe(screen.getByText('name').parentElement)
+
     fireEvent.click(screen.getByRole('checkbox', { name: 'Select rows on this page' }))
     fireEvent.click(screen.getByText('name'))
     fireEvent.click(screen.getByText('Alice'))
@@ -71,5 +74,18 @@ describe('TableDataGrid', () => {
     expect(props.onRowClick).toHaveBeenCalledWith(0, false)
     expect(props.onStartEdit).toHaveBeenCalledWith(testRows[0])
     expect(props.onToggleSelect).toHaveBeenCalledWith(0, true)
+  })
+
+  it('offers INSERT copies with and without the ID from the row context menu', () => {
+    const onCopyInsert = vi.fn()
+    render(<TableDataGrid {...createProps({ onCopyInsert })} />)
+
+    fireEvent.contextMenu(screen.getByText('Alice'), { clientX: 120, clientY: 160 })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Copy as INSERT (with ID)' }))
+    expect(onCopyInsert).toHaveBeenLastCalledWith(testRows[0], true)
+
+    fireEvent.contextMenu(screen.getByText('Alice'), { clientX: 120, clientY: 160 })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Copy as INSERT (without ID)' }))
+    expect(onCopyInsert).toHaveBeenLastCalledWith(testRows[0], false)
   })
 })

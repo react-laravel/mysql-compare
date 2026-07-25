@@ -5,7 +5,7 @@ const WEB_SESSION_COOKIE = 'mysql_compare_session'
 const requestSessionIds = new WeakMap<Request, string>()
 
 export interface WebSecurityConfig {
-  authMode: 'basic' | 'sso'
+  authMode: 'basic' | 'sso' | 'desktop'
   username: string
   password: string
   host: string
@@ -26,6 +26,37 @@ export interface WebSecurityConfig {
 export function loadWebSecurityConfig(
   env: NodeJS.ProcessEnv = process.env
 ): WebSecurityConfig {
+  const desktop = env['MYSQL_COMPARE_DESKTOP'] === '1' || env['MYSQL_COMPARE_DESKTOP'] === 'true'
+  if (desktop) {
+    const host = env['MYSQL_COMPARE_WEB_HOST']?.trim() || '127.0.0.1'
+    const port = Number(env['PORT'] || env['MYSQL_COMPARE_WEB_PORT'] || 0)
+    const sessionSecret =
+      env['MYSQL_COMPARE_SECRET']?.trim() ||
+      env['WEB_SECRET_KEY']?.trim() ||
+      'mysql-compare-desktop-dev-secret-change-me'
+    if (!Number.isInteger(port) || port < 0 || port > 65535) {
+      throw new Error('MYSQL_COMPARE_WEB_PORT must be a valid TCP port')
+    }
+    const allowedOrigins = new Set<string>([
+      'http://localhost:5173',
+      'http://127.0.0.1:5173',
+      'tauri://localhost',
+      'https://tauri.localhost',
+      'http://tauri.localhost'
+    ])
+    return {
+      authMode: 'desktop',
+      username: 'desktop',
+      password: sessionSecret,
+      host,
+      port,
+      allowedOrigins,
+      sessionSecret,
+      secureCookies: false,
+      sso: null
+    }
+  }
+
   const authMode = (env['MYSQL_COMPARE_WEB_AUTH_MODE']?.trim().toLowerCase() || 'basic') as
     | 'basic'
     | 'sso'
@@ -95,7 +126,7 @@ export function loadWebSecurityConfig(
 
 export function securityHeaders(): RequestHandler {
   return (_req, res, next) => {
-    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
+    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' http://127.0.0.1:* http://localhost:* ipc: tauri:; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
     res.setHeader('X-Content-Type-Options', 'nosniff')
     res.setHeader('X-Frame-Options', 'DENY')
     res.setHeader('Referrer-Policy', 'no-referrer')
@@ -105,6 +136,10 @@ export function securityHeaders(): RequestHandler {
 }
 
 export function requireBasicAuth(config: WebSecurityConfig): RequestHandler {
+  if (config.authMode === 'desktop') {
+    return (_req, _res, next) => next()
+  }
+
   return (req, res, next) => {
     const credentials = parseBasicAuthorization(req.get('authorization'))
     if (
@@ -122,6 +157,13 @@ export function requireBasicAuth(config: WebSecurityConfig): RequestHandler {
 }
 
 export function establishWebSession(config: WebSecurityConfig): RequestHandler {
+  if (config.authMode === 'desktop') {
+    return (req, _res, next) => {
+      requestSessionIds.set(req, 'desktop-session')
+      next()
+    }
+  }
+
   return (req, res, next) => {
     const token = getCookie(req.get('cookie'), WEB_SESSION_COOKIE)
     const verifiedSessionId = token ? verifySessionToken(token, config.sessionSecret) : null
@@ -142,6 +184,16 @@ export function establishWebSession(config: WebSecurityConfig): RequestHandler {
 export function requireMutationProtection(config: WebSecurityConfig): RequestHandler {
   return (req, res, next) => {
     if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') {
+      next()
+      return
+    }
+
+    if (config.authMode === 'desktop') {
+      const contentType = req.get('content-type')
+      if (contentType && !contentType.toLowerCase().startsWith('application/json')) {
+        sendSecurityError(res, 415, 'Only application/json requests are accepted')
+        return
+      }
       next()
       return
     }
@@ -229,6 +281,31 @@ function normalizeOrigin(value: string): string {
     return new URL(value).origin
   } catch {
     return ''
+  }
+}
+
+/** CORS for Tauri / Vite desktop UI talking to the loopback sidecar. */
+export function desktopCors(config: WebSecurityConfig): RequestHandler {
+  return (req, res, next) => {
+    if (config.authMode !== 'desktop') {
+      next()
+      return
+    }
+
+    const origin = req.get('origin')
+    if (origin && config.allowedOrigins.has(normalizeOrigin(origin))) {
+      res.setHeader('Access-Control-Allow-Origin', origin)
+      res.setHeader('Vary', 'Origin')
+      res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS')
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept')
+    }
+
+    if (req.method === 'OPTIONS') {
+      res.status(204).end()
+      return
+    }
+
+    next()
   }
 }
 
