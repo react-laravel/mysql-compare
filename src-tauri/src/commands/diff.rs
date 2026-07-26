@@ -23,7 +23,8 @@ pub async fn diff_databases(
     &req.source_database,
     target,
     &req.target_database,
-    req.compare_data.unwrap_or(false),
+    req.include_data.unwrap_or(false),
+    req.tables.as_deref(),
   )
   .await
   {
@@ -49,11 +50,10 @@ pub async fn diff_table(
   match crate::diff::diff_table(
     source,
     &req.source_database,
-    &req.source_table,
     target,
     &req.target_database,
-    &req.target_table,
-    req.compare_data.unwrap_or(true),
+    &req.table,
+    req.include_data.unwrap_or(false),
   )
   .await
   {

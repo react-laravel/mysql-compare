@@ -8,7 +8,7 @@ use sqlx::{Executor, MySql, Row};
 use crate::drivers::dialect::{
   assert_ident, assert_safe_where, clamp_page_size, quote_mysql_ident, quote_mysql_table,
 };
-use crate::drivers::util::json_from_mysql_row;
+use crate::drivers::util::{json_from_mysql_row, urlencoding};
 use crate::types::{
   ColumnInfo, ConnectionConfig, CopyTableRequest, DatabaseInfo, DeleteRowsRequest,
   DropDatabaseRequest, DropTableRequest, ExplainPlanMetric, ExplainSQLResult, IndexInfo,
@@ -70,7 +70,16 @@ impl MysqlDriver {
     self.pool("").await
   }
 
-  pub async fn close(self) {
+  /// 从连接池取出一个独占连接（用于需要会话级状态的批量写入，如 FOREIGN_KEY_CHECKS）。
+  pub async fn acquire(
+    &self,
+    database: &str,
+  ) -> Result<sqlx::pool::PoolConnection<MySql>, String> {
+    let pool = self.pool(database).await?;
+    pool.acquire().await.map_err(|e| e.to_string())
+  }
+
+  pub async fn close(&self) {
     let pools: Vec<_> = self.pools.lock().drain().map(|(_, p)| p).collect();
     for pool in pools {
       pool.close().await;
@@ -648,19 +657,6 @@ fn bind_json<'q>(
     Value::String(s) => query.bind(s.as_str()),
     other => query.bind(other.to_string()),
   }
-}
-
-fn urlencoding(s: &str) -> String {
-  let mut out = String::new();
-  for b in s.bytes() {
-    match b {
-      b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-        out.push(b as char);
-      }
-      _ => out.push_str(&format!("%{b:02X}")),
-    }
-  }
-  out
 }
 
 #[allow(dead_code)]

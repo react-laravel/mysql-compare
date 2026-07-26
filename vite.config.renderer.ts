@@ -35,12 +35,6 @@ export default defineConfig({
       : undefined,
     watch: {
       ignored: ['**/src-tauri/**']
-    },
-    proxy: {
-      '/api': {
-        target: process.env['MYSQL_COMPARE_WEB_API_PROXY'] || 'http://127.0.0.1:3000',
-        changeOrigin: true
-      }
     }
   },
   envPrefix: ['VITE_', 'TAURI_']

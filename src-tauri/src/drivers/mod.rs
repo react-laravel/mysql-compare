@@ -38,7 +38,7 @@ impl EngineDriver {
     Ok(msg)
   }
 
-  pub async fn close(self) {
+  pub async fn close(&self) {
     match self {
       Self::Mysql(d) => d.close().await,
       Self::Postgres(d) => d.close().await,

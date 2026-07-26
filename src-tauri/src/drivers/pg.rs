@@ -8,7 +8,7 @@ use sqlx::{Executor, Postgres, Row};
 use crate::drivers::dialect::{
   assert_ident, assert_safe_where, clamp_page_size, quote_pg_ident, quote_pg_table,
 };
-use crate::drivers::util::json_from_pg_row;
+use crate::drivers::util::{json_from_pg_row, urlencoding};
 use crate::types::{
   ColumnInfo, ConnectionConfig, CopyTableRequest, DatabaseInfo, DeleteRowsRequest,
   DropDatabaseRequest, DropTableRequest, ExplainPlanMetric, ExplainSQLResult, InsertRowRequest,
@@ -65,6 +65,15 @@ impl PgDriver {
     Ok(pool)
   }
 
+  /// 从连接池取出一个独占连接（用于需要单一会话的批量写入）。
+  pub async fn acquire(
+    &self,
+    database: &str,
+  ) -> Result<sqlx::pool::PoolConnection<Postgres>, String> {
+    let pool = self.pool(database).await?;
+    pool.acquire().await.map_err(|e| e.to_string())
+  }
+
   async fn maintenance_pool(&self) -> Result<PgPool, String> {
     let candidates = [
       self.connection.database.clone().unwrap_or_default(),
@@ -84,7 +93,7 @@ impl PgDriver {
     Err(last)
   }
 
-  pub async fn close(self) {
+  pub async fn close(&self) {
     let pools: Vec<_> = self.pools.lock().drain().map(|(_, p)| p).collect();
     for pool in pools {
       pool.close().await;
@@ -612,13 +621,3 @@ fn bind_json<'q>(
   }
 }
 
-fn urlencoding(s: &str) -> String {
-  let mut out = String::new();
-  for b in s.bytes() {
-    match b {
-      b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
-      _ => out.push_str(&format!("%{b:02X}")),
-    }
-  }
-  out
-}

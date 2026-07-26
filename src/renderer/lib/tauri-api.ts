@@ -70,12 +70,19 @@ async function wrap<T>(fn: () => Promise<IPCResult<T>>): Promise<IPCResult<T>> {
 
 function subscribe<T>(event: string, callback: (payload: T) => void): () => void {
   let unlisten: UnlistenFn | null = null
+  let cancelled = false
   void listen<T>(event, (e) => {
     callback(e.payload)
   }).then((fn) => {
-    unlisten = fn
+    // 若 cleanup 先于 listen 完成（StrictMode 下必现），立即注销避免泄漏。
+    if (cancelled) {
+      fn()
+    } else {
+      unlisten = fn
+    }
   })
   return () => {
+    cancelled = true
     unlisten?.()
   }
 }

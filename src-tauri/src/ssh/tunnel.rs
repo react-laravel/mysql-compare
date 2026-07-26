@@ -1,5 +1,7 @@
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -12,8 +14,13 @@ use crate::ssh::ssh_auth_ok;
 use crate::store::host_keys::HostKeyStore;
 use crate::types::{ConnectionConfig, DbEngine};
 
+struct TunnelHandle {
+  port: u16,
+  shutdown: Arc<AtomicBool>,
+}
+
 pub struct TunnelManager {
-  tunnels: Mutex<std::collections::HashMap<String, u16>>,
+  tunnels: Mutex<std::collections::HashMap<String, TunnelHandle>>,
 }
 
 impl TunnelManager {
@@ -29,24 +36,28 @@ impl TunnelManager {
     host_keys: &HostKeyStore,
     conn: &ConnectionConfig,
   ) -> Result<u16, String> {
-    if let Some(port) = self.tunnels.lock().get(&conn.id).copied() {
-      return Ok(port);
+    if let Some(handle) = self.tunnels.lock().get(&conn.id) {
+      return Ok(handle.port);
     }
-    let port = spawn_tunnel(app, host_keys, conn)?;
-    self.tunnels.lock().insert(conn.id.clone(), port);
+    let handle = spawn_tunnel(app, host_keys, conn)?;
+    let port = handle.port;
+    self.tunnels.lock().insert(conn.id.clone(), handle);
     Ok(port)
   }
 
   pub fn close(&self, connection_id: &str) {
-    self.tunnels.lock().remove(connection_id);
+    if let Some(handle) = self.tunnels.lock().remove(connection_id) {
+      handle.shutdown.store(true, Ordering::Relaxed);
+    }
   }
 }
 
+// TODO: 更大的隧道重构（每条隧道复用同一条已认证 SSH 会话、对 forward 连接做 host-key 校验）暂缓。
 fn spawn_tunnel(
   app: &AppHandle,
   host_keys: &HostKeyStore,
   conn: &ConnectionConfig,
-) -> Result<u16, String> {
+) -> Result<TunnelHandle, String> {
   let mut probe_session = connect_session(conn, host_keys, app)?;
   probe_remote_database(&mut probe_session, conn)?;
 
@@ -58,10 +69,23 @@ fn spawn_tunnel(
 
   let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
   let local_port = listener.local_addr().map_err(|e| e.to_string())?.port();
+  listener.set_nonblocking(true).map_err(|e| e.to_string())?;
+  let shutdown = Arc::new(AtomicBool::new(false));
+  let shutdown_flag = shutdown.clone();
 
   thread::spawn(move || {
-    for stream in listener.incoming() {
-      let Ok(mut client) = stream else { continue };
+    loop {
+      if shutdown_flag.load(Ordering::Relaxed) {
+        break;
+      }
+      let mut client = match listener.accept() {
+        Ok((stream, _)) => stream,
+        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+          thread::sleep(Duration::from_millis(50));
+          continue;
+        }
+        Err(_) => break,
+      };
       if client.set_nonblocking(true).is_err() {
         continue;
       }
@@ -169,7 +193,10 @@ fn spawn_tunnel(
   });
 
   thread::sleep(Duration::from_millis(20));
-  Ok(local_port)
+  Ok(TunnelHandle {
+    port: local_port,
+    shutdown,
+  })
 }
 
 fn probe_remote_database(sess: &mut Session, conn: &ConnectionConfig) -> Result<(), String> {

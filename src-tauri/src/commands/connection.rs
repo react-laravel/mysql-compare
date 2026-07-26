@@ -10,12 +10,19 @@ pub fn connection_list(state: State<'_, AppState>) -> IpcResult<Vec<SafeConnecti
 }
 
 #[tauri::command]
-pub fn connection_upsert(
+pub async fn connection_upsert(
   app: AppHandle,
   state: State<'_, AppState>,
   conn: ConnectionConfig,
-) -> IpcResult<SafeConnection> {
-  map_result(state.connections.upsert(&app, conn))
+) -> Result<IpcResult<SafeConnection>, String> {
+  match state.connections.upsert(&app, conn) {
+    Ok(safe) => {
+      // 编辑后的 host/password/SSH 配置需立即生效：清掉旧 driver 与隧道缓存。
+      state.close_connection(&safe.id).await;
+      Ok(IpcResult::ok(safe))
+    }
+    Err(e) => Ok(IpcResult::err(e)),
+  }
 }
 
 #[tauri::command]

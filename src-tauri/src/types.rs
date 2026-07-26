@@ -406,6 +406,19 @@ pub struct ImportTableResult {
   pub statements_executed: i64,
 }
 
+// ---------- Diff ----------
+// 与 src/shared/types.ts 的 Diff 契约保持一一对应（shared/types.ts 为唯一事实来源）。
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum DiffKind {
+  #[serde(rename = "only-in-source")]
+  OnlyInSource,
+  #[serde(rename = "only-in-target")]
+  OnlyInTarget,
+  #[serde(rename = "modified")]
+  Modified,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiffRequest {
@@ -413,7 +426,8 @@ pub struct DiffRequest {
   pub source_database: String,
   pub target_connection_id: String,
   pub target_database: String,
-  pub compare_data: Option<bool>,
+  pub include_data: Option<bool>,
+  pub tables: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -421,19 +435,20 @@ pub struct DiffRequest {
 pub struct TableDiffRequest {
   pub source_connection_id: String,
   pub source_database: String,
-  pub source_table: String,
   pub target_connection_id: String,
   pub target_database: String,
-  pub target_table: String,
-  pub compare_data: Option<bool>,
+  pub table: String,
+  pub include_data: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ColumnDiff {
   pub name: String,
-  pub status: String,
+  pub kind: DiffKind,
+  #[serde(skip_serializing_if = "Option::is_none")]
   pub source: Option<ColumnInfo>,
+  #[serde(skip_serializing_if = "Option::is_none")]
   pub target: Option<ColumnInfo>,
 }
 
@@ -441,44 +456,73 @@ pub struct ColumnDiff {
 #[serde(rename_all = "camelCase")]
 pub struct IndexDiff {
   pub name: String,
-  pub status: String,
+  pub kind: DiffKind,
+  #[serde(skip_serializing_if = "Option::is_none")]
   pub source: Option<IndexInfo>,
+  #[serde(skip_serializing_if = "Option::is_none")]
   pub target: Option<IndexInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TableDataDiffSample {
+  pub kind: DiffKind,
+  pub key: String,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub source: Option<HashMap<String, Value>>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub target: Option<HashMap<String, Value>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TableDataDiff {
-  pub identical: i64,
-  pub modified: i64,
+  pub comparable: bool,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub reason: Option<String>,
+  pub key_columns: Vec<String>,
+  pub compare_columns: Vec<String>,
+  pub source_row_count: i64,
+  pub target_row_count: i64,
   pub source_only: i64,
   pub target_only: i64,
-  pub samples: Vec<Value>,
+  pub modified: i64,
+  pub identical: i64,
+  pub samples: Vec<TableDataDiffSample>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TableDiff {
   pub table: String,
-  pub status: String,
+  pub kind: DiffKind,
   pub column_diffs: Vec<ColumnDiff>,
   pub index_diffs: Vec<IndexDiff>,
+  #[serde(skip_serializing_if = "Option::is_none")]
   pub data_diff: Option<TableDataDiff>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TableRowComparison {
+  pub table: String,
+  pub data_diff: TableDataDiff,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DatabaseDiff {
-  pub source_only_tables: Vec<String>,
-  pub target_only_tables: Vec<String>,
+  pub source_database: String,
+  pub target_database: String,
   pub table_diffs: Vec<TableDiff>,
+  pub row_comparisons: Vec<TableRowComparison>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TableComparisonResult {
   pub table_diff: Option<TableDiff>,
-  pub row_comparison: Option<Value>,
+  pub row_comparison: Option<TableRowComparison>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -495,20 +539,19 @@ pub struct SyncRequest {
   pub dry_run: Option<bool>,
 }
 
+// 与 src/shared/types.ts 的 SyncStep/SyncPlan 契约保持一一对应。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SyncPlanStep {
+pub struct SyncStep {
   pub table: String,
-  pub action: String,
-  pub sql: Option<String>,
-  pub row_count: Option<i64>,
+  pub description: String,
+  pub sqls: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncPlan {
-  pub steps: Vec<SyncPlanStep>,
-  pub warnings: Vec<String>,
+  pub steps: Vec<SyncStep>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

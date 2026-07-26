@@ -105,9 +105,8 @@ impl AppState {
       drivers.remove(connection_id)
     };
     if let Some(d) = driver {
-      if let Ok(owned) = Arc::try_unwrap(d) {
-        owned.close().await;
-      }
+      // sqlx Pool 可 Clone，close() 对所有克隆生效；无需等 Arc 独占即可关闭。
+      d.close().await;
     }
     self.tunnels.close(connection_id);
   }

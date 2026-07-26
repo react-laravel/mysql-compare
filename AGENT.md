@@ -2,7 +2,7 @@
 
 ## 项目概述
 
-基于 **Tauri 2 + React + TypeScript + Vite** 的桌面数据库客户端。`main` 为全 Rust 后端；完整 Electron / Web 版在 `electron` 分支。
+基于 **Tauri 2 + React + TypeScript + Vite** 的桌面数据库客户端。`main` 为全 Rust 后端；完整 Electron / Web 版在 `electron` 分支。`src/main`、`src/preload`、`src/web` 等 Electron/Web 代码已从 `main` 删除，parity 参考实现请查阅 `electron` 分支。
 
 ## 技术栈
 

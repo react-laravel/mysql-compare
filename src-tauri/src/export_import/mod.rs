@@ -326,7 +326,7 @@ fn escape_csv(value: Option<&serde_json::Value>, sep: char) -> String {
   }
 }
 
-fn sql_literal(value: Option<&serde_json::Value>) -> String {
+pub(crate) fn sql_literal(value: Option<&serde_json::Value>) -> String {
   match value {
     None | Some(serde_json::Value::Null) => "NULL".into(),
     Some(serde_json::Value::Bool(b)) => if *b { "1" } else { "0" }.into(),

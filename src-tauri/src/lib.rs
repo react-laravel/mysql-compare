@@ -17,7 +17,6 @@ use tauri::Manager;
 pub fn run() {
   tauri::Builder::default()
     .plugin(tauri_plugin_dialog::init())
-    .plugin(tauri_plugin_shell::init())
     .setup(|app| {
       if cfg!(debug_assertions) {
         app.handle().plugin(

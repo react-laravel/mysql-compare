@@ -112,15 +112,32 @@ impl TerminalManager {
   }
 
   pub fn write(&self, session_id: &str, data: &str) -> Result<(), String> {
-    let sessions = self.sessions.lock();
-    let session = sessions
-      .get(session_id)
-      .ok_or_else(|| "Terminal session not found".to_string())?;
+    let session = {
+      let sessions = self.sessions.lock();
+      sessions
+        .get(session_id)
+        .cloned()
+        .ok_or_else(|| "Terminal session not found".to_string())?
+    };
+    // 会话是非阻塞的，write_all 遇到 WouldBlock 会中途失败；
+    // 手动循环重试，且每次重试间释放锁，避免饿死读线程。
+    let bytes = data.as_bytes();
+    let mut written = 0;
+    while written < bytes.len() {
+      let write_result = {
+        let mut guard = session.lock();
+        guard.channel.write(&bytes[written..])
+      };
+      match write_result {
+        Ok(0) => return Err("Terminal channel closed".into()),
+        Ok(n) => written += n,
+        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+          thread::sleep(std::time::Duration::from_millis(5));
+        }
+        Err(e) => return Err(e.to_string()),
+      }
+    }
     let mut guard = session.lock();
-    guard
-      .channel
-      .write_all(data.as_bytes())
-      .map_err(|e| e.to_string())?;
     let _ = guard.channel.flush();
     Ok(())
   }
