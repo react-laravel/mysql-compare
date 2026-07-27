@@ -10,6 +10,8 @@ jobs:
   release:
     permissions:
       contents: write
+    env:
+      NODE_OPTIONS: --max-old-space-size=6144
     strategy:
       fail-fast: false
       matrix:
