@@ -1,18 +1,54 @@
 // @vitest-environment jsdom
-
+/**
+ * The menus and the one confirmation surface. The point of Chunk 6 here is that
+ * `sidebar-menus.ts` is the single source for a given object's actions and that
+ * every destructive path — including copy-table and delete-connection, which
+ * used native `confirm()` — ends in the same `ConfirmDialog`.
+ */
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useI18nStore } from '@renderer/i18n'
+import { useConnectionStore } from '@renderer/store/connection-store'
+import { useSidebarStore } from '@renderer/store/sidebar-store'
+import { useUIStore } from '@renderer/store/ui-store'
 import type { SafeConnection } from '../../../shared/types'
 import { SidebarOverlays } from './SidebarOverlays'
 
-afterEach(cleanup)
+const mocks = vi.hoisted(() => ({
+  truncateTable: vi.fn(),
+  dropTable: vi.fn(),
+  copyTable: vi.fn(),
+  dropDatabase: vi.fn(),
+  listTables: vi.fn(),
+  getDatabaseInfo: vi.fn(),
+  removeConnection: vi.fn(),
+  closeConnection: vi.fn(),
+  listConnections: vi.fn()
+}))
+
+vi.mock('@renderer/lib/api', () => ({
+  api: {
+    db: {
+      truncateTable: mocks.truncateTable,
+      dropTable: mocks.dropTable,
+      copyTable: mocks.copyTable,
+      dropDatabase: mocks.dropDatabase,
+      listTables: mocks.listTables,
+      getDatabaseInfo: mocks.getDatabaseInfo
+    },
+    connection: {
+      remove: mocks.removeConnection,
+      close: mocks.closeConnection,
+      list: mocks.listConnections
+    }
+  },
+  unwrap: async <T,>(value: Promise<T> | T): Promise<T> => await value
+}))
 
 const connection: SafeConnection = {
   id: 'conn-1',
   engine: 'mysql',
   name: 'Local MySQL',
-  group: undefined,
   host: '127.0.0.1',
   port: 3306,
   username: 'root',
@@ -33,92 +69,159 @@ const postgresConnection: SafeConnection = {
   username: 'server_user'
 }
 
-function createProps(overrides: Partial<React.ComponentProps<typeof SidebarOverlays>> = {}) {
-  return {
+const at = { x: 120, y: 80 }
+
+function resetSidebar() {
+  useSidebarStore.setState({
     creating: false,
     editing: null,
     sshSource: null,
-    onConnectionDialogOpenChange: vi.fn(),
-    onConnectionSaved: vi.fn(),
-    onDeleteConnection: vi.fn(() => true),
     connectionMenu: null,
-    onCloseConnectionMenu: vi.fn(),
-    onCloseDatabaseConnection: vi.fn(),
-    onEditConnection: vi.fn(),
-    onCreateWithSSH: vi.fn(),
-    tableMenu: {
-      x: 120,
-      y: 80,
+    databaseMenu: null,
+    tableMenu: null,
+    pendingConfirm: null,
+    createSQLDialog: null,
+    createRedisKeyDialog: null,
+    exportDialog: null,
+    exportDatabaseDialog: null,
+    importDialog: null,
+    databaseCredentialDialog: null,
+    actionBusy: false,
+    nodes: {}
+  })
+}
+
+describe('SidebarOverlays', () => {
+  beforeEach(() => {
+    useI18nStore.getState().setLocale('en')
+    useUIStore.setState({ rightView: { kind: 'empty' } })
+    useConnectionStore.setState({ connections: [connection] })
+    resetSidebar()
+    Object.values(mocks).forEach((mock) => mock.mockReset())
+    mocks.listTables.mockResolvedValue([])
+    mocks.listConnections.mockResolvedValue([])
+    mocks.truncateTable.mockResolvedValue(undefined)
+    mocks.dropTable.mockResolvedValue(undefined)
+    mocks.copyTable.mockResolvedValue({ table: 'users_copy' })
+    mocks.dropDatabase.mockResolvedValue(undefined)
+    mocks.removeConnection.mockResolvedValue(undefined)
+    mocks.closeConnection.mockResolvedValue(undefined)
+  })
+
+  afterEach(cleanup)
+
+  it('opens table details and exposes both destructive table actions', () => {
+    useSidebarStore.setState({ tableMenu: { ...at, connection, database: 'app_db', table: 'users' } })
+    render(<SidebarOverlays />)
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Table Details' }))
+
+    expect(useUIStore.getState().rightView).toMatchObject({
+      kind: 'table',
+      table: 'users',
+      tableTab: 'info'
+    })
+  })
+
+  it('requires confirmation before truncating, with both identity options', async () => {
+    useSidebarStore.setState({ tableMenu: { ...at, connection, database: 'app_db', table: 'users' } })
+    render(<SidebarOverlays />)
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Truncate Table' }))
+    expect(mocks.truncateTable).not.toHaveBeenCalled()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Clear, Keep ID' }))
+    await waitFor(() =>
+      expect(mocks.truncateTable).toHaveBeenCalledWith({
+        connectionId: 'conn-1',
+        database: 'app_db',
+        table: 'users',
+        resetIdentity: false
+      })
+    )
+
+    useSidebarStore.getState().setPendingConfirm({
+      kind: 'truncate-table',
       connection,
       database: 'app_db',
       table: 'users'
-    },
-    onCloseTableMenu: vi.fn(),
-    databaseMenu: null,
-    onCloseDatabaseMenu: vi.fn(),
-    onOpenDatabaseDetails: vi.fn(),
-    onOpenDatabaseSQLConsole: vi.fn(),
-    onOpenDatabaseCredentialDialog: vi.fn(),
-    onCreateRedisKey: vi.fn(),
-    onExportDatabase: vi.fn(),
-    onRefreshDatabase: vi.fn(),
-    onOpenTableDetails: vi.fn(),
-    onRenameTable: vi.fn(),
-    onCopyTable: vi.fn(),
-    onShowCreateSQL: vi.fn(),
-    onExportTable: vi.fn(),
-    onImportTable: vi.fn(),
-    onTruncateTable: vi.fn(),
-    onDropTable: vi.fn(),
-    renameDialog: null,
-    renameDraft: '',
-    actionBusy: false,
-    onRenameDraftChange: vi.fn(),
-    onRenameDialogOpenChange: vi.fn(),
-    onSubmitRename: vi.fn(),
-    createSQLDialog: null,
-    onCreateSQLDialogOpenChange: vi.fn(),
-    onCopyCreateSQL: vi.fn(),
-    createRedisKeyDialog: null,
-    onCreateRedisKeyDialogOpenChange: vi.fn(),
-    onSubmitCreateRedisKey: vi.fn(),
-    exportDialog: null,
-    onExportDialogOpenChange: vi.fn(),
-    exportDatabaseDialog: null,
-    onExportDatabaseDialogOpenChange: vi.fn(),
-    importDialog: null,
-    onImportDialogOpenChange: vi.fn(),
-    onImported: vi.fn(),
-    databaseCredentialDialog: null,
-    databaseCredentialUsername: '',
-    databaseCredentialPassword: '',
-    databaseCredentialUseDefault: true,
-    databaseCredentialFeedback: null,
-    onDatabaseCredentialUsernameChange: vi.fn(),
-    onDatabaseCredentialPasswordChange: vi.fn(),
-    onDatabaseCredentialUseDefaultChange: vi.fn(),
-    onDatabaseCredentialDialogOpenChange: vi.fn(),
-    onTestDatabaseCredential: vi.fn(),
-    onSubmitDatabaseCredential: vi.fn(),
-    ...overrides
-  }
-}
-
-describe('SidebarOverlays menus', () => {
-  beforeEach(() => {
-    useI18nStore.getState().setLocale('en')
+    })
+    fireEvent.click(await screen.findByRole('button', { name: 'TRUNCATE, Reset ID' }))
+    await waitFor(() =>
+      expect(mocks.truncateTable).toHaveBeenLastCalledWith(
+        expect.objectContaining({ resetIdentity: true })
+      )
+    )
   })
 
-  it('opens table details and exposes both destructive table actions', () => {
-    const props = createProps()
+  it('routes copy-table through the confirm dialog instead of window.confirm', async () => {
+    useSidebarStore.setState({ tableMenu: { ...at, connection, database: 'app_db', table: 'users' } })
+    render(<SidebarOverlays />)
 
-    render(<SidebarOverlays {...props} />)
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Copy to users_copy' }))
+    expect(mocks.copyTable).not.toHaveBeenCalled()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Table Details' }))
+    expect(useSidebarStore.getState().pendingConfirm).toMatchObject({
+      kind: 'copy-table',
+      targetTable: 'users_copy'
+    })
+    fireEvent.click(await screen.findByRole('button', { name: 'Copy' }))
+    await waitFor(() =>
+      expect(mocks.copyTable).toHaveBeenCalledWith({
+        connectionId: 'conn-1',
+        database: 'app_db',
+        table: 'users',
+        targetTable: 'users_copy'
+      })
+    )
+  })
 
-    expect(props.onOpenTableDetails).toHaveBeenCalledWith(props.tableMenu)
-    expect(screen.getByText('Truncate Table')).toBeTruthy()
-    expect(screen.getByText('Drop Table')).toBeTruthy()
+  it('drops a table only after confirmation', async () => {
+    useSidebarStore.setState({ tableMenu: { ...at, connection, database: 'app_db', table: 'users' } })
+    render(<SidebarOverlays />)
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Drop Table' }))
+    expect(mocks.dropTable).not.toHaveBeenCalled()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Drop Table' }))
+    await waitFor(() =>
+      expect(mocks.dropTable).toHaveBeenCalledWith({
+        connectionId: 'conn-1',
+        database: 'app_db',
+        table: 'users'
+      })
+    )
+  })
+
+  it('gives a database row the compare entrance and a gated drop', async () => {
+    useSidebarStore.setState({
+      databaseMenu: { ...at, connection: postgresConnection, database: 'app_db' }
+    })
+    render(<SidebarOverlays />)
+
+    expect(screen.getByRole('menuitem', { name: 'Open SQL Console' })).toBeTruthy()
+    expect(screen.getByRole('menuitem', { name: 'Database Credentials...' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Compare This Database...' }))
+    expect(useUIStore.getState().rightView.kind).toBe('diff')
+
+    useSidebarStore.getState().setDatabaseMenu({
+      ...at,
+      connection: postgresConnection,
+      database: 'app_db'
+    })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Drop Database...' }))
+
+    // typed confirmation: the button stays disabled until the name matches
+    const confirm = await screen.findByRole('button', { name: 'Drop Database' })
+    expect(confirm.hasAttribute('disabled')).toBe(true)
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'app_db' } })
+    fireEvent.click(confirm)
+    await waitFor(() =>
+      expect(mocks.dropDatabase).toHaveBeenCalledWith({
+        connectionId: 'conn-1',
+        database: 'app_db'
+      })
+    )
   })
 
   it('offers a PostgreSQL connection that reuses saved SSH credentials', () => {
@@ -130,143 +233,59 @@ describe('SidebarOverlays menus', () => {
       sshUsername: 'ubuntu',
       hasSSHPrivateKey: true
     }
-    const props = createProps({
-      tableMenu: null,
-      connectionMenu: {
-        x: 120,
-        y: 80,
-        connection: sshConnection
-      }
-    })
+    useSidebarStore.setState({ connectionMenu: { ...at, connection: sshConnection } })
+    render(<SidebarOverlays />)
 
-    render(<SidebarOverlays {...props} />)
+    fireEvent.click(screen.getByRole('menuitem', { name: 'New Connection with This SSH' }))
 
-    fireEvent.click(screen.getByRole('button', {
-      name: 'New Connection with This SSH'
-    }))
-
-    expect(props.onCreateWithSSH).toHaveBeenCalledWith(sshConnection)
+    expect(useSidebarStore.getState().sshSource).toEqual(sshConnection)
   })
 
-  it('requires confirmation before truncating a table', async () => {
-    const props = createProps()
-    render(<SidebarOverlays {...props} />)
+  it('confirms before deleting a connection — it used to be a native confirm()', async () => {
+    useSidebarStore.setState({ connectionMenu: { ...at, connection } })
+    render(<SidebarOverlays />)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Truncate Table' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete Connection...' }))
+    expect(mocks.removeConnection).not.toHaveBeenCalled()
 
-    expect(props.onTruncateTable).not.toHaveBeenCalled()
-    expect(
-      screen.getByText(
-        'Truncate table "app_db.users"? All rows will be permanently deleted. This cannot be undone.'
-      )
-    ).toBeTruthy()
-
-    expect(screen.getByRole('button', { name: 'Clear, Keep ID' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'TRUNCATE, Reset ID' })).toBeTruthy()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Clear, Keep ID' }))
-    await waitFor(() =>
-      expect(props.onTruncateTable).toHaveBeenCalledWith(props.tableMenu, false)
-    )
-
-    fireEvent.click(screen.getByRole('button', { name: 'Truncate Table' }))
-    fireEvent.click(screen.getByRole('button', { name: 'TRUNCATE, Reset ID' }))
-    await waitFor(() =>
-      expect(props.onTruncateTable).toHaveBeenLastCalledWith(props.tableMenu, true)
-    )
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }))
+    await waitFor(() => expect(mocks.removeConnection).toHaveBeenCalledWith('conn-1'))
   })
 
-  it('requires confirmation before dropping a table', async () => {
-    const props = createProps()
-    render(<SidebarOverlays {...props} />)
+  it('keeps Delete out of the edit dialog footer, beside Save', () => {
+    // Blueprint §1.3 / §3.11. This footer button used to be guarded by a native
+    // `confirm()`; during the redesign it was rewired straight to the deleter,
+    // so editing a connection could destroy it with one misclick and no prompt.
+    // Delete now lives only where a `ConfirmDialog` guards it: Settings ▸
+    // Connections and the connection row's `⋯`.
+    useSidebarStore.setState({ editing: connection })
+    render(<SidebarOverlays />)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Drop Table' }))
-
-    expect(props.onDropTable).not.toHaveBeenCalled()
-    expect(
-      screen.getByText(
-        'Drop table "app_db.users"? Its structure and all data will be permanently deleted. This cannot be undone.'
-      )
-    ).toBeTruthy()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Drop Table' }))
-    await waitFor(() => expect(props.onDropTable).toHaveBeenCalledWith(props.tableMenu))
-  })
-
-  it('opens database details from the database menu', () => {
-    const props = createProps({
-      tableMenu: null,
-      databaseMenu: {
-        x: 160,
-        y: 96,
-        connection: postgresConnection,
-        database: 'app_db'
-      }
-    })
-
-    render(<SidebarOverlays {...props} />)
-
-    fireEvent.click(screen.getByRole('button', { name: 'Database Details' }))
-
-    expect(props.onOpenDatabaseDetails).toHaveBeenCalledWith(props.databaseMenu)
-    expect(screen.getByText('Open SQL Console')).toBeTruthy()
-  })
-
-  it('opens database credential settings from the database menu', () => {
-    const props = createProps({
-      tableMenu: null,
-      databaseMenu: {
-        x: 160,
-        y: 96,
-        connection: postgresConnection,
-        database: 'app_db'
-      }
-    })
-
-    render(<SidebarOverlays {...props} />)
-
-    fireEvent.click(screen.getByRole('button', { name: 'Database Credentials...' }))
-
-    expect(props.onOpenDatabaseCredentialDialog).toHaveBeenCalledWith(props.databaseMenu)
+    expect(screen.getByRole('button', { name: 'Save' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Delete' })).toBeNull()
   })
 
   it('switches a database from the server account to a custom account and can test it', () => {
-    const props = createProps({
-      tableMenu: null,
-      databaseCredentialDialog: {
-        connection: postgresConnection,
-        database: 'app_db'
-      },
+    useSidebarStore.setState({
+      databaseCredentialDialog: { connection: postgresConnection, database: 'app_db' },
       databaseCredentialUsername: 'app_user',
       databaseCredentialUseDefault: false
     })
-
-    render(<SidebarOverlays {...props} />)
+    render(<SidebarOverlays />)
 
     expect(screen.getByText('Database Access Account')).toBeTruthy()
     expect(screen.getByDisplayValue('app_user')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: 'Test' }))
-    expect(props.onTestDatabaseCredential).toHaveBeenCalledTimes(1)
 
     fireEvent.click(screen.getByRole('button', { name: 'Server account' }))
-    expect(props.onDatabaseCredentialUseDefaultChange).toHaveBeenCalledWith(true)
+    expect(useSidebarStore.getState().databaseCredentialUseDefault).toBe(true)
   })
 
-  it('closes a database connection from the connection menu', () => {
-    const props = createProps({
-      tableMenu: null,
-      connectionMenu: {
-        x: 120,
-        y: 80,
-        connection
-      }
-    })
+  it('closes a database connection from the connection menu', async () => {
+    useSidebarStore.setState({ connectionMenu: { ...at, connection } })
+    render(<SidebarOverlays />)
 
-    render(<SidebarOverlays {...props} />)
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Close Database Connection' }))
 
-    fireEvent.click(screen.getByRole('button', { name: 'Close Database Connection' }))
-
-    expect(props.onCloseDatabaseConnection).toHaveBeenCalledWith(props.connectionMenu)
-    expect(screen.getByRole('button', { name: 'Edit' })).toBeTruthy()
+    await waitFor(() => expect(useSidebarStore.getState().connectionMenu).toBeNull())
   })
 })

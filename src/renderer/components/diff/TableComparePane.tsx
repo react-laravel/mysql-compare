@@ -1,14 +1,36 @@
+// One side of the table compare (blueprint §3.6).
+//
+// What changed in chunk 10:
+//   · every row carries the mandatory `DiffGutter` (`+` / `−` / `~`) in its own
+//     column — DS §1.5 makes the glyph the signal and the wash reinforcement;
+//   · the amber/sky/violet literals are gone; the row wash and the changed-cell
+//     highlight read `--ds-diff-*` through `DIFF_ROW_BG`, so the colourblind
+//     preference (`data-colorblind-diff`) re-skins them for free;
+//   · the pane shell is a `Panel`, and a load failure is an
+//     `EmptyState variant="error"` with Retry instead of a bare red string;
+//   · "Delete selected" left the pane header for the toolbar `⋯`, where both
+//     sides' deletes sit together (§3.6).
 import type { MouseEvent, Ref, UIEvent } from 'react'
-import { ExternalLink, Loader2, Trash2 } from 'lucide-react'
-import { Button } from '@renderer/components/ui/button'
+import { ExternalLink } from 'lucide-react'
 import { Badge } from '@renderer/components/ui/badge'
+import { Button } from '@renderer/components/ui/button'
 import { Checkbox } from '@renderer/components/ui/checkbox'
+import { DiffGutter, DIFF_ROW_BG, type DiffKind } from '@renderer/components/ui/diff-gutter'
+import { EmptyState } from '@renderer/components/ui/empty-state'
+import { IconButton } from '@renderer/components/ui/icon-button'
+import { Panel } from '@renderer/components/ui/panel'
+import { Spinner } from '@renderer/components/ui/spinner'
 import { Table, TBody, Td, THead, Th, Tr } from '@renderer/components/ui/table'
 import { cn, formatCellValue } from '@renderer/lib/utils'
+import { formatNumber } from '@renderer/lib/format'
 import { useI18n } from '@renderer/i18n'
 import type { ColumnInfo, QueryRowsResult } from '../../../shared/types'
 import { buildRowKey, type CompareColumn } from './table-compare-utils'
 import type { AlignedCompareRow, RowDiffInfo } from './table-compare-diff'
+
+/** Width of the diff-sign column. Identical on both panes so the rows line up. */
+const GUTTER_WIDTH = 28
+const SELECT_WIDTH = 44
 
 interface TableComparePaneProps {
   title: string
@@ -18,6 +40,7 @@ interface TableComparePaneProps {
   data: QueryRowsResult | null
   error: string | null
   loading: boolean
+  onRetry?: () => void
   scrollContainerRef?: Ref<HTMLDivElement>
   onScroll?: (event: UIEvent<HTMLDivElement>) => void
   selectedKeys?: Set<string>
@@ -29,12 +52,11 @@ interface TableComparePaneProps {
   onToggleRow?: (row: Record<string, unknown>, event: MouseEvent<HTMLInputElement>) => void
   compareColumns?: CompareColumn[]
   rowDiffByKey?: Map<string, RowDiffInfo>
+  /** the merged per-aligned-row sign; see `table-compare-presentation` */
+  rowDiffKindByKey?: Map<string, DiffKind>
   alignedRows?: AlignedCompareRow[] | null
   side?: 'source' | 'target'
-  selectedCount?: number
   onOpenTable?: () => void
-  onDeleteSelected?: () => void
-  deleting?: boolean
 }
 
 export function TableComparePane({
@@ -45,6 +67,7 @@ export function TableComparePane({
   data,
   error,
   loading,
+  onRetry,
   scrollContainerRef,
   onScroll,
   selectedKeys,
@@ -56,12 +79,10 @@ export function TableComparePane({
   onToggleRow,
   compareColumns,
   rowDiffByKey,
+  rowDiffKindByKey,
   alignedRows = null,
   side = 'source',
-  selectedCount = 0,
-  onOpenTable,
-  onDeleteSelected,
-  deleting = false
+  onOpenTable
 }: TableComparePaneProps) {
   const { t } = useI18n()
   const columns =
@@ -71,92 +92,91 @@ export function TableComparePane({
       [side]: column
     })) ??
     []
+  const selectWidth = showSelection || leadingSpacer ? SELECT_WIDTH : 0
   const tableWidth =
     columns.reduce((total, column) => total + getCompareColumnWidth(column.name), 0) +
-    (showSelection || leadingSpacer ? 44 : 0)
+    selectWidth +
+    GUTTER_WIDTH
+  const rows = data ? getPaneRows(data, alignedRows, side) : []
+  const leadingColumnCount = (selectWidth > 0 ? 1 : 0) + 1
 
   return (
-    <div className="flex min-h-0 flex-col overflow-hidden rounded border border-border bg-card/40">
-      <div className="border-b border-border/60 px-3 py-2">
-        <div className="flex min-w-0 items-center justify-between gap-3">
-          <div className="flex min-w-0 items-center gap-2 text-sm">
-            <span className="shrink-0 text-xs text-muted-foreground">{title}</span>
-            <strong className="shrink-0 font-medium">{connectionName}</strong>
-            <span className="min-w-0 truncate text-xs text-muted-foreground">
-              {database} / {table}
+    <Panel
+      className="min-h-0 flex-1"
+      padded={false}
+      bodyClassName="min-h-0 flex-1 overflow-hidden"
+      header={
+        <span className="flex min-w-0 items-center gap-2">
+          <span className="shrink-0 text-xs font-normal text-fg-muted">{title}</span>
+          <span className="shrink-0">{connectionName}</span>
+          <span className="min-w-0 truncate font-mono text-xs font-normal text-fg-muted">
+            {database} / {table}
+          </span>
+          {loading ? <Spinner size="xs" label={t('diff.pane.loadingRows')} /> : null}
+        </span>
+      }
+      headerActions={
+        <>
+          {data ? (
+            <span className="flex items-center gap-1.5 text-2xs text-fg-muted">
+              <span>{t('diff.pane.rows', { count: formatNumber(data.total) })}</span>
+              {data.hasPrimaryKey ? (
+                <Badge>{t('diff.pane.pkPrefix', { columns: data.primaryKey.join(', ') })}</Badge>
+              ) : (
+                <Badge tone="warning">{t('diff.pane.noPrimaryKey')}</Badge>
+              )}
             </span>
-            {loading && (
-              <Loader2
-                className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground"
-                aria-label={t('diff.pane.loadingRows')}
-              />
-            )}
-          </div>
-          {data && (
-            <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
-              {onOpenTable && (
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  className="h-7 w-7"
-                  onClick={onOpenTable}
-                  title={side === 'source' ? t('diff.presentation.openSource') : t('diff.presentation.openTarget')}
-                  aria-label={side === 'source' ? t('diff.presentation.openSource') : t('diff.presentation.openTarget')}
-                >
-                  <ExternalLink className="h-3.5 w-3.5" />
+          ) : null}
+          {onOpenTable ? (
+            <IconButton
+              icon={ExternalLink}
+              size="xs"
+              variant="ghost"
+              onClick={onOpenTable}
+              label={
+                side === 'source'
+                  ? t('diff.presentation.openSource')
+                  : t('diff.presentation.openTarget')
+              }
+            />
+          ) : null}
+        </>
+      }
+    >
+      <div
+        ref={scrollContainerRef}
+        onScroll={onScroll}
+        aria-busy={loading || undefined}
+        className="h-full min-h-0 overflow-auto"
+      >
+        {!loading && error ? (
+          <EmptyState
+            variant="error"
+            size="sm"
+            title={t('diff.pane.loadFailed')}
+            error={error}
+            detailsLabel={t('common.details')}
+            action={
+              onRetry ? (
+                <Button size="sm" variant="secondary" onClick={onRetry}>
+                  {t('common.retry')}
                 </Button>
-              )}
-              {showSelection && onDeleteSelected && (
-                <Button
-                  size="icon"
-                  variant="outline"
-                  className="h-7 w-7"
-                  disabled={selectedCount === 0 || deleting}
-                  onClick={onDeleteSelected}
-                  title={
-                    deleting
-                      ? t('diff.compareView.deleting')
-                      : t('diff.compareView.deleteSelectedRows', { count: selectedCount })
-                  }
-                  aria-label={
-                    deleting
-                      ? t('diff.compareView.deleting')
-                      : t('diff.compareView.deleteSelectedRows', { count: selectedCount })
-                  }
-                >
-                  {deleting ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <Trash2 className="h-3.5 w-3.5" />
-                  )}
-                </Button>
-              )}
-              <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
-                <span>{t('diff.pane.rows', { count: data.total.toLocaleString() })}</span>
-                <span>
-                  {data.hasPrimaryKey
-                    ? t('diff.pane.pkPrefix', { columns: data.primaryKey.join(', ') })
-                    : t('diff.pane.noPrimaryKey')}
-                </span>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-
-      <div ref={scrollContainerRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-auto">
-        {!loading && error && <div className="break-all p-3 text-xs text-destructive dark:text-red-300">{error}</div>}
+              ) : null
+            }
+          />
+        ) : null}
         {data && (
           <Table className="table-fixed" style={{ width: tableWidth }}>
             <colgroup>
-              {(showSelection || leadingSpacer) && <col style={{ width: 44 }} />}
+              {selectWidth > 0 && <col style={{ width: selectWidth }} />}
+              <col style={{ width: GUTTER_WIDTH }} />
               {columns.map((column) => (
                 <col key={column.name} style={{ width: getCompareColumnWidth(column.name) }} />
               ))}
             </colgroup>
             <THead>
               <Tr>
-                {(showSelection || leadingSpacer) && (
+                {selectWidth > 0 && (
                   <Th className="h-14 w-11 align-middle">
                     <div className="flex h-full items-center">
                       {showSelection && (
@@ -164,20 +184,24 @@ export function TableComparePane({
                           checked={allVisibleSelected}
                           onChange={() => onToggleAllVisible?.()}
                           disabled={!selectionEnabled}
+                          aria-label={t('tableData.selectPageRows')}
                         />
                       )}
                     </div>
                   </Th>
                 )}
+                <Th className="h-14 align-middle">
+                  <span className="sr-only">{t('diff.compareView.diffColumn')}</span>
+                </Th>
                 {columns.map((column) => {
                   const sideColumn = getSideColumn(column, side)
                   return (
                     <Th key={column.name} className="h-14 align-middle">
                       <div className="flex min-w-0 items-center gap-1 overflow-hidden leading-tight">
-                        {sideColumn?.isPrimaryKey && <Badge variant="warning">PK</Badge>}
-                        {!sideColumn && <Badge variant="destructive">{t('diff.pane.missingColumn')}</Badge>}
+                        {sideColumn?.isPrimaryKey && <Badge tone="warning">PK</Badge>}
+                        {!sideColumn && <Badge tone="danger">{t('diff.pane.missingColumn')}</Badge>}
                         <span className="shrink-0 truncate">{column.name}</span>
-                        <span className="shrink-0 truncate text-[10px] text-muted-foreground">
+                        <span className="shrink-0 truncate text-2xs text-fg-muted">
                           {sideColumn?.type ?? t('diff.pane.notPresent')}
                         </span>
                       </div>
@@ -187,32 +211,31 @@ export function TableComparePane({
               </Tr>
             </THead>
             <TBody>
-              {getPaneRows(data, alignedRows, side).length === 0 && (
+              {rows.length === 0 && (
                 <Tr>
-                  <Td colSpan={columns.length + (showSelection || leadingSpacer ? 1 : 0)} className="h-11 text-xs text-muted-foreground">
+                  <Td
+                    colSpan={columns.length + leadingColumnCount}
+                    className="h-11 text-xs text-fg-muted"
+                  >
                     {t('diff.pane.noRowsOnPage')}
                   </Td>
                 </Tr>
               )}
-              {getPaneRows(data, alignedRows, side).map((entry, index) => {
+              {rows.map((entry, index) => {
                 const rowKey = entry.key ?? `${title}-${index}`
                 const row = entry.row
                 const selected = row ? (selectedKeys?.has(rowKey) ?? false) : false
                 const diffInfo = rowDiffByKey?.get(rowKey)
+                const diffKind = rowDiffKindByKey?.get(rowKey) ?? 'same'
 
                 return (
                   <Tr
                     key={rowKey}
-                    className={cn(
-                      selected && 'bg-accent/30',
-                      !selected && !row && diffInfo?.status === 'source-only' && side === 'target' && 'bg-sky-500/10',
-                      !selected && !row && diffInfo?.status === 'target-only' && side === 'source' && 'bg-violet-500/10',
-                      !selected && row && diffInfo?.status === 'modified' && 'bg-amber-500/8',
-                      !selected && row && diffInfo?.status === 'source-only' && 'bg-sky-500/10',
-                      !selected && row && diffInfo?.status === 'target-only' && 'bg-violet-500/10'
-                    )}
+                    data-diff={diffKind}
+                    aria-selected={selected || undefined}
+                    className={cn(!selected && DIFF_ROW_BG[diffKind], selected && 'bg-selected')}
                   >
-                    {(showSelection || leadingSpacer) && (
+                    {selectWidth > 0 && (
                       <Td>
                         {showSelection && row && (
                           <Checkbox
@@ -220,12 +243,17 @@ export function TableComparePane({
                             onChange={() => undefined}
                             onClick={(event) => onToggleRow?.(row, event)}
                             disabled={!selectionEnabled}
+                            aria-label={t('tableData.selectRow', { index: index + 1 })}
                           />
                         )}
                       </Td>
                     )}
+                    <Td className="h-11">
+                      <DiffGutter kind={diffKind} />
+                    </Td>
                     {columns.map((column) => {
                       const sideColumn = getSideColumn(column, side)
+                      const changed = Boolean(row && diffInfo?.changedColumns.has(column.name))
                       return (
                         <Td
                           key={column.name}
@@ -236,16 +264,14 @@ export function TableComparePane({
                           }
                           className={cn(
                             'h-11',
-                            !row && 'bg-muted/10',
-                            row &&
-                              diffInfo?.changedColumns.has(column.name) &&
-                              'bg-amber-400/25 ring-1 ring-inset ring-amber-500/50'
+                            !row && 'bg-surface-2/10',
+                            changed && 'bg-diff-mod-bg ring-1 ring-inset ring-diff-mod/40'
                           )}
                         >
                           {row && sideColumn ? (
                             renderCellValue(row[column.name], sideColumn.type)
                           ) : (
-                            <span className="text-muted-foreground">—</span>
+                            <span className="text-fg-muted">—</span>
                           )}
                         </Td>
                       )
@@ -257,7 +283,7 @@ export function TableComparePane({
           </Table>
         )}
       </div>
-    </div>
+    </Panel>
   )
 }
 

@@ -1,5 +1,5 @@
 import type { ChangeEvent, DragEvent, ReactNode, RefObject } from 'react'
-import { Input } from '@renderer/components/ui/input'
+import { Input, Textarea } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
 import { Button } from '@renderer/components/ui/button'
 import { Checkbox } from '@renderer/components/ui/checkbox'
@@ -63,8 +63,8 @@ export function ConnectionDialogForm({
                 aria-checked={selected}
                 onClick={() => onChange('engine', option.value)}
                 className={cn(
-                  'flex h-12 items-center gap-3 rounded-md border border-input bg-background px-3 text-left text-sm transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
-                  selected && 'border-primary bg-primary/10 ring-1 ring-primary'
+                  'flex h-12 items-center gap-3 rounded-md border border-border bg-canvas px-3 text-left text-sm transition-colors hover:bg-hover',
+                  selected && 'border-accent bg-accent/10 ring-1 ring-accent'
                 )}
               >
                 <EngineIcon engine={option.value} className="h-6 w-6 shrink-0" />
@@ -155,8 +155,8 @@ export function ConnectionDialogForm({
                     aria-pressed={selected}
                     onClick={() => onSSHAuthMethodChange(method)}
                     className={cn(
-                      'h-9 rounded-md border border-input bg-background px-3 text-sm transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
-                      selected && 'border-primary bg-primary/10 text-primary ring-1 ring-primary'
+                      'h-9 rounded-md border border-border bg-canvas px-3 text-sm transition-colors hover:bg-hover',
+                      selected && 'border-accent bg-accent/10 text-accent-text ring-1 ring-accent'
                     )}
                   >
                     {method === 'password'
@@ -194,15 +194,15 @@ export function ConnectionDialogForm({
                   onChange={onSSHKeyInputChange}
                 />
                 {form.sshPrivateKeyPath ? (
-                  <p className="mb-2 truncate text-xs text-muted-foreground" title={form.sshPrivateKeyPath}>
+                  <p className="mb-2 truncate text-xs text-fg-muted" title={form.sshPrivateKeyPath}>
                     {t('connection.form.sshKeyPath', { path: form.sshPrivateKeyPath })}
                   </p>
                 ) : null}
                 <div
                   className={
                     draggingSSHKey
-                      ? 'mb-2 rounded-md border border-primary bg-primary/10 px-3 py-2 text-sm text-primary'
-                      : 'mb-2 rounded-md border border-dashed border-input bg-background/60 px-3 py-2 text-sm text-muted-foreground'
+                      ? 'mb-2 rounded-md border border-accent bg-accent/10 px-3 py-2 text-sm text-accent-text'
+                      : 'mb-2 rounded-md border border-dashed border-border bg-canvas/60 px-3 py-2 text-sm text-fg-muted'
                   }
                   onDragOver={(event) => event.preventDefault()}
                   onDragEnter={(event) => {
@@ -219,7 +219,7 @@ export function ConnectionDialogForm({
                     <span>{t('connection.form.dropKeyHint')}</span>
                     <Button
                       type="button"
-                      variant="outline"
+                      variant="secondary"
                       size="sm"
                       onClick={() => sshKeyInputRef.current?.click()}
                     >
@@ -227,12 +227,12 @@ export function ConnectionDialogForm({
                     </Button>
                   </div>
                 </div>
-                <textarea
+                <Textarea
+                  mono
                   value={form.sshPrivateKey || ''}
                   onChange={(event) => onChange('sshPrivateKey', event.target.value)}
                   placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
                   rows={4}
-                  className="w-full rounded-md border border-input bg-background p-2 text-xs font-mono"
                 />
               </Field>
               <Field label={t('connection.form.keyPassphrase')}>
@@ -266,7 +266,7 @@ function Field({
     <div className={className}>
       <Label className="mb-1 block">
         {label}
-        {required ? <span className="ml-0.5 text-destructive">*</span> : null}
+        {required ? <span className="ml-0.5 text-danger-text">*</span> : null}
       </Label>
       {children}
     </div>

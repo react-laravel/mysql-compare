@@ -1,6 +1,22 @@
 // 数据库对比面板：先加载两边表列表，再逐表对比并渐进展示结果。
+//
+// Blueprint §3.5 — the layout is now Toolbar → (setup Panel + result) inside a
+// single `ScrollArea`, matching every other view in the app. What changed:
+//   · Cancel exists (§2.3) and the compare registers in `job-store`, so the
+//     status bar, the tab's dot and `⌘.` all see it;
+//   · "Compare rows" and "Parallel workers" moved to the toolbar `⋯` and read
+//     `settings-store`, which is the same value the Settings screen edits;
+//   · the source endpoint can be prefilled from a database row's
+//     "Compare this database…" (§2.2 entrance 3);
+//   · `⌘R` re-runs the comparison and `⌘F` focuses the table filter.
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { ArrowRightLeft, Download, RefreshCw, Trash2 } from 'lucide-react'
+import { ScrollArea } from '@renderer/components/ui/scroll-area'
+import type { MenuItem } from '@renderer/components/ui/dropdown-menu'
+import type { ProgressState } from '@renderer/components/ui/progress-bar'
+import { useAppAction } from '@renderer/lib/app-actions'
 import { useConnectionStore } from '@renderer/store/connection-store'
+import { useSettingsStore } from '@renderer/store/settings-store'
 import { useUIStore } from '@renderer/store/ui-store'
 import type { DatabaseDiff } from '../../../shared/types'
 import {
@@ -13,19 +29,19 @@ import {
   hasCompleteDiffEndpointSelection,
   hasSchemaOrPresenceDiff,
   hasNoRowDifferences,
-  parseTableCompareConcurrency,
   prioritizeComparisonEntries,
   TABLE_COMPARE_CONCURRENCY_OPTIONS,
   upsertDiffEndpointHistory,
-  type DiffEndpointSelection,
-  type DiffResultTab
+  type DiffEndpointSelection
 } from './diff-panel-utils'
 import {
   buildDatabaseOptions,
   formatCompareButtonLabel,
+  formatComparePhase,
   formatCompareSetupSummary
 } from './diff-panel-formatters'
 import { useI18n } from '@renderer/i18n'
+import { buildTableCompareView } from './table-compare-session'
 import { SyncPanel } from './SyncPanel'
 import { DiffPanelContentArea } from './DiffPanelContentArea'
 import { DiffPanelResultBody } from './DiffPanelResultBody'
@@ -43,9 +59,14 @@ import {
   useStoredDiffPanelPreferences
 } from './diff-panel-hooks'
 
-export function DiffPanel() {
+interface DiffPanelProps {
+  /** the workspace keeps every tab mounted; only the visible one takes ⌘R / ⌘F */
+  active?: boolean
+}
+
+export function DiffPanel({ active = true }: DiffPanelProps) {
   const { connections, refresh } = useConnectionStore()
-  const { setRightView, showToast, latestTableDropEvent } = useUIStore()
+  const { setRightView, showToast, latestTableDropEvent, latestDiffPrefillRequest } = useUIStore()
   const { t } = useI18n()
 
   const restoredEndpointHistoryRef = useRef(false)
@@ -57,24 +78,38 @@ export function DiffPanel() {
   const { databases: srcDbs, loading: srcDbsLoading } = useDatabaseList(srcId, showToast)
   const { databases: tgtDbs, loading: tgtDbsLoading } = useDatabaseList(tgtId, showToast)
   const [selectedComparisonTable, setSelectedComparisonTable] = useState<string | null>(null)
-  const [compareData, setCompareData] = useState(true)
   const [preferences, setPreferences] = useStoredDiffPanelPreferences()
+  // Both of these left the primary surface for the `⋯` and Settings; the store
+  // is the single value the Settings screen edits, so the control cannot lie.
+  const compareData = useSettingsStore((state) => state.compareRows)
+  const setCompareData = useSettingsStore((state) => state.setCompareRows)
+  const tableCompareConcurrency = useSettingsStore((state) => state.tableCompareConcurrency)
+  const setTableCompareConcurrency = useSettingsStore(
+    (state) => state.setTableCompareConcurrency
+  )
   const statusFilter = preferences.statusFilter
-  const tableCompareConcurrency = preferences.tableCompareConcurrency
   const resultTab = preferences.resultTab
   const setupExpanded = preferences.setupExpanded
   const tableSearchQuery = preferences.tableSearchQuery
+  const targetConnectionRef = useRef<HTMLSelectElement>(null)
+  // Only one result tab renders at a time, so a single ref serves ⌘F on all of
+  // them (§4.2: "focus the current view's filter").
+  const filterInputRef = useRef<HTMLInputElement>(null)
   const {
     comparePhase,
     compareContext,
     sourceTables,
     targetTables,
     comparisonEntries,
+    sharedTableStats,
     showSync,
     setShowSync,
     showAllRowComparisons,
     setShowAllRowComparisons,
     runCompare,
+    cancelCompare,
+    canCancelCompare,
+    retryTable,
     removeComparedTable
   } = useDiffComparison({
     sourceConnectionId: srcId,
@@ -102,6 +137,7 @@ export function DiffPanel() {
     }
   })
   const handledTableDropEventIdRef = useRef(0)
+  const handledPrefillIdRef = useRef(0)
 
   useEffect(() => {
     if (!latestTableDropEvent) return
@@ -158,17 +194,40 @@ export function DiffPanel() {
     setTgtDb(latestHistory.targetDatabase)
   }, [connectionsReady, srcDb, srcId, tgtDb, tgtId, validEndpointHistory])
 
+  // §2.2 entrance 3: a database row's "Compare this database…" prefills the
+  // source, expands setup and lands focus on the *target* connection — the one
+  // thing the user still has to choose.
+  useEffect(() => {
+    if (!latestDiffPrefillRequest) return
+    if (latestDiffPrefillRequest.id <= handledPrefillIdRef.current) return
+
+    handledPrefillIdRef.current = latestDiffPrefillRequest.id
+    restoredEndpointHistoryRef.current = true
+    setSrcId(latestDiffPrefillRequest.connectionId)
+    setSrcDb(latestDiffPrefillRequest.database)
+    setPreferences((current) => ({ ...current, setupExpanded: true }))
+    requestAnimationFrame(() => targetConnectionRef.current?.focus())
+  }, [latestDiffPrefillRequest, setPreferences])
+
   const diff = useMemo<DatabaseDiff | null>(() => {
     if (!compareContext) return null
-    return buildDatabaseDiff(compareContext.sourceDatabase, compareContext.targetDatabase, comparisonEntries)
+    return buildDatabaseDiff(
+      compareContext.sourceDatabase,
+      compareContext.targetDatabase,
+      comparisonEntries
+    )
   }, [compareContext, comparisonEntries])
 
   const connOptions = [
     { value: '', label: '— select —' },
     ...comparableConnections.map((c) => ({ value: c.id, label: c.name }))
   ]
-  const selectedSourceConnection = comparableConnections.find((connection) => connection.id === srcId)
-  const selectedTargetConnection = comparableConnections.find((connection) => connection.id === tgtId)
+  const selectedSourceConnection = comparableConnections.find(
+    (connection) => connection.id === srcId
+  )
+  const selectedTargetConnection = comparableConnections.find(
+    (connection) => connection.id === tgtId
+  )
   const sourceConnection = comparableConnections.find(
     (connection) => connection.id === (compareContext?.sourceConnectionId ?? srcId)
   )
@@ -198,21 +257,6 @@ export function DiffPanel() {
     : false
   const hasSkippedRowComparison =
     diff?.rowComparisons.some(({ dataDiff }) => !dataDiff.comparable) ?? false
-  const sharedTableStats = useMemo(() => {
-    let sharedTotal = 0
-    let completed = 0
-    let pending: string | undefined
-    for (const entry of comparisonEntries) {
-      if (!entry.sourceExists || !entry.targetExists) continue
-      sharedTotal += 1
-      if (entry.status === 'done' || entry.status === 'error') {
-        completed += 1
-      } else if (!pending) {
-        pending = entry.table
-      }
-    }
-    return { sharedTotal, completed, pending }
-  }, [comparisonEntries])
   const sharedTableCount = sharedTableStats.sharedTotal
   const completedSharedTableCount = sharedTableStats.completed
   const pendingSharedTable = sharedTableStats.pending
@@ -313,7 +357,7 @@ export function DiffPanel() {
     if (!compareData && resultTab === 'data') {
       setPreferences((current) => ({ ...current, resultTab: 'status' }))
     }
-  }, [compareData, resultTab])
+  }, [compareData, resultTab, setPreferences])
 
   useEffect(() => {
     if (
@@ -325,7 +369,14 @@ export function DiffPanel() {
     ) {
       setPreferences((current) => ({ ...current, resultTab: 'data' }))
     }
-  }, [compareData, comparePhase, hasRowComparisonResults, resultTab, visibleSchemaDiffs.length])
+  }, [
+    compareData,
+    comparePhase,
+    hasRowComparisonResults,
+    resultTab,
+    setPreferences,
+    visibleSchemaDiffs.length
+  ])
 
   const openComparedTable = (side: 'source' | 'target', table: string) => {
     if (!compareContext) return
@@ -341,18 +392,52 @@ export function DiffPanel() {
   const openCompareView = (table: string) => {
     if (!compareContext) return
 
-    setRightView({
-      kind: 'table-compare',
-      compareSessionId: `${compareContext.sourceConnectionId}:${compareContext.sourceDatabase}:${compareContext.targetConnectionId}:${compareContext.targetDatabase}:${table}`,
-      sourceConnectionId: compareContext.sourceConnectionId,
-      sourceDatabase: compareContext.sourceDatabase,
-      targetConnectionId: compareContext.targetConnectionId,
-      targetDatabase: compareContext.targetDatabase,
-      table,
-      comparedTables: rowComparisonTables,
-      diffTables: rowDiffTables
-    })
+    // Same builder the table row's "Compare with…" uses, so both entrances
+    // land on one tab per pair (blueprint §2.4).
+    setRightView(
+      buildTableCompareView(
+        {
+          sourceConnectionId: compareContext.sourceConnectionId,
+          sourceDatabase: compareContext.sourceDatabase,
+          targetConnectionId: compareContext.targetConnectionId,
+          targetDatabase: compareContext.targetDatabase,
+          table
+        },
+        { comparedTables: rowComparisonTables, diffTables: rowDiffTables }
+      )
+    )
   }
+
+  const startCompare = () => {
+    void runCompare()
+  }
+
+  const swapEndpoints = () => {
+    setSrcId(tgtId)
+    setSrcDb(tgtDb)
+    setTgtId(srcId)
+    setTgtDb(srcDb)
+  }
+
+  const clearEndpointHistory = () => {
+    setPreferences((current) => ({ ...current, endpointHistory: [] }))
+  }
+
+  /**
+   * There is no file-save channel in `AppAPI`, so "export" is an honest copy of
+   * the machine-readable diff to the clipboard rather than a save dialog that
+   * does not exist.
+   */
+  const exportDiffReport = () => {
+    if (!diff) return
+    void navigator.clipboard
+      .writeText(JSON.stringify(diff, null, 2))
+      .then(() => showToast(t('diff.toolbar.reportCopied'), 'success'))
+      .catch((err) => showToast((err as Error).message, 'error'))
+  }
+
+  useAppAction('refresh-view', active && !loading ? startCompare : null)
+  useAppAction('focus-filter', active ? () => filterInputRef.current?.focus() : null)
 
   const tabItems = buildDiffPanelTabItems(
     {
@@ -383,47 +468,86 @@ export function DiffPanel() {
       ? getDiffPanelSkippedRowNotice(t)
       : null
 
+  const canPlanSync = comparePhase === 'done' && !!diff && diff.tableDiffs.length > 0
+  const hasRowDifferencesToShow = compareData && rowChangedTableCount > 0
+
+  const progress: ProgressState | null = loading
+    ? {
+        status: 'running',
+        count:
+          sharedTableCount > 0
+            ? { done: completedSharedTableCount, total: sharedTableCount }
+            : undefined,
+        detail: pendingSharedTable
+      }
+    : null
+
+  const overflow: MenuItem[] = [
+    {
+      kind: 'checkbox',
+      id: 'compare-rows',
+      label: t('diff.toolbar.compareRows'),
+      checked: compareData,
+      onSelect: () => setCompareData(!compareData)
+    },
+    {
+      kind: 'submenu',
+      id: 'concurrency',
+      label: t('diff.toolbar.parallel'),
+      items: TABLE_COMPARE_CONCURRENCY_OPTIONS.map((value) => ({
+        kind: 'checkbox' as const,
+        id: `concurrency-${value}`,
+        label: String(value),
+        checked: value === tableCompareConcurrency,
+        disabled: loading,
+        onSelect: () => setTableCompareConcurrency(value)
+      }))
+    },
+    { kind: 'separator', id: 'sep-1' },
+    {
+      id: 'rerun',
+      icon: RefreshCw,
+      label: t('diff.toolbar.rerun'),
+      shortcut: 'Mod+R',
+      disabled: loading || !compareContext,
+      onSelect: startCompare
+    },
+    {
+      id: 'swap',
+      icon: ArrowRightLeft,
+      label: t('diff.toolbar.swapEndpoints'),
+      disabled: loading || (!srcId && !tgtId),
+      onSelect: swapEndpoints
+    },
+    {
+      id: 'show-row-diffs',
+      label: t('diff.notice.showRowDiffs'),
+      disabled: !hasRowDifferencesToShow,
+      disabledReason: t('diff.toolbar.noRowDifferences'),
+      onSelect: () => setPreferences((current) => ({ ...current, resultTab: 'data' }))
+    },
+    { kind: 'separator', id: 'sep-2' },
+    {
+      id: 'export-report',
+      icon: Download,
+      label: t('diff.toolbar.exportReport'),
+      disabled: !diff,
+      disabledReason: t('diff.toolbar.noResultYet'),
+      onSelect: exportDiffReport
+    },
+    {
+      id: 'clear-history',
+      icon: Trash2,
+      label: t('diff.history.clear'),
+      disabled: preferences.endpointHistory.length === 0,
+      onSelect: clearEndpointHistory
+    }
+  ]
+
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
-      <DiffPanelSetupSection
-        expanded={setupExpanded}
-        summary={compareSetupSummary}
-        onToggle={() =>
-          setPreferences((current) => ({ ...current, setupExpanded: !current.setupExpanded }))
-        }
-        history={{
-          items: endpointHistoryItems,
-          activeValue: selectedEndpointHistoryValue,
-          onSelect: handleEndpointHistoryChange,
-          onDelete: handleDeleteEndpointHistory
-        }}
-        source={{
-          connectionName: selectedSourceConnection?.name,
-          database: srcDb,
-          connectionOptions: connOptions,
-          connectionValue: srcId,
-          onConnectionChange: handleSourceConnectionChange,
-          databaseOptions: sourceDatabaseOptions,
-          databaseValue: srcDb,
-          databaseDisabled: !srcId || srcDbsLoading,
-          databaseLoading: srcDbsLoading,
-          onDatabaseChange: setSrcDb
-        }}
-        target={{
-          connectionName: selectedTargetConnection?.name,
-          database: tgtDb,
-          connectionOptions: connOptions,
-          connectionValue: tgtId,
-          onConnectionChange: handleTargetConnectionChange,
-          databaseOptions: targetDatabaseOptions,
-          databaseValue: tgtDb,
-          databaseDisabled: !tgtId || tgtDbsLoading,
-          databaseLoading: tgtDbsLoading,
-          onDatabaseChange: setTgtDb
-        }}
-      />
-
       <DiffPanelToolbar
+        subtitle={compareSetupSummary}
         compareButtonLabel={formatCompareButtonLabel(
           comparePhase,
           completedSharedTableCount,
@@ -431,75 +555,138 @@ export function DiffPanel() {
           t
         )}
         compareData={compareData}
-        concurrency={tableCompareConcurrency}
-        concurrencyOptions={TABLE_COMPARE_CONCURRENCY_OPTIONS}
         diffSummary={diffToolbarSummary}
         loading={loading}
-        canPlanSync={comparePhase === 'done' && !!diff && diff.tableDiffs.length > 0}
-        onCompare={runCompare}
-        onCompareDataChange={setCompareData}
-        onConcurrencyChange={(value) =>
-          setPreferences((current) => ({
-            ...current,
-            tableCompareConcurrency: parseTableCompareConcurrency(value)
-          }))
+        canCancel={canCancelCompare}
+        canPlanSync={canPlanSync}
+        planSyncDisabledReason={t('diff.toolbar.planSyncDisabled')}
+        progress={progress}
+        progressLabel={
+          loading
+            ? formatComparePhase(
+                comparePhase,
+                completedSharedTableCount,
+                sharedTableCount,
+                pendingSharedTable,
+                t
+              )
+            : null
         }
+        overflow={overflow}
+        onCompare={startCompare}
+        onCancel={cancelCompare}
         onPlanSync={() => setShowSync(true)}
       />
 
-      <DiffPanelContentArea
-        showIdleNotice={comparePhase === 'idle'}
-        showResult={!!compareContext}
-        resultTab={resultTab}
-        tabItems={tabItems}
-        onResultTabChange={(value) =>
-          setPreferences((current) => ({
-            ...current,
-            resultTab: value
-          }))
-        }
-        resultBody={
-          <DiffPanelResultBody
-            resultTab={resultTab}
-            compareData={compareData}
-            comparePhase={comparePhase}
-            diff={diff}
-            sourceTables={sourceTables}
-            targetTables={targetTables}
-            sharedTableCount={sharedTableCount}
-            comparisonEntries={comparisonEntries}
-            prioritizedComparisonEntries={prioritizedComparisonEntries}
-            filteredComparisonEntries={filteredComparisonEntries}
-            completedSharedTableCount={completedSharedTableCount}
-            pendingSharedTable={pendingSharedTable}
-            hasCompareErrors={hasCompareErrors}
-            statusFilter={statusFilter}
-            tableSearchQuery={tableSearchQuery}
-            selectedComparisonTable={selectedComparisonTable}
-            visibleSchemaDiffs={visibleSchemaDiffs}
-            hasRowComparisonResults={hasRowComparisonResults}
-            showAllRowComparisons={showAllRowComparisons}
-            onToggleShowAllRowComparisons={() =>
-              setShowAllRowComparisons((current) => !current)
+      <ScrollArea className="min-h-0 flex-1">
+        <div className="flex min-w-0 flex-col gap-3 p-3">
+          <DiffPanelSetupSection
+            expanded={setupExpanded}
+            summary={compareSetupSummary}
+            onToggle={() =>
+              setPreferences((current) => ({ ...current, setupExpanded: !current.setupExpanded }))
             }
-            onSelectComparisonTable={setSelectedComparisonTable}
-            onSearchChange={(value) =>
-              setPreferences((current) => ({ ...current, tableSearchQuery: value }))
-            }
-            onClearSearch={() =>
-              setPreferences((current) => ({ ...current, tableSearchQuery: '' }))
-            }
-            onStatusFilterChange={(value) =>
-              setPreferences((current) => ({ ...current, statusFilter: value }))
-            }
-            onOpenCompare={openCompareView}
-            onOpenSource={(table) => openComparedTable('source', table)}
-            onOpenTarget={(table) => openComparedTable('target', table)}
+            targetConnectionRef={targetConnectionRef}
+            history={{
+              items: endpointHistoryItems,
+              activeValue: selectedEndpointHistoryValue,
+              onSelect: handleEndpointHistoryChange,
+              onDelete: handleDeleteEndpointHistory
+            }}
+            source={{
+              connectionName: selectedSourceConnection?.name,
+              database: srcDb,
+              connectionOptions: connOptions,
+              connectionValue: srcId,
+              onConnectionChange: handleSourceConnectionChange,
+              databaseOptions: sourceDatabaseOptions,
+              databaseValue: srcDb,
+              databaseDisabled: !srcId || srcDbsLoading,
+              databaseLoading: srcDbsLoading,
+              onDatabaseChange: setSrcDb
+            }}
+            target={{
+              connectionName: selectedTargetConnection?.name,
+              database: tgtDb,
+              connectionOptions: connOptions,
+              connectionValue: tgtId,
+              onConnectionChange: handleTargetConnectionChange,
+              databaseOptions: targetDatabaseOptions,
+              databaseValue: tgtDb,
+              databaseDisabled: !tgtId || tgtDbsLoading,
+              databaseLoading: tgtDbsLoading,
+              onDatabaseChange: setTgtDb
+            }}
           />
-        }
-        identicalNotice={identicalNotice}
-        skippedNotice={skippedRowNotice}
-      />
+
+          <DiffPanelContentArea
+            showIdleNotice={comparePhase === 'idle' && !compareContext}
+            showResult={!!compareContext}
+            compareDisabled={loading}
+            onCompare={startCompare}
+            resultTab={resultTab}
+            tabItems={tabItems}
+            onResultTabChange={(value) =>
+              setPreferences((current) => ({
+                ...current,
+                resultTab: value
+              }))
+            }
+            identicalNotice={identicalNotice}
+            skippedNotice={skippedRowNotice}
+            onShowRowDiffs={
+              compareData
+                ? () => setPreferences((current) => ({ ...current, resultTab: 'data' }))
+                : null
+            }
+            resultBody={
+              <DiffPanelResultBody
+                resultTab={resultTab}
+                compareData={compareData}
+                comparePhase={comparePhase}
+                diff={diff}
+                sourceTables={sourceTables}
+                targetTables={targetTables}
+                sharedTableCount={sharedTableCount}
+                comparisonEntries={comparisonEntries}
+                prioritizedComparisonEntries={prioritizedComparisonEntries}
+                filteredComparisonEntries={filteredComparisonEntries}
+                completedSharedTableCount={completedSharedTableCount}
+                pendingSharedTable={pendingSharedTable}
+                hasCompareErrors={hasCompareErrors}
+                statusFilter={statusFilter}
+                tableSearchQuery={tableSearchQuery}
+                selectedComparisonTable={selectedComparisonTable}
+                visibleSchemaDiffs={visibleSchemaDiffs}
+                hasRowComparisonResults={hasRowComparisonResults}
+                showAllRowComparisons={showAllRowComparisons}
+                onToggleShowAllRowComparisons={() =>
+                  setShowAllRowComparisons((current) => !current)
+                }
+                onSelectComparisonTable={setSelectedComparisonTable}
+                onSearchChange={(value) =>
+                  setPreferences((current) => ({ ...current, tableSearchQuery: value }))
+                }
+                onClearSearch={() =>
+                  setPreferences((current) => ({ ...current, tableSearchQuery: '' }))
+                }
+                onStatusFilterChange={(value) =>
+                  setPreferences((current) => ({ ...current, statusFilter: value }))
+                }
+                onOpenCompare={openCompareView}
+                onOpenSource={(table) => openComparedTable('source', table)}
+                onOpenTarget={(table) => openComparedTable('target', table)}
+                onRetryTable={(table) => {
+                  void retryTable(table)
+                }}
+                onCompare={startCompare}
+                onEnableCompareRows={() => setCompareData(true)}
+                searchInputRef={filterInputRef}
+              />
+            }
+          />
+        </div>
+      </ScrollArea>
 
       {showSync && diff && (
         <SyncPanel
@@ -515,6 +702,7 @@ export function DiffPanel() {
           }}
           sourceEngine={sourceConnection?.engine ?? 'mysql'}
           targetEngine={targetConnection?.engine ?? 'mysql'}
+          targetConnectionName={targetConnection?.name}
           diff={diff}
         />
       )}

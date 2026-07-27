@@ -1,3 +1,5 @@
+import type { RefObject } from 'react'
+import { Button } from '@renderer/components/ui/button'
 import type { DatabaseDiff } from '../../../shared/types'
 import type { ComparePhase } from './diff-panel-formatters'
 import { EmptyResultState } from './diff-panel-presentation'
@@ -34,6 +36,11 @@ interface DiffPanelResultBodyProps {
   onOpenCompare: (table: string) => void
   onOpenSource: (table: string) => void
   onOpenTarget: (table: string) => void
+  onRetryTable: (table: string) => void
+  onCompare: () => void
+  onEnableCompareRows: () => void
+  /** ⌘F lands here; only one result tab renders at a time */
+  searchInputRef: RefObject<HTMLInputElement | null>
 }
 
 export function DiffPanelResultBody({
@@ -63,7 +70,11 @@ export function DiffPanelResultBody({
   onStatusFilterChange,
   onOpenCompare,
   onOpenSource,
-  onOpenTarget
+  onOpenTarget,
+  onRetryTable,
+  onCompare,
+  onEnableCompareRows,
+  searchInputRef
 }: DiffPanelResultBodyProps) {
   const { t } = useI18n()
 
@@ -99,6 +110,8 @@ export function DiffPanelResultBody({
         onOpenCompare={onOpenCompare}
         onOpenSource={onOpenSource}
         onOpenTarget={onOpenTarget}
+        onRetryTable={onRetryTable}
+        searchInputRef={searchInputRef}
       />
     )
   }
@@ -114,6 +127,7 @@ export function DiffPanelResultBody({
         onOpenCompare={onOpenCompare}
         onOpenSource={onOpenSource}
         onOpenTarget={onOpenTarget}
+        searchInputRef={searchInputRef}
       />
     )
   }
@@ -130,6 +144,7 @@ export function DiffPanelResultBody({
         onOpenCompare={onOpenCompare}
         onOpenSource={onOpenSource}
         onOpenTarget={onOpenTarget}
+        searchInputRef={searchInputRef}
       />
     )
   }
@@ -141,6 +156,17 @@ export function DiffPanelResultBody({
         compareData
           ? t('diff.presentation.noContentYet')
           : t('diff.presentation.enableCompareRows')
+      }
+      action={
+        compareData ? (
+          <Button size="sm" variant="secondary" onClick={onCompare}>
+            {t('diff.notice.compareAgain')}
+          </Button>
+        ) : (
+          <Button size="sm" variant="secondary" onClick={onEnableCompareRows}>
+            {t('diff.toolbar.compareRows')}
+          </Button>
+        )
       }
     />
   )

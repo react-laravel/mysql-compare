@@ -44,20 +44,16 @@ const t: Translator = (key, vars) => {
 }
 
 describe('useTableDataRowActions', () => {
-  let originalConfirm: typeof window.confirm
   let originalClipboard: ClipboardStub | undefined
 
   beforeEach(() => {
     deleteRowsMock.mockReset()
     insertRowMock.mockReset()
     updateRowMock.mockReset()
-    originalConfirm = window.confirm
     originalClipboard = getNavigatorWithClipboard().clipboard
-    window.confirm = vi.fn(() => true)
   })
 
   afterEach(() => {
-    window.confirm = originalConfirm
     if (originalClipboard === undefined) {
       delete getNavigatorWithClipboard().clipboard
     } else {
@@ -114,7 +110,7 @@ describe('useTableDataRowActions', () => {
     act(() => {
       result.current.onToggleSelectPage()
     })
-    expect(result.current.allRowsOnPageSelected).toBe(true)
+    expect(result.current.selected.size).toBe(data.rows.length)
 
     act(() => {
       result.current.onToggleSelectPage()
@@ -173,10 +169,11 @@ describe('useTableDataRowActions', () => {
       result.current.onToggleSelect(0, false)
     })
 
-    await act(async () => {
-      await result.current.onDeleteSelected()
+    act(() => {
+      result.current.onDeleteSelected()
     })
 
+    expect(result.current.pendingDelete).toBeNull()
     expect(showToast).toHaveBeenCalledWith('tableData.refuseNoPrimaryKey', 'error')
     expect(deleteRowsMock).not.toHaveBeenCalled()
   })
@@ -204,11 +201,18 @@ describe('useTableDataRowActions', () => {
       result.current.onToggleSelect(1, false)
     })
 
+    // Deleting is now a two-step: the hook parks the request and
+    // `TableDataView`'s `ConfirmDialog` runs it (no native `confirm()`).
+    act(() => {
+      result.current.onDeleteSelected()
+    })
+    expect(result.current.pendingDelete).toEqual([0, 1])
+    expect(deleteRowsMock).not.toHaveBeenCalled()
+
     await act(async () => {
-      await result.current.onDeleteSelected()
+      await result.current.confirmDeleteRows()
     })
 
-    expect(confirm).toHaveBeenCalledWith('tableData.confirmDeleteRows:2')
     expect(deleteRowsMock).toHaveBeenCalledWith({
       connectionId: 'conn-1',
       database: 'db_main',

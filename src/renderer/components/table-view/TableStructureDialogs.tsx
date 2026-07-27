@@ -57,13 +57,13 @@ export function TableStructureDialogs({
           }}
           title={t('columnDialog.editTitle')}
           description={`${database}.${table}.${editingColumn.originalName}`}
-          className="max-w-2xl"
+          size="lg"
           footer={
             <>
-              <Button variant="outline" onClick={() => setEditingColumn(null)} disabled={busy}>
+              <Button variant="secondary" onClick={() => setEditingColumn(null)} disabled={busy}>
                 {t('common.cancel')}
               </Button>
-              <Button onClick={onReviewColumnSQL} disabled={busy}>
+              <Button variant="primary" onClick={onReviewColumnSQL} disabled={busy}>
                 {t('common.reviewSql')}
               </Button>
             </>
@@ -115,7 +115,7 @@ export function TableStructureDialogs({
                 />
                 {t('columnDialog.setDefault')}
               </label>
-              {editingColumn.isAutoIncrement && <Badge variant="info">{t('columnDialog.autoIncPreserved')}</Badge>}
+              {editingColumn.isAutoIncrement && <Badge tone="accent">{t('columnDialog.autoIncPreserved')}</Badge>}
             </div>
             <div className="col-span-2">
               <Label className="mb-1 block">{t('columnDialog.defaultValue')}</Label>
@@ -155,13 +155,13 @@ export function TableStructureDialogs({
           }}
           title={editingIndex.mode === 'add' ? t('indexDialog.addTitle') : t('indexDialog.editTitle')}
           description={`${database}.${table}`}
-          className="max-w-2xl"
+          size="lg"
           footer={
             <>
-              <Button variant="outline" onClick={() => setEditingIndex(null)} disabled={busy}>
+              <Button variant="secondary" onClick={() => setEditingIndex(null)} disabled={busy}>
                 {t('common.cancel')}
               </Button>
-              <Button onClick={onReviewIndexSQL} disabled={busy}>
+              <Button variant="primary" onClick={onReviewIndexSQL} disabled={busy}>
                 {t('common.reviewSql')}
               </Button>
             </>
@@ -262,22 +262,22 @@ export function TableStructureDialogs({
           }}
           title={pendingAction.title}
           description={pendingAction.description}
-          className="max-w-3xl"
+          size="lg"
           footer={
             <>
-              <Button variant="outline" onClick={onClosePendingAction} disabled={busy}>
+              <Button variant="secondary" onClick={onClosePendingAction} disabled={busy}>
                 {t('common.back')}
               </Button>
-              <Button variant="outline" onClick={onCopyPendingSQL} disabled={busy}>
+              <Button variant="secondary" onClick={onCopyPendingSQL} disabled={busy}>
                 <Copy className="h-3 w-3" /> {t('common.copySql')}
               </Button>
-              <Button onClick={onExecutePendingAction} disabled={busy}>
+              <Button variant="primary" onClick={onExecutePendingAction} disabled={busy}>
                 {busy ? t('tableInfo.executing') : t('common.confirmExecute')}
               </Button>
             </>
           }
         >
-          <pre className="max-h-[60vh] overflow-auto rounded border border-border bg-card p-3 text-xs whitespace-pre-wrap break-all">
+          <pre className="max-h-[60vh] overflow-auto rounded border border-border bg-surface p-3 text-xs whitespace-pre-wrap break-all">
             {pendingAction.sql}
           </pre>
         </Dialog>

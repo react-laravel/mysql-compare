@@ -1,30 +1,60 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+// SQL console (blueprint §3.4).
+//
+// The six-button header band is one `Toolbar` (History + Run, everything else
+// behind `⋯`), and the hand-rolled grid split — which had a `role="separator"`
+// with no keyboard support at all — is the shared `SplitPane direction="vertical"`,
+// keeping the `mysql-compare:sql-editor-percent` storage key and the 42%
+// double-click reset. `⌘J` folds the results pane to the divider.
+//
+// Result rendering lives in `SQLResultPanel` / `SQLExplainPanel`, and the
+// driver-shape normalisation in `sql-result-normalize.ts`.
+import { useCallback, useEffect, useRef, useState } from 'react'
 import Editor, { type OnMount } from '@monaco-editor/react'
 import type { editor as MonacoEditor } from 'monaco-editor'
-import { ClipboardCopy, FileUp, FolderOpen, History, Play, RotateCcw, Rows3, ScanSearch, SplitSquareVertical } from 'lucide-react'
+import {
+  ClipboardCopy,
+  FileCode2,
+  FolderOpen,
+  History,
+  PanelBottom,
+  Play,
+  RotateCcw,
+  Rows3,
+  ScanSearch,
+  Trash2
+} from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Dialog } from '@renderer/components/ui/dialog'
-import { Table, TBody, Td, THead, Th, Tr } from '@renderer/components/ui/table'
+import type { MenuItem } from '@renderer/components/ui/dropdown-menu'
+import { Kbd } from '@renderer/components/ui/kbd'
+import { SplitPane } from '@renderer/components/ui/split-pane'
+import { Toolbar } from '@renderer/components/ui/toolbar'
 import { api, unwrap } from '@renderer/lib/api'
-import { cn, formatCellValue } from '@renderer/lib/utils'
+import { useAppAction } from '@renderer/lib/app-actions'
+import { cn } from '@renderer/lib/utils'
 import { useUIStore } from '@renderer/store/ui-store'
-import { useI18n, type Translator } from '@renderer/i18n'
+import { useI18n } from '@renderer/i18n'
 import { useTheme } from '@renderer/theme'
-import type { DbEngine, ExplainPlanNode, ExplainSQLResult } from '../../../shared/types'
+import type { DbEngine } from '../../../shared/types'
+import { SQLResultPanel } from './SQLResultPanel'
+import {
+  normalizeResult,
+  serializeRows,
+  type CopyFormat,
+  type SQLExecutionResult
+} from './sql-result-normalize'
 
 interface Props {
   connectionId: string
   connectionName?: string
   database: string
   engine?: DbEngine
+  /**
+   * The workspace keeps background tabs mounted, so an inactive console must
+   * not answer ⌘J for the visible one.
+   */
+  active?: boolean
 }
-
-type SQLExecutionResult =
-  | { kind: 'rows'; columns: string[]; rows: Record<string, unknown>[] }
-  | { kind: 'mutation'; affectedRows: number; insertId?: number | string; warningStatus?: number }
-  | { kind: 'batch'; statements: number; affectedRows: number; details: string[] }
-  | { kind: 'explain'; result: ExplainSQLResult }
-  | { kind: 'empty'; message: string }
 
 interface SQLHistoryEntry {
   id: string
@@ -33,18 +63,26 @@ interface SQLHistoryEntry {
 }
 
 const SQL_EDITOR_SIZE_STORAGE_KEY = 'mysql-compare:sql-editor-percent'
+const DEFAULT_EDITOR_RATIO = 0.42
+const MIN_PANE_PX = 140
 const MAX_SQL_HISTORY = 20
 
-function clampEditorPercent(value: number): number {
-  return Math.max(25, Math.min(75, value))
+/**
+ * The storage key predates `SplitPane` and held a *percent* (`42`), which
+ * `SplitPane` reads as an out-of-range ratio and silently discards. Rewrite it
+ * once so an existing user keeps the split they chose.
+ */
+export function migrateStoredEditorRatio(): void {
+  if (typeof localStorage === 'undefined') return
+  const raw = localStorage.getItem(SQL_EDITOR_SIZE_STORAGE_KEY)
+  if (raw == null) return
+  const parsed = Number(raw)
+  if (!Number.isFinite(parsed) || parsed <= 1) return
+  const ratio = Math.min(0.75, Math.max(0.25, parsed / 100))
+  localStorage.setItem(SQL_EDITOR_SIZE_STORAGE_KEY, String(ratio))
 }
 
-function readStoredEditorPercent(): number {
-  if (typeof window === 'undefined') return 42
-  const raw = window.localStorage.getItem(SQL_EDITOR_SIZE_STORAGE_KEY)
-  const parsed = raw ? Number.parseFloat(raw) : Number.NaN
-  return Number.isFinite(parsed) ? clampEditorPercent(parsed) : 42
-}
+migrateStoredEditorRatio()
 
 function getHistoryStorageKey(connectionId: string, database: string): string {
   return `mysql-compare:sql-history:${connectionId}:${database}`
@@ -67,13 +105,22 @@ function readSQLHistory(connectionId: string, database: string): SQLHistoryEntry
 function writeSQLHistory(connectionId: string, database: string, history: SQLHistoryEntry[]): void {
   if (typeof window === 'undefined') return
   try {
-    window.localStorage.setItem(getHistoryStorageKey(connectionId, database), JSON.stringify(history))
+    window.localStorage.setItem(
+      getHistoryStorageKey(connectionId, database),
+      JSON.stringify(history)
+    )
   } catch {
     /* ignore */
   }
 }
 
-export function SQLQueryView({ connectionId, connectionName, database, engine }: Props) {
+export function SQLQueryView({
+  connectionId,
+  connectionName,
+  database,
+  engine,
+  active = true
+}: Props) {
   const { showToast } = useUIStore()
   const { t } = useI18n()
   const { theme } = useTheme()
@@ -84,51 +131,21 @@ export function SQLQueryView({ connectionId, connectionName, database, engine }:
   const [error, setError] = useState<string | null>(null)
   const [dragging, setDragging] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
-  const [history, setHistory] = useState<SQLHistoryEntry[]>(() => readSQLHistory(connectionId, database))
-  const [editorPercent, setEditorPercent] = useState(() => readStoredEditorPercent())
+  const [resultsCollapsed, setResultsCollapsed] = useState(false)
+  const [history, setHistory] = useState<SQLHistoryEntry[]>(() =>
+    readSQLHistory(connectionId, database)
+  )
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null)
   const runSQLRef = useRef<(statementOverride?: string) => Promise<void>>(async () => undefined)
-  const splitContainerRef = useRef<HTMLDivElement | null>(null)
-  const resizeStateRef = useRef<{ top: number; height: number } | null>(null)
+  const runSelectionRef = useRef<() => void>(() => undefined)
 
-  const subtitle = useMemo(() => {
-    if (connectionName) return `${connectionName} / ${database}`
-    return database
-  }, [connectionName, database])
+  const endpoint = connectionName ? `${connectionName} / ${database}` : database
   const canExplain = engine === 'mysql' || engine === 'postgres' || engine === undefined
 
   useEffect(() => {
     setHistory(readSQLHistory(connectionId, database))
   }, [connectionId, database])
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return
-    window.localStorage.setItem(SQL_EDITOR_SIZE_STORAGE_KEY, String(editorPercent))
-  }, [editorPercent])
-
-  useEffect(() => {
-    const onMouseMove = (event: MouseEvent) => {
-      const state = resizeStateRef.current
-      if (!state) return
-      const nextPercent = ((event.clientY - state.top) / state.height) * 100
-      setEditorPercent(clampEditorPercent(nextPercent))
-    }
-
-    const onMouseUp = () => {
-      if (!resizeStateRef.current) return
-      resizeStateRef.current = null
-      document.body.style.cursor = ''
-      document.body.style.userSelect = ''
-    }
-
-    window.addEventListener('mousemove', onMouseMove)
-    window.addEventListener('mouseup', onMouseUp)
-    return () => {
-      window.removeEventListener('mousemove', onMouseMove)
-      window.removeEventListener('mouseup', onMouseUp)
-    }
-  }, [])
 
   const syncSelectedSQL = () => {
     const editor = editorRef.current
@@ -166,6 +183,8 @@ export function SQLQueryView({ connectionId, connectionName, database, engine }:
     }
     setRunning(true)
     setError(null)
+    // A run always has something to say — never leave the results folded away.
+    setResultsCollapsed(false)
     try {
       const raw = await unwrap(api.db.executeSQL(connectionId, statement, database))
       const normalized = normalizeResult(raw, t)
@@ -181,7 +200,16 @@ export function SQLQueryView({ connectionId, connectionName, database, engine }:
     }
   }
 
+  const runSelection = () => {
+    if (!selectedSQL) {
+      showToast(t('sql.runSelectedDisabled'), 'error')
+      return
+    }
+    void runSQL(selectedSQL)
+  }
+
   runSQLRef.current = runSQL
+  runSelectionRef.current = runSelection
 
   const onEditorMount: OnMount = (editor, monaco) => {
     editorRef.current = editor
@@ -190,6 +218,10 @@ export function SQLQueryView({ connectionId, connectionName, database, engine }:
     })
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => {
       void runSQLRef.current()
+    })
+    // ⌘⇧↵ — the overflow menu's "Run selection" from the keyboard.
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.Enter, () => {
+      runSelectionRef.current()
     })
   }
 
@@ -201,6 +233,7 @@ export function SQLQueryView({ connectionId, connectionName, database, engine }:
     }
     setRunning(true)
     setError(null)
+    setResultsCollapsed(false)
     try {
       const explain = await unwrap(api.db.explainSQL({ connectionId, database, sql: statement }))
       setResult({ kind: 'explain', result: explain })
@@ -226,70 +259,166 @@ export function SQLQueryView({ connectionId, connectionName, database, engine }:
     }
   }
 
-  const startResize = (event: React.MouseEvent<HTMLDivElement>) => {
-    const container = splitContainerRef.current
-    if (!container) return
-    const rect = container.getBoundingClientRect()
-    resizeStateRef.current = { top: rect.top, height: rect.height }
-    document.body.style.cursor = 'row-resize'
-    document.body.style.userSelect = 'none'
-    event.preventDefault()
+  const copyRows = async (format: CopyFormat) => {
+    if (result?.kind !== 'rows') return
+    try {
+      await navigator.clipboard.writeText(serializeRows(result.columns, result.rows, format))
+      showToast(t(format === 'json' ? 'sql.copiedJson' : 'sql.copiedTsv'), 'success')
+    } catch (err) {
+      showToast((err as Error).message, 'error')
+    }
   }
 
+  const copyExplainJson = async () => {
+    if (result?.kind !== 'explain') return
+    try {
+      await navigator.clipboard.writeText(
+        JSON.stringify(result.result.raw ?? result.result.rows, null, 2)
+      )
+      showToast(t('sql.copiedJson'), 'success')
+    } catch (err) {
+      showToast((err as Error).message, 'error')
+    }
+  }
+
+  const clearHistory = () => {
+    setHistory([])
+    writeSQLHistory(connectionId, database, [])
+  }
+
+  const toggleResults = useCallback(() => setResultsCollapsed((value) => !value), [])
+
+  useAppAction('toggle-bottom-panel', active ? toggleResults : null)
+
+  const hasRows = result?.kind === 'rows'
+
+  // Rebuilt every render on purpose: every item's enablement reads live state
+  // (`running`, `selectedSQL`, the current result kind), and a memo keyed on all
+  // of them would only add a stale-closure hazard.
+  const overflowItems: MenuItem[] = [
+    {
+      id: 'run-selection',
+      label: t('sql.runSelected'),
+      icon: Rows3,
+      shortcut: 'Mod+Shift+Enter',
+      disabled: running || !selectedSQL,
+      disabledReason: t('sql.runSelectedDisabled'),
+      onSelect: runSelection
+    },
+    {
+      id: 'explain',
+      label: t('sql.explain'),
+      icon: ScanSearch,
+      disabled: running || !canExplain,
+      disabledReason: canExplain ? t('sql.running') : t('sql.explainUnavailable'),
+      onSelect: () => void runExplain()
+    },
+    {
+      id: 'open-file',
+      label: t('sql.openFile'),
+      icon: FolderOpen,
+      disabled: running,
+      onSelect: () => fileInputRef.current?.click()
+    },
+    {
+      id: 'reset',
+      label: t('sql.reset'),
+      icon: RotateCcw,
+      disabled: running,
+      onSelect: () => setSQL(t('sql.placeholder'))
+    },
+    {
+      id: 'toggle-results',
+      label: resultsCollapsed ? t('sql.showResults') : t('sql.hideResults'),
+      icon: PanelBottom,
+      shortcut: 'Mod+J',
+      onSelect: toggleResults
+    },
+    { kind: 'separator', id: 'sep-copy' },
+    {
+      id: 'copy-tsv',
+      label: t('sql.copyResultsTsv'),
+      icon: ClipboardCopy,
+      disabled: !hasRows,
+      disabledReason: t('sql.noRowsToCopy'),
+      onSelect: () => void copyRows('tsv')
+    },
+    {
+      id: 'copy-json',
+      label: t('sql.copyResultsJson'),
+      icon: ClipboardCopy,
+      disabled: !hasRows,
+      disabledReason: t('sql.noRowsToCopy'),
+      onSelect: () => void copyRows('json')
+    },
+    {
+      id: 'clear-history',
+      label: t('sql.clearHistory'),
+      icon: Trash2,
+      danger: true,
+      disabled: history.length === 0,
+      disabledReason: t('sql.historyEmpty'),
+      onSelect: clearHistory
+    }
+  ]
+
   return (
-    <div className="flex h-full flex-col overflow-hidden">
-      <div className="border-b border-border bg-card px-3 py-2">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="min-w-0">
-            <div className="text-sm font-medium">{t('sql.consoleTitle')}</div>
-            <div className="truncate text-xs text-muted-foreground">{subtitle}</div>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
+      <Toolbar
+        icon={FileCode2}
+        title={t('sql.consoleTitle')}
+        subtitle={`${endpoint}${engine ? ` · ${engine}` : ''}`}
+        // What ⌘⇧↵ will run must not be the first thing a narrow window drops.
+        subtitleSlot={
+          selectedSQL
+            ? t('sql.selectionActive', { count: selectedSQL.length })
+            : t('sql.dropFileHint')
+        }
+        overflow={overflowItems}
+        overflowLabel={t('common.moreActions')}
+        progress={running ? { status: 'running', label: t('sql.running') } : null}
+        actions={
+          <>
             <Button
               size="sm"
-              variant="outline"
+              variant="secondary"
+              icon={History}
               onClick={() => setHistoryOpen(true)}
               disabled={history.length === 0}
             >
-              <History className="h-4 w-4" /> {t('sql.history')}
-            </Button>
-            <Button size="sm" variant="outline" onClick={() => setSQL(t('sql.placeholder'))} disabled={running}>
-              <RotateCcw className="h-4 w-4" /> {t('sql.reset')}
+              {t('sql.history')}
             </Button>
             <Button
               size="sm"
-              variant="outline"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={running}
+              variant="primary"
+              icon={Play}
+              loading={running}
+              aria-keyshortcuts="Meta+Enter"
+              onClick={() => void runSQL()}
             >
-              <FolderOpen className="h-4 w-4" /> {t('sql.openFile')}
+              {running ? t('sql.running') : t('sql.run')}
+              <Kbd className="border-accent-fg/30 bg-accent-fg/15 text-accent-fg">Mod+Enter</Kbd>
             </Button>
-            <Button size="sm" variant="outline" onClick={() => runSQL(selectedSQL)} disabled={running || !selectedSQL}>
-              <Rows3 className="h-4 w-4" /> {t('sql.runSelected')}
-            </Button>
-            {canExplain && (
-              <Button size="sm" variant="outline" onClick={runExplain} disabled={running}>
-                <ScanSearch className="h-4 w-4" /> {t('sql.explain')}
-              </Button>
-            )}
-            <Button size="sm" onClick={() => runSQL()} disabled={running}>
-              <Play className="h-4 w-4" /> {running ? t('sql.running') : t('sql.run')}
-            </Button>
-          </div>
-        </div>
-      </div>
+          </>
+        }
+      />
 
-      <div
-        ref={splitContainerRef}
-        className="grid min-h-0 flex-1"
-        style={{
-          gridTemplateRows: `minmax(180px, ${editorPercent}%) 6px minmax(0, 1fr)`
-        }}
+      <SplitPane
+        direction="vertical"
+        className="flex-1"
+        label={t('sql.resizeEditor')}
+        storageKey={SQL_EDITOR_SIZE_STORAGE_KEY}
+        defaultRatio={DEFAULT_EDITOR_RATIO}
+        min={MIN_PANE_PX}
+        collapsible="second"
+        collapsed={resultsCollapsed}
+        onCollapsedChange={(next) => setResultsCollapsed(next)}
+        collapsedSize={0}
       >
         <div
           className={cn(
-            'flex min-h-0 flex-col p-3 transition-colors',
-            dragging && 'bg-accent/40'
+            'flex min-h-0 flex-1 flex-col p-2 transition-colors',
+            dragging && 'bg-accent-quiet'
           )}
           onDragEnter={(event) => {
             event.preventDefault()
@@ -320,7 +449,7 @@ export function SQLQueryView({ connectionId, connectionName, database, engine }:
               event.currentTarget.value = ''
             }}
           />
-          <div className="min-h-0 flex-1 overflow-hidden rounded-md border border-input">
+          <div className="min-h-0 flex-1 overflow-hidden rounded-md border border-border">
             <Editor
               height="100%"
               language="sql"
@@ -344,67 +473,45 @@ export function SQLQueryView({ connectionId, connectionName, database, engine }:
               }}
             />
           </div>
-          <div className="mt-2 flex shrink-0 items-center gap-2 text-xs leading-5 text-muted-foreground">
-            <FileUp className="h-3.5 w-3.5" />
-            <span className="truncate">
-              {selectedSQL ? t('sql.selectionActive', { count: selectedSQL.length }) : t('sql.dropFileHint')}
-            </span>
-          </div>
         </div>
 
-        <div
-          role="separator"
-          aria-orientation="horizontal"
-          aria-label={t('sql.resizeEditor')}
-          className="group flex cursor-row-resize items-center justify-center border-y border-border bg-card/80"
-          onMouseDown={startResize}
-          onDoubleClick={() => setEditorPercent(42)}
-        >
-          <SplitSquareVertical className="h-3.5 w-3.5 text-muted-foreground transition-colors group-hover:text-foreground" />
+        {/* `auto` so the Panel states can scroll; the rows/explain panels are
+            `h-full` and own their own scrolling. */}
+        <div className="min-h-0 flex-1 overflow-auto p-2">
+          <SQLResultPanel
+            result={result}
+            error={error}
+            running={running}
+            subtitle={endpoint}
+            onRun={() => void runSQL()}
+            onCopyRows={(format) => void copyRows(format)}
+            onCopyExplainJson={() => void copyExplainJson()}
+          />
         </div>
+      </SplitPane>
 
-        <div className="min-h-0 overflow-hidden p-3">
-          {error ? (
-            <div className="max-h-full overflow-auto rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-red-200 whitespace-pre-wrap break-all">
-              {error}
-            </div>
-          ) : result ? (
-            <ResultPanel result={result} />
-          ) : (
-            <div className="flex h-full items-center justify-center rounded-md border border-dashed border-border text-sm text-muted-foreground">
-              {t('sql.runHint', { subtitle })}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {historyOpen && (
+      {historyOpen ? (
         <Dialog
           open
           onOpenChange={setHistoryOpen}
           title={t('sql.history')}
           description={t('sql.historyDescription')}
-          className="max-w-3xl"
+          size="lg"
           footer={
             <>
-              <Button
-                variant="outline"
-                onClick={() => {
-                  setHistory([])
-                  writeSQLHistory(connectionId, database, [])
-                }}
-                disabled={history.length === 0}
-              >
+              <Button variant="secondary" onClick={clearHistory} disabled={history.length === 0}>
                 {t('sql.clearHistory')}
               </Button>
-              <Button onClick={() => setHistoryOpen(false)}>{t('common.close')}</Button>
+              <Button variant="primary" onClick={() => setHistoryOpen(false)}>
+                {t('common.close')}
+              </Button>
             </>
           }
         >
           <div className="max-h-[60vh] space-y-2 overflow-auto">
             {history.map((entry) => (
-              <div key={entry.id} className="rounded-md border border-border bg-background p-2">
-                <div className="mb-2 flex items-center justify-between gap-2 text-xs text-muted-foreground">
+              <div key={entry.id} className="rounded-md border border-border bg-canvas p-2">
+                <div className="mb-2 flex items-center justify-between gap-2 text-xs text-fg-muted">
                   <span>{new Date(entry.ranAt).toLocaleString()}</span>
                   <div className="flex items-center gap-1">
                     <Button
@@ -419,288 +526,25 @@ export function SQLQueryView({ connectionId, connectionName, database, engine }:
                     </Button>
                     <Button
                       size="sm"
-                      variant="outline"
+                      variant="secondary"
+                      icon={Play}
                       onClick={() => {
                         setHistoryOpen(false)
                         void runSQL(entry.sql)
                       }}
                     >
-                      <Play className="h-4 w-4" /> {t('sql.run')}
+                      {t('sql.run')}
                     </Button>
                   </div>
                 </div>
-                <pre className="max-h-28 overflow-auto whitespace-pre-wrap rounded bg-card p-2 font-mono text-xs">
+                <pre className="max-h-28 overflow-auto rounded bg-surface p-2 font-mono text-xs whitespace-pre-wrap">
                   {entry.sql}
                 </pre>
               </div>
             ))}
           </div>
         </Dialog>
-      )}
+      ) : null}
     </div>
   )
-}
-
-function ResultPanel({ result }: { result: SQLExecutionResult }) {
-  const { t } = useI18n()
-  const { showToast } = useUIStore()
-
-  const copyRows = async (format: 'json' | 'tsv') => {
-    if (result.kind !== 'rows') return
-    const content =
-      format === 'json'
-        ? JSON.stringify(result.rows, null, 2)
-        : [
-            result.columns.join('\t'),
-            ...result.rows.map((row) =>
-              result.columns.map((column) => formatCellValue(row[column]).replace(/\t/g, ' ')).join('\t')
-            )
-          ].join('\n')
-
-    try {
-      await navigator.clipboard.writeText(content)
-      showToast(t(format === 'json' ? 'sql.copiedJson' : 'sql.copiedTsv'), 'success')
-    } catch (err) {
-      showToast((err as Error).message, 'error')
-    }
-  }
-
-  if (result.kind === 'empty') {
-    return (
-      <div className="rounded-md border border-border bg-card p-3 text-sm text-muted-foreground">
-        {result.message}
-      </div>
-    )
-  }
-
-  if (result.kind === 'mutation') {
-    return (
-      <div className="space-y-2 rounded-md border border-border bg-card p-3 text-sm">
-        <div>{t('sql.affectedRows', { count: result.affectedRows })}</div>
-        {result.insertId !== undefined && <div>{t('sql.insertId', { id: String(result.insertId) })}</div>}
-        {result.warningStatus !== undefined && <div>{t('sql.warnings', { count: result.warningStatus })}</div>}
-      </div>
-    )
-  }
-
-  if (result.kind === 'batch') {
-    return (
-      <div className="space-y-2 rounded-md border border-border bg-card p-3 text-sm">
-        <div>{t('sql.executedStatements', { count: result.statements })}</div>
-        <div>{t('sql.totalAffected', { count: result.affectedRows })}</div>
-        {result.details.length > 0 && (
-          <ul className="list-disc space-y-1 pl-5 text-xs text-muted-foreground">
-            {result.details.map((detail, index) => (
-              <li key={index}>{detail}</li>
-            ))}
-          </ul>
-        )}
-      </div>
-    )
-  }
-
-  if (result.kind === 'explain') {
-    return <ExplainPanel result={result.result} />
-  }
-
-  return (
-    <div className="flex h-full flex-col overflow-hidden rounded-md border border-border bg-card">
-      <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2 text-xs text-muted-foreground">
-        <span>{t('sql.rowCount', { count: result.rows.length.toLocaleString() })}</span>
-        <div className="flex items-center gap-1">
-          <Button size="sm" variant="ghost" onClick={() => copyRows('tsv')}>
-            <ClipboardCopy className="h-4 w-4" /> {t('sql.copyTsv')}
-          </Button>
-          <Button size="sm" variant="ghost" onClick={() => copyRows('json')}>
-            <ClipboardCopy className="h-4 w-4" /> {t('sql.copyJson')}
-          </Button>
-        </div>
-      </div>
-      <div className="min-h-0 flex-1 overflow-auto">
-        <Table>
-          <THead>
-            <Tr>
-              {result.columns.map((column) => (
-                <Th key={column}>{column}</Th>
-              ))}
-            </Tr>
-          </THead>
-          <TBody>
-            {result.rows.map((row, index) => (
-              <Tr key={index}>
-                {result.columns.map((column) => (
-                  <Td key={column} title={formatCellValue(row[column])} className="max-w-none whitespace-pre-wrap break-all align-top">
-                    {formatCellValue(row[column])}
-                  </Td>
-                ))}
-              </Tr>
-            ))}
-          </TBody>
-        </Table>
-      </div>
-    </div>
-  )
-}
-
-function ExplainPanel({ result }: { result: ExplainSQLResult }) {
-  const { t } = useI18n()
-  const { showToast } = useUIStore()
-
-  const copyExplainJson = async () => {
-    try {
-      await navigator.clipboard.writeText(JSON.stringify(result.raw ?? result.rows, null, 2))
-      showToast(t('sql.copiedJson'), 'success')
-    } catch (err) {
-      showToast((err as Error).message, 'error')
-    }
-  }
-
-  return (
-    <div className="flex h-full flex-col overflow-hidden rounded-md border border-border bg-card">
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2 text-xs text-muted-foreground">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="font-medium text-foreground">{t('sql.explainPlan')}</span>
-          <span>{result.engine === 'postgres' ? 'PostgreSQL' : 'MySQL'}</span>
-          {result.summary.map((metric) => (
-            <span key={`${metric.label}:${metric.value}`} className="rounded border border-border bg-background px-2 py-0.5">
-              {metric.label}: {String(metric.value)}
-            </span>
-          ))}
-        </div>
-        <Button size="sm" variant="ghost" onClick={copyExplainJson}>
-          <ClipboardCopy className="h-4 w-4" /> {t('sql.copyJson')}
-        </Button>
-      </div>
-      <div className="grid min-h-0 flex-1 gap-3 overflow-auto p-3 lg:grid-cols-[minmax(20rem,0.9fr)_minmax(26rem,1.1fr)]">
-        <section className="min-h-0 overflow-auto rounded-md border border-border bg-background p-3">
-          <div className="mb-2 text-xs font-medium text-muted-foreground">{t('sql.visualPlan')}</div>
-          {result.plan ? (
-            <PlanNodeView node={result.plan} />
-          ) : (
-            <div className="text-sm text-muted-foreground">{t('sql.noVisualPlan')}</div>
-          )}
-        </section>
-        <section className="min-h-0 overflow-auto rounded-md border border-border bg-background">
-          <div className="border-b border-border px-3 py-2 text-xs font-medium text-muted-foreground">
-            {t('sql.rawExplainRows')}
-          </div>
-          {result.rows.length === 0 ? (
-            <div className="p-3 text-sm text-muted-foreground">{t('sql.noRows')}</div>
-          ) : (
-            <Table>
-              <THead>
-                <Tr>
-                  {result.columns.map((column) => (
-                    <Th key={column}>{column}</Th>
-                  ))}
-                </Tr>
-              </THead>
-              <TBody>
-                {result.rows.map((row, index) => (
-                  <Tr key={index}>
-                    {result.columns.map((column) => (
-                      <Td key={column} title={formatCellValue(row[column])} className="max-w-none whitespace-pre-wrap break-all align-top">
-                        {formatCellValue(row[column])}
-                      </Td>
-                    ))}
-                  </Tr>
-                ))}
-              </TBody>
-            </Table>
-          )}
-        </section>
-      </div>
-    </div>
-  )
-}
-
-function PlanNodeView({ node, depth = 0 }: { node: ExplainPlanNode; depth?: number }) {
-  return (
-    <div className="relative">
-      <div
-        className="mb-2 rounded-md border border-border bg-card p-2"
-        style={{ marginLeft: depth === 0 ? 0 : 14 }}
-      >
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="text-sm font-medium">{node.label}</div>
-          {node.detail && <div className="text-xs text-muted-foreground">{node.detail}</div>}
-        </div>
-        {node.metrics.length > 0 && (
-          <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-muted-foreground">
-            {node.metrics.map((metric) => (
-              <span key={`${node.id}:${metric.label}`} className="rounded border border-border bg-background px-2 py-0.5">
-                {metric.label}: {String(metric.value)}
-              </span>
-            ))}
-          </div>
-        )}
-      </div>
-      {node.children.map((child) => (
-        <PlanNodeView key={child.id} node={child} depth={depth + 1} />
-      ))}
-    </div>
-  )
-}
-
-function normalizeResult(raw: unknown, t: Translator): SQLExecutionResult {
-  if (Array.isArray(raw)) {
-    if (raw.length === 0) {
-      return { kind: 'empty', message: t('sql.statementSuccess') }
-    }
-
-    if (raw.every((item) => isMutationPayload(item))) {
-      const results = raw as Array<Record<string, unknown>>
-      return {
-        kind: 'batch',
-        statements: results.length,
-        affectedRows: results.reduce((sum, item) => sum + Number(item.affectedRows ?? 0), 0),
-        details: results.map((item, index) => {
-          const affectedRows = Number(item.affectedRows ?? 0)
-          const insertId = item.insertId
-          return insertId !== undefined && insertId !== 0
-            ? t('sql.statementDetailWithInsertId', {
-                index: index + 1,
-                count: affectedRows,
-                id: String(insertId)
-              })
-            : t('sql.statementDetail', { index: index + 1, count: affectedRows })
-        })
-      }
-    }
-
-    if (raw.every((item) => Array.isArray(item))) {
-      const firstResultSet = raw[0] as Record<string, unknown>[]
-      const columns = Array.from(new Set(firstResultSet.flatMap((row) => Object.keys(row))))
-      return { kind: 'rows', columns, rows: firstResultSet }
-    }
-
-    const rows = raw as Record<string, unknown>[]
-    const columns = Array.from(new Set(rows.flatMap((row) => Object.keys(row))))
-    return { kind: 'rows', columns, rows }
-  }
-
-  if (raw && typeof raw === 'object') {
-    const payload = raw as Record<string, unknown>
-    if (Array.isArray(payload.rows)) {
-      const rows = payload.rows as Record<string, unknown>[]
-      const columns = Array.from(new Set(rows.flatMap((row) => Object.keys(row))))
-      return rows.length > 0
-        ? { kind: 'rows', columns, rows }
-        : { kind: 'empty', message: t('sql.statementSuccess') }
-    }
-    if (typeof payload.affectedRows === 'number') {
-      return {
-        kind: 'mutation',
-        affectedRows: payload.affectedRows,
-        insertId: payload.insertId as number | string | undefined,
-        warningStatus: payload.warningStatus as number | undefined
-      }
-    }
-  }
-
-  return { kind: 'empty', message: t('sql.statementSuccess') }
-}
-
-function isMutationPayload(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && typeof (value as Record<string, unknown>).affectedRows === 'number'
 }

@@ -2,7 +2,11 @@
 import type { TableDataDiff } from '../../../shared/types'
 import type { Translator } from '@renderer/i18n'
 
-export type ComparePhase = 'idle' | 'loading-tables' | 'comparing' | 'done'
+/**
+ * `cancelled` is a first-class peer of `done` (DESIGN-SYSTEM §7): the partial
+ * results stay on screen and the Compare button comes back.
+ */
+export type ComparePhase = 'idle' | 'loading-tables' | 'comparing' | 'done' | 'cancelled'
 
 export function formatComparePhase(
   phase: ComparePhase,
@@ -17,6 +21,12 @@ export function formatComparePhase(
     return pendingSharedTable
       ? t('diff.phase.comparingPending', { ...vars, pending: pendingSharedTable })
       : t('diff.phase.comparing', vars)
+  }
+  if (phase === 'cancelled') {
+    return t('diff.phase.cancelled', {
+      done: completedSharedTableCount,
+      total: sharedTableCount
+    })
   }
   if (phase === 'done') {
     return sharedTableCount === 0

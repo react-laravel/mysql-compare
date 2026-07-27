@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Dialog } from '@renderer/components/ui/dialog'
+import { Textarea } from '@renderer/components/ui/input'
 import { Button } from '@renderer/components/ui/button'
 import { useI18n } from '@renderer/i18n'
 import { ClipboardCopy } from 'lucide-react'
@@ -72,17 +73,17 @@ export function JsonViewerDialog({ state, readOnly = false, onClose, onSave }: P
       }}
       title={t('tableData.jsonViewerTitle')}
       description={state.column.name}
-      className="max-w-4xl"
+      size="xl"
       footer={
         <>
-          <Button variant="outline" onClick={onClose} disabled={busy}>
+          <Button variant="secondary" onClick={onClose} disabled={busy}>
             {t('common.close')}
           </Button>
-          <Button variant="outline" onClick={copyContent} disabled={busy}>
+          <Button variant="secondary" onClick={copyContent} disabled={busy}>
             <ClipboardCopy className="h-4 w-4" /> {t('tableData.copyJson')}
           </Button>
           {canEdit && (
-            <Button onClick={handleSave} disabled={busy || !hasChanges}>
+            <Button variant="primary" onClick={handleSave} disabled={busy || !hasChanges}>
               {t('common.update')}
             </Button>
           )}
@@ -90,7 +91,8 @@ export function JsonViewerDialog({ state, readOnly = false, onClose, onSave }: P
       }
     >
       {canEdit ? (
-        <textarea
+        <Textarea
+          mono
           value={draft}
           onChange={(event) => {
             setError(null)
@@ -98,15 +100,15 @@ export function JsonViewerDialog({ state, readOnly = false, onClose, onSave }: P
           }}
           rows={18}
           spellCheck={false}
-          className="max-h-[70vh] w-full resize-y rounded-md border border-input bg-background p-3 font-mono text-xs"
+          className="max-h-[70vh]"
         />
       ) : (
-        <pre className="max-h-[70vh] overflow-auto whitespace-pre-wrap rounded border border-border bg-background p-3 text-xs">
+        <pre className="max-h-[70vh] overflow-auto whitespace-pre-wrap rounded border border-border bg-canvas p-3 text-xs">
           {draft}
         </pre>
       )}
       {error && (
-        <div className="mt-3 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-700 dark:text-red-300">
+        <div role="alert" className="mt-3 rounded-md border border-danger/30 bg-danger-quiet px-3 py-2 text-sm text-danger-text">
           {error}
         </div>
       )}

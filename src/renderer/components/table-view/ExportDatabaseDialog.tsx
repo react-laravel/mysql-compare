@@ -122,13 +122,12 @@ export function ExportDatabaseDialog({ open, onOpenChange, connectionId, databas
       onOpenChange={onOpenChange}
       title={t('databaseExportDialog.title')}
       description={database}
-      className="max-w-lg"
       footer={
         <>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+          <Button variant="secondary" onClick={() => onOpenChange(false)}>
             {t('common.cancel')}
           </Button>
-          <Button onClick={submit} disabled={!canExport}>
+          <Button variant="primary" onClick={submit} disabled={!canExport}>
             {t('common.export')}
           </Button>
         </>
@@ -152,7 +151,7 @@ export function ExportDatabaseDialog({ open, onOpenChange, connectionId, databas
               onChange={(event) => setBackend(event.target.value as ExportDatabaseBackend)}
               options={backendOptions}
             />
-            <p className="mt-1 text-xs text-muted-foreground">
+            <p className="mt-1 text-xs text-fg-muted">
               {backend === 'mysqldump-ssh'
                 ? t('databaseExportDialog.backendHintSsh')
                 : t('databaseExportDialog.backendHintLocal')}

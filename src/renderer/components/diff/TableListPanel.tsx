@@ -1,56 +1,76 @@
 // Tables tab 中显示的源/目标表清单卡片，会撑满父容器高度。
+//
+// Blueprint §3.5: presence is a `DiffGutter` sign first and a `Badge` second —
+// "only in source" green vs "only in target" amber is exactly the colour-alone
+// encoding DESIGN-SYSTEM §1.5 rules out.
+import { Minus, Plus } from 'lucide-react'
 import { Badge } from '@renderer/components/ui/badge'
+import { DiffGutter } from '@renderer/components/ui/diff-gutter'
+import { Panel } from '@renderer/components/ui/panel'
+import { ScrollArea } from '@renderer/components/ui/scroll-area'
+import { Skeleton } from '@renderer/components/ui/skeleton'
+import { cn } from '@renderer/lib/utils'
 import { useI18n } from '@renderer/i18n'
 import type { ComparePhase } from './diff-panel-formatters'
+
+type Presence = 'shared' | 'source-only' | 'target-only'
 
 interface TableListPanelProps {
   title: string
   tables: string[]
   phase: ComparePhase
-  getPresence?: (table: string) => 'shared' | 'source-only' | 'target-only'
+  getPresence?: (table: string) => Presence
 }
 
 export function TableListPanel({ title, tables, phase, getPresence }: TableListPanelProps) {
   const { t } = useI18n()
+  const loading = phase === 'loading-tables'
 
   return (
-    <div className="flex h-full min-h-0 flex-col rounded-xl border border-border/50 bg-card/15 px-3 py-3">
-      <div className="flex items-center justify-between gap-2 border-b border-border/30 pb-2">
-        <div className="flex min-w-0 items-center gap-2 text-left">
-          <span className="text-xs font-medium text-muted-foreground">{title}</span>
-        </div>
-      </div>
+    <Panel header={title} headerActions={<Badge>{tables.length}</Badge>} padded={false}>
       {tables.length === 0 ? (
-        <div className="mt-3 text-xs text-muted-foreground">
-          {phase === 'loading-tables' ? t('diff.toolbar.loadingTables') : t('diff.result.noTablesFound')}
+        <div className="p-3">
+          {loading ? (
+            <Skeleton variant="row" count={6} />
+          ) : (
+            <p className="text-xs text-fg-muted">{t('diff.result.noTablesFound')}</p>
+          )}
         </div>
       ) : (
-        <div className="mt-3 min-h-0 flex-1 overflow-auto pr-1">
-          <div className="space-y-1.5">
+        <ScrollArea className="max-h-80">
+          <ul className="space-y-0.5 p-2">
             {tables.map((table) => {
               const presence = getPresence?.(table) ?? 'shared'
+              const kind =
+                presence === 'source-only' ? 'add' : presence === 'target-only' ? 'del' : 'same'
               return (
-                <div
+                <li
                   key={table}
-                  className="flex min-w-0 items-center justify-between gap-2 rounded-md bg-background/35 px-3 py-1.5 text-xs"
+                  data-diff={kind}
+                  className={cn(
+                    'flex min-w-0 items-center gap-2 rounded-sm px-2 py-1 text-xs',
+                    presence === 'source-only' && 'bg-diff-add-bg',
+                    presence === 'target-only' && 'bg-diff-del-bg'
+                  )}
                 >
-                  <span className="min-w-0 truncate font-mono">{table}</span>
+                  <DiffGutter kind={kind} />
+                  <span className="min-w-0 flex-1 truncate font-mono">{table}</span>
                   {presence === 'source-only' && (
-                    <Badge variant="info" className="shrink-0">
+                    <Badge tone="accent" icon={Plus} className="shrink-0">
                       {t('diff.presentation.onlyInSource')}
                     </Badge>
                   )}
                   {presence === 'target-only' && (
-                    <Badge variant="warning" className="shrink-0">
+                    <Badge tone="warning" icon={Minus} className="shrink-0">
                       {t('diff.presentation.onlyInTarget')}
                     </Badge>
                   )}
-                </div>
+                </li>
               )
             })}
-          </div>
-        </div>
+          </ul>
+        </ScrollArea>
       )}
-    </div>
+    </Panel>
   )
 }

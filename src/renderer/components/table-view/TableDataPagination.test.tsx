@@ -13,9 +13,7 @@ function createProps(overrides: Partial<React.ComponentProps<typeof TableDataPag
     page: 2,
     totalPages: 4,
     pageDraft: '2',
-    pageSize: 100,
     hiddenColumnCount: 2,
-    onPageSizeChange: vi.fn(),
     onGoToPage: vi.fn(),
     onPageDraftChange: vi.fn(),
     onSubmitPageDraft: vi.fn(),
@@ -29,12 +27,11 @@ describe('TableDataPagination', () => {
     setEnglishLocale()
   })
 
-  it('wires page size, paging buttons, and page draft interactions', () => {
+  it('wires the paging buttons and the page draft interactions', () => {
     const props = createProps()
 
     render(<TableDataPagination {...props} />)
 
-    fireEvent.change(screen.getByLabelText('Rows'), { target: { value: '250' } })
     fireEvent.click(screen.getByRole('button', { name: 'Prev' }))
     fireEvent.click(screen.getByRole('button', { name: 'Next' }))
 
@@ -44,13 +41,16 @@ describe('TableDataPagination', () => {
     fireEvent.keyDown(pageInput, { key: 'Escape' })
 
     expect(screen.getByText('2 hidden')).toBeTruthy()
-    expect(props.onPageSizeChange).toHaveBeenCalledWith(250)
     expect(props.onGoToPage).toHaveBeenNthCalledWith(1, 1)
     expect(props.onGoToPage).toHaveBeenNthCalledWith(2, 3)
     expect(props.onPageDraftChange).toHaveBeenCalledWith('4')
     expect(props.onSubmitPageDraft).toHaveBeenCalledTimes(1)
     expect(props.onResetPageDraft).toHaveBeenCalledTimes(1)
   })
+
+  // The page-size control moved into the toolbar `⋯`; the guard that every
+  // `PAGE_SIZE_OPTIONS` value is offerable moved with it (TableDataToolbar and
+  // TableCompareToolbar tests).
 
   it('disables navigation buttons at the edges', () => {
     render(<TableDataPagination {...createProps({ page: 1, totalPages: 1, hiddenColumnCount: 0 })} />)

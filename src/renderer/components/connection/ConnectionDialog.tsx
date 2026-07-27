@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Dialog } from '@renderer/components/ui/dialog'
 import { Button } from '@renderer/components/ui/button'
 import { api, unwrap } from '@renderer/lib/api'
+import { cn } from '@renderer/lib/utils'
 import { useUIStore } from '@renderer/store/ui-store'
 import { useI18n } from '@renderer/i18n'
 import type { ConnectionConfig, DbEngine, SafeConnection } from '../../../shared/types'
@@ -23,10 +24,13 @@ interface Props {
   connection?: SafeConnection | null
   sshSource?: SafeConnection | null
   onSaved?: () => void
-  onDelete?: (connection: SafeConnection) => boolean | Promise<boolean>
 }
 
-export function ConnectionDialog({ open, onOpenChange, connection, sshSource, onSaved, onDelete }: Props) {
+// Blueprint §1.3 / §3.11: this dialog deliberately has NO Delete button. It used
+// to sit in the footer beside Save, guarded only by a native `confirm()`. Delete
+// is now reached from Settings ▸ Connections and from the connection row's `⋯`,
+// and both route through `ConfirmDialog`. Do not re-add it here.
+export function ConnectionDialog({ open, onOpenChange, connection, sshSource, onSaved }: Props) {
   const { showToast } = useUIStore()
   const { t } = useI18n()
   const sshKeyInputRef = useRef<HTMLInputElement>(null)
@@ -175,42 +179,22 @@ export function ConnectionDialog({ open, onOpenChange, connection, sshSource, on
     }
   }
 
-  const onDeleteClick = async () => {
-    if (!connection || !onDelete) return
-    setBusy(true)
-    try {
-      const deleted = await onDelete(connection)
-      if (deleted) onOpenChange(false)
-    } finally {
-      setBusy(false)
-    }
-  }
-
   return (
     <Dialog
       open={open}
       onOpenChange={onOpenChange}
       title={connection ? t('connection.editTitle') : t('connection.newTitle')}
       description={t('connection.description')}
-      className="max-w-2xl"
+      size="lg"
       footer={
-        <div className="flex w-full items-center justify-between gap-2">
-          <div>
-            {connection && onDelete && (
-              <Button variant="destructive" onClick={onDeleteClick} disabled={busy}>
-                {t('common.delete')}
-              </Button>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            <Button variant="outline" onClick={onTest} disabled={busy}>
-              {t('common.test')}
-            </Button>
-            <Button onClick={onSave} disabled={busy}>
-              {t('common.save')}
-            </Button>
-          </div>
-        </div>
+        <>
+          <Button variant="secondary" onClick={onTest} disabled={busy}>
+            {t('common.test')}
+          </Button>
+          <Button variant="primary" onClick={onSave} disabled={busy}>
+            {t('common.save')}
+          </Button>
+        </>
       }
     >
       <ConnectionDialogForm
@@ -226,17 +210,19 @@ export function ConnectionDialog({ open, onOpenChange, connection, sshSource, on
         sshKeyInputRef={sshKeyInputRef}
       />
       {sshSource && (
-        <div className="mt-4 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+        <div className="mt-4 rounded-md border border-border bg-surface-2/40 px-3 py-2 text-sm text-fg-muted">
           {t('connection.reusingSsh', { name: sshSource.name })}
         </div>
       )}
       {testFeedback && (
         <div
-          className={
+          role="status"
+          className={cn(
+            'mt-4 rounded-md border px-3 py-2 text-sm',
             testFeedback.level === 'error'
-              ? 'mt-4 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-700 dark:text-red-300'
-              : 'mt-4 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-300'
-          }
+              ? 'border-danger/30 bg-danger-quiet text-danger-text'
+              : 'border-success/30 bg-success-quiet text-success-text'
+          )}
         >
           {testFeedback.message}
         </div>

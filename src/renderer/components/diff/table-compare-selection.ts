@@ -2,6 +2,9 @@ import { useMemo, useRef, useState, type MouseEvent } from 'react'
 import type { QueryRowsResult } from '../../../shared/types'
 import { buildRowKey } from './table-compare-utils'
 
+/** The shape `TableComparePanes` passes straight through to each pane. */
+export type ComparePaneSelection = ReturnType<typeof useComparePaneSelection>
+
 export function useComparePaneSelection(data: QueryRowsResult | null, keyColumns: string[]) {
   const selectionEnabled = data?.hasPrimaryKey ?? false
   const [selectedRows, setSelectedRows] = useState<Record<string, Record<string, unknown>>>({})

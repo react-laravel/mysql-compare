@@ -4,9 +4,11 @@ import './monaco'
 import App from './App'
 import './index.css'
 import { initializeTheme } from './theme'
+import { initializeSettings } from './store/settings-store'
 import { bootstrapApi } from './lib/api'
 
 initializeTheme()
+initializeSettings()
 
 async function main(): Promise<void> {
   await bootstrapApi()

@@ -1,0 +1,751 @@
+/* ==========================================================================
+   DOGE DESKTOP DESIGN SYSTEM — canonical tokens
+   Shared by: code-line-analysis, simple-diff, mysql-compare
+   Tailwind 4 (@theme inline + runtime CSS variables). No tailwind.config.js.
+
+   Install:
+     src/renderer/index.css  (or styles/globals.css)
+       @import 'tailwindcss';
+       @import './tokens.css';
+
+   Theme hooks — BOTH are supported, so no app has to change its theme applier:
+     mysql-compare        -> document.documentElement.classList.toggle('dark')
+     simple-diff          -> root.dataset.theme = 'light' | 'dark'
+     code-line-analysis   -> document.documentElement.dataset.theme = 'light' | 'dark'
+
+   Light is the :root default. Dark is opt-in via `.dark` OR `[data-theme='dark']`.
+   All three apps write their hook before ReactDOM.render, so there is no FOUC.
+   ========================================================================== */
+
+/* --------------------------------------------------------------------------
+   1. RAW RAMPS — the only place literal hex lives.
+   Nothing outside this block may reference a --ds-ramp-* variable directly;
+   components consume the SEMANTIC aliases in section 3.
+   -------------------------------------------------------------------------- */
+:root {
+  /* Neutral: cool slate, OKLCH hue 255. Chroma rises toward the dark end so
+     dark surfaces read as "deep blue-black", not dead gray — this is what the
+     three apps' current dark palettes were all reaching for by hand
+     (#0b1015 / #0d0d0d / #09090b). */
+  --ds-slate-50: #f9fafc;
+  --ds-slate-100: #f2f4f7;
+  --ds-slate-200: #e3e7ec;
+  --ds-slate-300: #cfd5dc;
+  --ds-slate-400: #a3aab2;
+  --ds-slate-500: #7e858f;
+  --ds-slate-600: #5e656f;
+  --ds-slate-700: #404751;
+  --ds-slate-750: #303741;
+  --ds-slate-800: #232a34;
+  --ds-slate-850: #19212a;
+  --ds-slate-900: #111822;
+  --ds-slate-950: #09101a;
+
+  /* Accent: blue. NOT green — green is reserved for success/added/fresh in all
+     three apps, and code-line-analysis currently ships --accent #5ad5a7 sitting
+     10 ΔE from --good #65cf8d (styles.css:1775), an unreadable collision. */
+  --ds-blue-100: #cde2fb;
+  --ds-blue-200: #9ec5f4;
+  --ds-blue-300: #86b6ef;
+  --ds-blue-400: #6da7ec;
+  --ds-blue-500: #5598e7;
+  --ds-blue-600: #3987e5;
+  --ds-blue-650: #2d74d0;
+  --ds-blue-700: #2967bd;
+  --ds-blue-750: #256abf;
+  --ds-blue-800: #22579e;
+  --ds-blue-850: #1c5cab;
+  --ds-blue-900: #104281;
+  --ds-blue-hi-1: #7ab6f6;
+  --ds-blue-hi-2: #5fa5f2;
+  --ds-blue-hi-3: #4a92e6;
+
+  /* Status ramps. Steps chosen so the light steps clear 3:1 on BOTH the light
+     surface (#ffffff) and the light canvas (#f2f4f7); dark steps clear 6:1 on
+     the dark surface, so they double as text without a second token. */
+  --ds-green-mark-l: #178a56; /* 4.37 : #fff  ·  3.97 : canvas */
+  --ds-green-text-l: #0f6b41; /* 6.56 : #fff  ·  5.96 : canvas */
+  --ds-green-mark-d: #3fce8e; /* 8.86 : dark surface */
+  --ds-amber-mark-l: #b5790a; /* 3.68 : #fff  ·  3.34 : canvas */
+  --ds-amber-text-l: #8a5a05; /* 5.92 : #fff  ·  5.38 : canvas */
+  --ds-amber-mark-d: #e8b04a; /* 9.12 : dark surface */
+  --ds-red-mark-l: #d64541; /* 4.39 : #fff  ·  3.98 : canvas */
+  --ds-red-text-l: #c0392f; /* 5.43 : #fff  ·  4.93 : canvas */
+  --ds-red-mark-d: #f4706e; /* 6.28 : dark surface */
+  --ds-violet-mark-l: #5b4bc4;
+  --ds-violet-mark-d: #a98bec;
+}
+
+/* --------------------------------------------------------------------------
+   2. NON-COLOR TOKENS — identical in both themes.
+   -------------------------------------------------------------------------- */
+:root {
+  /* --- Density: control + row heights ------------------------------------
+     These are the density contract. A "default" control is 30px tall, not the
+     36px (h-9) mysql-compare ships today and not the 40px of a web app.
+     Verified against the real surfaces: a table tab in mysql-compare currently
+     burns ~180px of a 900px window on chrome before the first data row
+     (Workspace.tsx:263 h-[53px] tab strip -> Tabs h-9 -> TableDataToolbar
+     px-3 py-2 -> warning bar). This scale takes that to ~118px. */
+  --ds-control-xs: 22px; /* inline chip, tree-row action icon, gutter button */
+  --ds-control-sm: 26px; /* toolbar button/input/select — the workhorse       */
+  --ds-control-md: 30px; /* form control, dialog field, primary page action   */
+  --ds-control-lg: 34px; /* dialog footer CTA, empty-state call to action     */
+
+  --ds-row-tree: 24px; /* file tree / connection tree / nav row             */
+  --ds-row-grid: 26px; /* data grid, diff hunk line (compact — default)     */
+  --ds-row-grid-comfy: 30px; /* data grid (comfortable density toggle)           */
+  --ds-row-table: 28px; /* read-mostly report table (Files, Functions, ER)   */
+
+  --ds-chrome-titlebar: 36px; /* app-drag-region header                       */
+  --ds-chrome-tabstrip: 32px; /* workspace / compare / diff tab strip         */
+  --ds-chrome-toolbar: 34px; /* view toolbar                                */
+  --ds-chrome-statusbar: 24px; /* persistent bottom status bar                 */
+
+  /* --- Type scale ---------------------------------------------------------
+     Deliberately shifted DOWN one notch from stock Tailwind so that the class
+     names the apps already use become denser with zero code edits:
+       text-sm  14px -> 13px  (mysql-compare body text)
+       text-xs  12px -> 11px  (labels, meta, tree secondary)
+     `text-2xs` (10px) replaces the hand-written `text-[10px]` in badge.tsx:22
+     and simple-diff's kbd/tab strips. */
+  --ds-font-sans:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', Roboto, Helvetica, Arial, sans-serif;
+  --ds-font-mono:
+    ui-monospace, 'SF Mono', 'Menlo', 'Monaco', 'JetBrains Mono',
+    'Cascadia Mono', Consolas, monospace;
+
+  /* --- Motion -------------------------------------------------------------
+     Desktop tools must feel instant. Nothing that blocks input animates for
+     longer than 180ms; nothing animates layout width/height except SplitPane
+     (which is direct-manipulation and therefore has 0ms). */
+  --ds-motion-fast: 120ms; /* hover, focus ring, color/opacity              */
+  --ds-motion-base: 180ms; /* popover + tooltip enter, tab underline slide  */
+  --ds-motion-slow: 240ms; /* dialog, drawer, command palette              */
+  --ds-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ds-ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+
+  /* --- Z ladder -----------------------------------------------------------
+     One ordered ladder, replacing mysql-compare's ad-hoc
+     50/70/75/80/85/90 (dialog.tsx:28, App.tsx:19, Workspace.tsx:374,
+     SidebarAppMenu.tsx:76, Workspace.tsx:417, TableDataGrid.tsx:244) — which
+     put every popover ABOVE every dialog. A popover opened from inside a
+     dialog must be portalled into the dialog element, not the body, so it
+     inherits the dialog's stacking context instead of fighting it.
+
+     NOTE: Tailwind 4 has no `--z-*` theme namespace, so `z-chrome` / `z-dialog`
+     are NOT generatable utilities (they compile to nothing, silently). Write
+     `z-[var(--ds-z-chrome)]`, `z-[var(--ds-z-dialog)]`, etc. */
+  --ds-z-sticky: 10;
+  --ds-z-chrome: 20;
+  --ds-z-resizer: 30;
+  --ds-z-popover: 40;
+  --ds-z-dialog: 50;
+  --ds-z-palette: 60;
+  --ds-z-tooltip: 70;
+  --ds-z-toast: 80;
+}
+
+/* --------------------------------------------------------------------------
+   3. SEMANTIC TOKENS — LIGHT (the :root default)
+   -------------------------------------------------------------------------- */
+:root {
+  color-scheme: light;
+
+  /* Surfaces — a 3-step elevation ladder, not a single --panel. */
+  --ds-canvas: var(--ds-slate-100); /* app background behind panels     */
+  --ds-surface: #ffffff; /* panel / card / sidebar / grid    */
+  --ds-surface-2: var(--ds-slate-50); /* nested panel, sticky table head  */
+  --ds-raised: #ffffff; /* popover, dropdown, dialog, toast */
+  --ds-inset: var(--ds-slate-100); /* input well, code block, gutter   */
+  --ds-overlay: rgb(17 24 34 / 0.45); /* dialog scrim                     */
+
+  /* Ink */
+  --ds-fg: #151a21; /* 17.5 : surface — primary text     */
+  --ds-fg-muted: var(--ds-slate-600); /*  5.9 : surface — labels, meta     */
+  --ds-fg-subtle: var(--ds-slate-500); /*  3.7 : surface — placeholder only */
+  --ds-fg-on-accent: #ffffff;
+
+  /* Lines. Two weights only. --ds-border is the default hairline;
+     --ds-border-strong is for a line that separates two INTERACTIVE regions
+     (split-pane divider, focused input, active tab underline). */
+  --ds-border: var(--ds-slate-200);
+  --ds-border-strong: var(--ds-slate-300);
+
+  /* Interaction washes — always the neutral ramp at low alpha, never a tinted
+     accent wash, so hover on a colored row does not shift its hue. */
+  --ds-hover: rgb(17 24 34 / 0.05);
+  --ds-active: rgb(17 24 34 / 0.09);
+  --ds-selected: rgb(45 116 208 / 0.12);
+  --ds-selected-strong: rgb(45 116 208 / 0.2);
+
+  /* Accent / primary */
+  --ds-accent: var(--ds-blue-650); /* #2d74d0 — 4.65 : white label   */
+  --ds-accent-hover: var(--ds-blue-700); /* #2967bd — 5.57 : white label   */
+  --ds-accent-active: var(--ds-blue-800); /* #22579e — 7.18 : white label   */
+  --ds-accent-fg: #ffffff;
+  --ds-accent-quiet: rgb(45 116 208 / 0.12); /* tinted fill for soft buttons  */
+  --ds-accent-text: #1e6fb8; /* 5.22 : surface — accent TEXT   */
+
+  /* Focus ring — theme-specific by necessity: #5fa5f2 only reaches 2.34:1 on
+     the light canvas, so light mode uses the accent itself (4.22:1). */
+  --ds-ring: var(--ds-blue-650);
+  --ds-ring-offset: var(--ds-surface);
+
+  /* Status — five roles. `running` is a first-class state, not a blue badge:
+     all three apps have long jobs (scan / compare / sync / query). */
+  --ds-success: var(--ds-green-mark-l);
+  --ds-success-text: var(--ds-green-text-l);
+  --ds-success-quiet: rgb(23 138 86 / 0.13);
+  --ds-warning: var(--ds-amber-mark-l);
+  --ds-warning-text: var(--ds-amber-text-l);
+  --ds-warning-quiet: rgb(181 121 10 / 0.14);
+  --ds-danger: var(--ds-red-mark-l);
+  --ds-danger-text: var(--ds-red-text-l);
+  --ds-danger-quiet: rgb(214 69 65 / 0.12);
+  --ds-danger-fg: #ffffff;
+  --ds-running: var(--ds-blue-650);
+  --ds-running-text: #1e6fb8;
+  --ds-running-quiet: rgb(45 116 208 / 0.12);
+  --ds-idle: var(--ds-slate-500);
+  --ds-idle-quiet: rgb(126 133 143 / 0.16);
+
+  /* Diff semantics. NOTE the measured constraint documented in
+     DESIGN-SYSTEM.md: green vs red is ΔE 7.3 (deutan) in light and 5.6 in
+     dark — BELOW the ΔE 6 floor in dark. Color alone is never sufficient here;
+     the +/- gutter glyph is mandatory, and --ds-diff-*-cvd is the user-
+     selectable safe pairing (blue vs orange, ΔE 24.4). */
+  --ds-diff-add: var(--ds-green-mark-l);
+  --ds-diff-add-bg: rgb(23 138 86 / 0.11);
+  --ds-diff-add-bg-strong: rgb(23 138 86 / 0.22);
+  --ds-diff-del: var(--ds-red-mark-l);
+  --ds-diff-del-bg: rgb(214 69 65 / 0.1);
+  --ds-diff-del-bg-strong: rgb(214 69 65 / 0.22);
+  --ds-diff-mod: var(--ds-amber-mark-l);
+  --ds-diff-mod-bg: rgb(181 121 10 / 0.12);
+  --ds-diff-moved: var(--ds-violet-mark-l);
+  --ds-diff-same: var(--ds-slate-500);
+  --ds-diff-add-cvd: #2d74d0;
+  --ds-diff-del-cvd: #eb6834;
+
+  /* Elevation. Border-first: an inline surface gets a border and NO shadow.
+     Shadows exist only to say "this floats above the document". */
+  --ds-shadow-raised:
+    0 1px 2px rgb(15 23 34 / 0.06), 0 6px 16px -4px rgb(15 23 34 / 0.12);
+  --ds-shadow-overlay:
+    0 2px 4px rgb(15 23 34 / 0.06), 0 16px 40px -8px rgb(15 23 34 / 0.22);
+  --ds-shadow-ring: inset 0 0 0 1px var(--ds-border);
+
+  /* Scrollbar */
+  --ds-scrollbar-thumb: var(--ds-slate-300);
+  --ds-scrollbar-thumb-hover: var(--ds-slate-400);
+
+  /* ---- CHART TOKENS (ECharts / any viz) ---------------------------------
+     Validated with the dataviz skill's validate_palette.js against the real
+     surfaces of this system. Light categorical, 8 slots, adjacent pairlist:
+       lightness band PASS · chroma floor PASS
+       worst adjacent CVD  ΔE 9.1 (protan, #eda100 <-> #1baf7a)   [>= 8]
+       worst adjacent normal-vision ΔE 19.6                        [>= 15]
+       contrast WARN: aqua 2.82, yellow 2.17, magenta 2.69 vs #fff
+         -> relief rule applies: those slots ship direct labels or a table view.
+     Assign slots IN ORDER and never cycle. A 9th series folds into "Other".
+     For scatter / graph / treemap / small-multiples (any two marks can touch)
+     the cap is THREE slots — validated all-pairs: CVD ΔE 9.2 light / 9.4 dark,
+     normal-vision 24.4 / 20.9. */
+  --ds-chart-1: #2d74d0; /* blue    — same family as --ds-accent */
+  --ds-chart-2: #eb6834; /* orange  */
+  --ds-chart-3: #1baf7a; /* aqua    */
+  --ds-chart-4: #eda100; /* yellow  */
+  --ds-chart-5: #e87ba4; /* magenta */
+  --ds-chart-6: #008300; /* green   */
+  --ds-chart-7: #4a3aa7; /* violet  */
+  --ds-chart-8: #e34948; /* red     */
+
+  /* Ordinal ramp — DISCRETE ordered buckets (heatmap legend steps, size
+     tiers, depth levels). 5 steps; every adjacent ΔL >= 0.06 and the light
+     end clears 2:1 on the surface. Validated --ordinal: ALL PASS. */
+  --ds-chart-ord-1: #86b6ef;
+  --ds-chart-ord-2: #5598e7;
+  --ds-chart-ord-3: #2a78d6;
+  --ds-chart-ord-4: #1c5cab;
+  --ds-chart-ord-5: #104281;
+
+  /* Sequential — CONTINUOUS magnitude (ECharts visualMap). One hue,
+     light -> dark. The light end is allowed to recede toward the surface
+     because "near zero" should. */
+  --ds-chart-seq-min: #cde2fb;
+  --ds-chart-seq-max: #0d366b;
+  --ds-chart-seq-alt-min: #fbe3d3; /* 2nd concurrent sequential context */
+  --ds-chart-seq-alt-max: #8a3510;
+
+  /* Diverging — blue <-> red with a NEUTRAL gray midpoint (never a hue at
+     the midpoint, never a rainbow). Equal steps per arm. */
+  --ds-chart-div-neg: #2d74d0;
+  --ds-chart-div-mid: var(--ds-slate-200);
+  --ds-chart-div-pos: #d64541;
+
+  /* Chart chrome — the fix for the four verbatim CHART_TEXT/CHART_MUTED/
+     CHART_BORDER/CHART_TOOLTIP_BACKGROUND constant blocks duplicated in
+     code-line-analysis Dashboard.tsx:15-18, HeatmapView.tsx:31-34,
+     RelationsView.tsx:19-22, LaravelSchemaView.tsx:16-19, and for the
+     12-entry string-substitution pass in EChartsPanel.tsx:13-47. */
+  --ds-chart-surface: var(--ds-surface);
+  --ds-chart-ink: var(--ds-fg);
+  --ds-chart-ink-muted: var(--ds-fg-muted);
+  --ds-chart-grid: var(--ds-slate-200);
+  --ds-chart-axis: var(--ds-slate-300);
+  --ds-chart-tooltip-bg: var(--ds-raised);
+  --ds-chart-tooltip-border: var(--ds-border-strong);
+  --ds-chart-mark-ring: var(--ds-surface); /* 2px surface ring on overlaps */
+}
+
+/* --------------------------------------------------------------------------
+   4. SEMANTIC TOKENS — DARK
+   Both hooks, one block. Dark is a SELECTED set of steps, not an inversion —
+   which is the specific thing simple-diff's globals.css:9-30 numeric-inversion
+   trick cannot do, and why its accent allowlist at globals.css:72-87 has holes
+   (sky-300, violet-300, cyan-300, purple-300, blue-200, blue-100).
+   -------------------------------------------------------------------------- */
+:root.dark,
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --ds-canvas: var(--ds-slate-950);
+  --ds-surface: var(--ds-slate-900);
+  --ds-surface-2: var(--ds-slate-850);
+  --ds-raised: var(--ds-slate-800);
+  --ds-inset: var(--ds-slate-950);
+  --ds-overlay: rgb(4 8 14 / 0.62);
+
+  --ds-fg: #e8ecf2; /* 15.0 : surface */
+  --ds-fg-muted: #8e97a3; /*  6.0 : surface */
+  --ds-fg-subtle: #6a727d; /*  3.7 : surface */
+  --ds-fg-on-accent: var(--ds-slate-950);
+
+  --ds-border: var(--ds-slate-800);
+  --ds-border-strong: var(--ds-slate-700);
+
+  --ds-hover: rgb(232 236 242 / 0.07);
+  --ds-active: rgb(232 236 242 / 0.12);
+  --ds-selected: rgb(95 165 242 / 0.16);
+  --ds-selected-strong: rgb(95 165 242 / 0.26);
+
+  /* The accent FLIPS role in dark: a bright fill with dark ink. This is the
+     only way to keep the label at >= 4.5:1 while the hover state moves AWAY
+     from the surface (light: darker fill; dark: lighter fill).
+       #5fa5f2 fill · #09101a label = 7.41 : 1   fill vs surface = 6.92 : 1
+       #7ab6f6 hover                 = 8.95 : 1
+       #4a92e6 active                = 5.95 : 1  fill vs surface = 5.56 : 1 */
+  --ds-accent: var(--ds-blue-hi-2);
+  --ds-accent-hover: var(--ds-blue-hi-1);
+  --ds-accent-active: var(--ds-blue-hi-3);
+  --ds-accent-fg: var(--ds-slate-950);
+  --ds-accent-quiet: rgb(95 165 242 / 0.16);
+  --ds-accent-text: var(--ds-blue-hi-2);
+
+  --ds-ring: #6aa9f5; /* 7.31 : dark surface */
+  --ds-ring-offset: var(--ds-surface);
+
+  --ds-success: var(--ds-green-mark-d);
+  --ds-success-text: var(--ds-green-mark-d);
+  --ds-success-quiet: rgb(63 206 142 / 0.16);
+  --ds-warning: var(--ds-amber-mark-d);
+  --ds-warning-text: var(--ds-amber-mark-d);
+  --ds-warning-quiet: rgb(232 176 74 / 0.16);
+  --ds-danger: var(--ds-red-mark-d);
+  --ds-danger-text: var(--ds-red-mark-d);
+  --ds-danger-quiet: rgb(244 112 110 / 0.16);
+  --ds-danger-fg: var(--ds-slate-950);
+  --ds-running: var(--ds-blue-hi-2);
+  --ds-running-text: var(--ds-blue-hi-2);
+  --ds-running-quiet: rgb(95 165 242 / 0.16);
+  --ds-idle: #8e97a3;
+  --ds-idle-quiet: rgb(142 151 163 / 0.18);
+
+  --ds-diff-add: var(--ds-green-mark-d);
+  --ds-diff-add-bg: rgb(63 206 142 / 0.13);
+  --ds-diff-add-bg-strong: rgb(63 206 142 / 0.26);
+  --ds-diff-del: var(--ds-red-mark-d);
+  --ds-diff-del-bg: rgb(244 112 110 / 0.13);
+  --ds-diff-del-bg-strong: rgb(244 112 110 / 0.26);
+  --ds-diff-mod: var(--ds-amber-mark-d);
+  --ds-diff-mod-bg: rgb(232 176 74 / 0.14);
+  --ds-diff-moved: var(--ds-violet-mark-d);
+  --ds-diff-same: #8e97a3;
+  --ds-diff-add-cvd: #5fa5f2;
+  --ds-diff-del-cvd: #d95926;
+
+  /* Dark elevation cannot rely on shadow alone — it needs a top hairline
+     highlight to read as "lifted". Shadow spread grows; opacity grows. */
+  --ds-shadow-raised:
+    0 1px 0 0 rgb(232 236 242 / 0.06) inset, 0 2px 4px rgb(0 0 0 / 0.4),
+    0 10px 28px -6px rgb(0 0 0 / 0.55);
+  --ds-shadow-overlay:
+    0 1px 0 0 rgb(232 236 242 / 0.07) inset, 0 4px 8px rgb(0 0 0 / 0.45),
+    0 24px 56px -12px rgb(0 0 0 / 0.7);
+
+  --ds-scrollbar-thumb: var(--ds-slate-750);
+  --ds-scrollbar-thumb-hover: var(--ds-slate-700);
+
+  /* Chart — the SAME eight hues, re-stepped for the dark surface (#111822).
+     Validated dark, adjacent pairlist: band PASS · chroma PASS ·
+     worst adjacent CVD ΔE 8.4 (protan) · normal-vision ΔE 19.3 ·
+     contrast ALL >= 3:1 (no relief needed in dark). */
+  --ds-chart-1: #3987e5;
+  --ds-chart-2: #d95926;
+  --ds-chart-3: #199e70;
+  --ds-chart-4: #c98500;
+  --ds-chart-5: #d55181;
+  --ds-chart-6: #008300;
+  --ds-chart-7: #9085e9;
+  --ds-chart-8: #e66767;
+
+  /* Ordinal flips anchor: the DARK end now recedes toward the surface, so the
+     ramp runs bright -> deep. Validated --ordinal dark: ALL PASS
+     (light-end contrast 3.31:1, all ΔL >= 0.06). */
+  --ds-chart-ord-1: #cde2fb;
+  --ds-chart-ord-2: #9ec5f4;
+  --ds-chart-ord-3: #6da7ec;
+  --ds-chart-ord-4: #3987e5;
+  --ds-chart-ord-5: #256abf;
+
+  --ds-chart-seq-min: #14304f;
+  --ds-chart-seq-max: #b7d3f6;
+  --ds-chart-seq-alt-min: #43200f;
+  --ds-chart-seq-alt-max: #f2b189;
+
+  --ds-chart-div-neg: #5fa5f2;
+  --ds-chart-div-mid: var(--ds-slate-750);
+  --ds-chart-div-pos: #f4706e;
+
+  --ds-chart-surface: var(--ds-surface);
+  --ds-chart-ink: var(--ds-fg);
+  --ds-chart-ink-muted: var(--ds-fg-muted);
+  --ds-chart-grid: var(--ds-slate-800);
+  --ds-chart-axis: var(--ds-slate-750);
+  --ds-chart-tooltip-bg: var(--ds-raised);
+  --ds-chart-tooltip-border: var(--ds-border-strong);
+  --ds-chart-mark-ring: var(--ds-surface);
+}
+
+/* --------------------------------------------------------------------------
+   4b. COLORBLIND DIFF PREFERENCE
+   DESIGN-SYSTEM §1.5 conclusion 3: "Ship a colorblind diff preference in
+   Settings that swaps --ds-diff-add / --ds-diff-del to --ds-diff-add-cvd /
+   --ds-diff-del-cvd (blue/orange). One store flag, one data- attribute on
+   <html>, zero component changes."
+   The flag lives in `store/settings-store.ts`, which writes the attribute.
+   Declared after the dark block so it wins in BOTH themes; the -cvd values are
+   already theme-specific, so this single rule needs no dark twin.
+   -------------------------------------------------------------------------- */
+:root[data-colorblind-diff='true'] {
+  --ds-diff-add: var(--ds-diff-add-cvd);
+  --ds-diff-del: var(--ds-diff-del-cvd);
+}
+
+/* --------------------------------------------------------------------------
+   5. TAILWIND 4 THEME BINDING
+   `inline` makes Tailwind emit the utility with the runtime var substituted
+   directly (background-color: var(--ds-surface)) rather than an extra
+   indirection — which is what lets .dark / [data-theme] swap values live.
+   -------------------------------------------------------------------------- */
+@theme inline {
+  /* ---- Color ------------------------------------------------------------ */
+  --color-canvas: var(--ds-canvas);
+  --color-surface: var(--ds-surface);
+  --color-surface-2: var(--ds-surface-2);
+  --color-raised: var(--ds-raised);
+  --color-inset: var(--ds-inset);
+  --color-overlay: var(--ds-overlay);
+
+  --color-fg: var(--ds-fg);
+  --color-fg-muted: var(--ds-fg-muted);
+  --color-fg-subtle: var(--ds-fg-subtle);
+
+  --color-border: var(--ds-border);
+  --color-border-strong: var(--ds-border-strong);
+  --color-hover: var(--ds-hover);
+  --color-active: var(--ds-active);
+  --color-selected: var(--ds-selected);
+  --color-selected-strong: var(--ds-selected-strong);
+
+  --color-accent: var(--ds-accent);
+  --color-accent-hover: var(--ds-accent-hover);
+  --color-accent-active: var(--ds-accent-active);
+  --color-accent-fg: var(--ds-accent-fg);
+  --color-accent-quiet: var(--ds-accent-quiet);
+  --color-accent-text: var(--ds-accent-text);
+  --color-ring: var(--ds-ring);
+
+  --color-success: var(--ds-success);
+  --color-success-text: var(--ds-success-text);
+  --color-success-quiet: var(--ds-success-quiet);
+  --color-warning: var(--ds-warning);
+  --color-warning-text: var(--ds-warning-text);
+  --color-warning-quiet: var(--ds-warning-quiet);
+  --color-danger: var(--ds-danger);
+  --color-danger-text: var(--ds-danger-text);
+  --color-danger-quiet: var(--ds-danger-quiet);
+  --color-danger-fg: var(--ds-danger-fg);
+  --color-running: var(--ds-running);
+  --color-running-text: var(--ds-running-text);
+  --color-running-quiet: var(--ds-running-quiet);
+  --color-idle: var(--ds-idle);
+  --color-idle-quiet: var(--ds-idle-quiet);
+
+  --color-diff-add: var(--ds-diff-add);
+  --color-diff-add-bg: var(--ds-diff-add-bg);
+  --color-diff-add-bg-strong: var(--ds-diff-add-bg-strong);
+  --color-diff-del: var(--ds-diff-del);
+  --color-diff-del-bg: var(--ds-diff-del-bg);
+  --color-diff-del-bg-strong: var(--ds-diff-del-bg-strong);
+  --color-diff-mod: var(--ds-diff-mod);
+  --color-diff-mod-bg: var(--ds-diff-mod-bg);
+  --color-diff-moved: var(--ds-diff-moved);
+  --color-diff-same: var(--ds-diff-same);
+
+  --color-chart-1: var(--ds-chart-1);
+  --color-chart-2: var(--ds-chart-2);
+  --color-chart-3: var(--ds-chart-3);
+  --color-chart-4: var(--ds-chart-4);
+  --color-chart-5: var(--ds-chart-5);
+  --color-chart-6: var(--ds-chart-6);
+  --color-chart-7: var(--ds-chart-7);
+  --color-chart-8: var(--ds-chart-8);
+
+  /* ---- Compatibility aliases -------------------------------------------
+     The shadcn alias block (--color-background/card/primary/muted/destructive/
+     input) lived here during mysql-compare's Chunk 1 migration and was deleted
+     once the class sweep hit zero. Do not reintroduce it. */
+
+  /* ---- Type ------------------------------------------------------------- */
+  --font-sans: var(--ds-font-sans);
+  --font-mono: var(--ds-font-mono);
+
+  --text-2xs: 0.625rem; /* 10px */
+  --text-2xs--line-height: 0.875rem; /* 14px */
+  --text-xs: 0.6875rem; /* 11px */
+  --text-xs--line-height: 1rem; /* 16px */
+  --text-sm: 0.8125rem; /* 13px — DEFAULT UI text */
+  --text-sm--line-height: 1.125rem; /* 18px */
+  --text-base: 0.875rem; /* 14px */
+  --text-base--line-height: 1.25rem; /* 20px */
+  --text-lg: 1rem; /* 16px — page / dialog title */
+  --text-lg--line-height: 1.375rem; /* 22px */
+  --text-xl: 1.25rem; /* 20px — metric value */
+  --text-xl--line-height: 1.625rem; /* 26px */
+  --text-2xl: 1.625rem; /* 26px — hero metric */
+  --text-2xl--line-height: 2rem; /* 32px */
+
+  /* ---- Radius -----------------------------------------------------------
+     Stock sm/md/lg are kept (4/6/8) so existing rounded-md / rounded-lg call
+     sites in both Tailwind apps land correctly. Only xl is retuned: 12px is
+     too soft for a 30px-tall dense tool, 10px is not. */
+  --radius-xs: 0.1875rem; /* 3px  — kbd, micro chip           */
+  --radius-sm: 0.25rem; /* 4px  — badge, tree row           */
+  --radius-md: 0.375rem; /* 6px  — DEFAULT: button, input    */
+  --radius-lg: 0.5rem; /* 8px  — card, popover, toolbar    */
+  --radius-xl: 0.625rem; /* 10px — dialog, command palette   */
+
+  /* ---- Elevation --------------------------------------------------------- */
+  --shadow-raised: var(--ds-shadow-raised);
+  --shadow-overlay: var(--ds-shadow-overlay);
+
+  /* ---- Density (as Tailwind height/spacing utilities) -------------------- */
+  --spacing-control-xs: var(--ds-control-xs);
+  --spacing-control-sm: var(--ds-control-sm);
+  --spacing-control-md: var(--ds-control-md);
+  --spacing-control-lg: var(--ds-control-lg);
+  --spacing-row-tree: var(--ds-row-tree);
+  --spacing-row-grid: var(--ds-row-grid);
+  --spacing-row-grid-comfy: var(--ds-row-grid-comfy);
+  --spacing-row-table: var(--ds-row-table);
+  --spacing-titlebar: var(--ds-chrome-titlebar);
+  --spacing-tabstrip: var(--ds-chrome-tabstrip);
+  --spacing-toolbar: var(--ds-chrome-toolbar);
+  --spacing-statusbar: var(--ds-chrome-statusbar);
+
+  /* ---- Motion ------------------------------------------------------------ */
+  --ease-out-quint: var(--ds-ease-out);
+  --animate-indeterminate: ds-indeterminate 1.1s var(--ds-ease-in-out) infinite;
+  --animate-pulse-dot: ds-pulse-dot 1.6s ease-in-out infinite;
+  --animate-spin-slow: spin 900ms linear infinite;
+}
+
+/* --------------------------------------------------------------------------
+   6. BASE LAYER
+   -------------------------------------------------------------------------- */
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+    overflow: hidden; /* every scroll is owned by a named region, never the page */
+  }
+
+  body {
+    font-family: var(--ds-font-sans);
+    font-size: var(--text-sm); /* 13px */
+    line-height: var(--text-sm--line-height);
+    background: var(--ds-canvas);
+    color: var(--ds-fg);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Tabular figures wherever numbers must line up vertically. */
+  table,
+  .ds-tabular,
+  [data-tabular] {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ---- Focus: one ring, everywhere, no exceptions ----------------------
+     code-line-analysis already got this right globally (styles.css) and it is
+     the single best thing in its stylesheet — preserved verbatim in spirit.
+     2px ring + 2px offset means the ring is visible on top of a selected row
+     wash as well as on a plain surface. */
+  :focus-visible {
+    outline: 2px solid var(--ds-ring);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+  }
+  /* Never remove the ring; only tighten the offset where 2px would clip
+     (inside a scroll container's first row, inside a table cell). */
+  [data-focus-inset]:focus-visible {
+    outline-offset: -2px;
+  }
+  :focus:not(:focus-visible) {
+    outline: none;
+  }
+
+  ::selection {
+    background: var(--ds-selected-strong);
+    color: var(--ds-fg);
+  }
+
+  ::placeholder {
+    color: var(--ds-fg-subtle);
+  }
+
+  /* ---- Scrollbars ------------------------------------------------------- */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--ds-scrollbar-thumb) transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--ds-scrollbar-thumb);
+    border-radius: 6px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--ds-scrollbar-thumb-hover);
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   7. UTILITIES + KEYFRAMES
+   -------------------------------------------------------------------------- */
+@layer utilities {
+  /* Native window drag handle (already used by simple-diff Layout.tsx:117). */
+  .app-drag-region {
+    -webkit-app-region: drag;
+  }
+  .app-drag-region
+    :where(button, input, select, textarea, a, [role='button'], [role='tab']) {
+    -webkit-app-region: no-drag;
+  }
+
+  /* The 2px surface gap the dataviz spec requires between adjacent fills and
+     around overlapping marks — usable on DOM meters and legend swatches. */
+  .ds-mark-ring {
+    box-shadow: 0 0 0 2px var(--ds-chart-mark-ring);
+  }
+
+  /* Diff hunk gutter glyph. MANDATORY on any add/del surface: the measured
+     green/red CVD separation is ΔE 5.6 in dark, below the ΔE 6 floor. */
+  .ds-diff-gutter::before {
+    content: attr(data-sign);
+    display: inline-block;
+    width: 1ch;
+    margin-right: 0.5ch;
+    font-family: var(--ds-font-mono);
+    color: inherit;
+  }
+}
+
+@keyframes ds-indeterminate {
+  0% {
+    transform: translateX(-100%) scaleX(0.35);
+  }
+  50% {
+    transform: translateX(20%) scaleX(0.6);
+  }
+  100% {
+    transform: translateX(160%) scaleX(0.35);
+  }
+}
+
+@keyframes ds-pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   8. REDUCED MOTION
+   Indeterminate bars stop translating and become a static striped fill, so
+   "work is happening" is still legible without animation.
+   -------------------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  [data-indeterminate='true'] {
+    background-image: repeating-linear-gradient(
+      135deg,
+      var(--ds-running) 0 6px,
+      transparent 6px 12px
+    );
+  }
+}
+
+/* --------------------------------------------------------------------------
+   9. FORCED COLORS / HIGH CONTRAST
+   -------------------------------------------------------------------------- */
+@media (forced-colors: active) {
+  :focus-visible {
+    outline: 2px solid Highlight;
+  }
+  [data-status],
+  [data-diff] {
+    forced-color-adjust: none;
+  }
+}

@@ -36,17 +36,17 @@ export function TableColumnPanelDialog({
       onOpenChange={onOpenChange}
       title={t('tableData.columnsPanel')}
       description={t('tableData.columnsPanelDescription')}
-      className="max-w-2xl"
+      size="lg"
       footer={
         <>
-          <Button variant="outline" onClick={onShowAllColumns}>
+          <Button variant="secondary" onClick={onShowAllColumns}>
             {t('tableData.showAllColumns')}
           </Button>
-          <Button onClick={() => onOpenChange(false)}>{t('common.close')}</Button>
+          <Button variant="primary" onClick={() => onOpenChange(false)}>{t('common.close')}</Button>
         </>
       }
     >
-      <div className="mb-3 flex items-center justify-between gap-2 rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
+      <div className="mb-3 flex items-center justify-between gap-2 rounded-md border border-border bg-canvas px-3 py-2 text-xs text-fg-muted">
         <span>
           {t('tableData.columnsCount', {
             visible: visibleColumnCount,
@@ -68,7 +68,7 @@ export function TableColumnPanelDialog({
           return (
             <Label
               key={column.name}
-              className="flex cursor-pointer items-start gap-2 rounded-md border border-border bg-background p-2 text-foreground hover:bg-accent/60"
+              className="flex cursor-pointer items-start gap-2 rounded-md border border-border bg-canvas p-2 text-fg hover:bg-hover"
             >
               <Checkbox
                 checked={checked}
@@ -79,11 +79,13 @@ export function TableColumnPanelDialog({
               <span className="min-w-0 flex-1">
                 <span className="flex min-w-0 flex-wrap items-center gap-1">
                   <span className="truncate text-xs font-medium">{column.name}</span>
-                  {column.isPrimaryKey && <Badge variant="warning">PK</Badge>}
+                  {column.isPrimaryKey && <Badge tone="warning">PK</Badge>}
                 </span>
-                <span className="block truncate text-[10px] text-muted-foreground">{column.type}</span>
+                <span className="block truncate font-mono text-2xs text-fg-subtle">{column.type}</span>
                 {column.comment && (
-                  <span className="block truncate text-[10px] text-amber-700/90 dark:text-amber-300/90">{column.comment}</span>
+                  <span className="block truncate text-2xs text-warning-text" title={column.comment}>
+                    {column.comment}
+                  </span>
                 )}
               </span>
             </Label>

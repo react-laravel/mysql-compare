@@ -1,7 +1,23 @@
+// Diff & Sync 的视图工具栏。
+//
+// Blueprint §3.5 / §2.3. What changed and why:
+//   · the button whose *label* carried the progress and that was `disabled`
+//     while running is now a `primary` Compare with a peer **Cancel** — a
+//     compare over 40 tables is never under 1.5s, so DS §7.3 makes cancel
+//     mandatory;
+//   · progress moved to `Toolbar.progress`, a 2px line on the toolbar's bottom
+//     edge, so it costs zero layout;
+//   · "Compare rows" and "Parallel workers" left the primary surface for the
+//     `⋯` (they are also in Settings and in ⌘K — DS §9 rule 1);
+//   · "Plan sync" keeps its disabled logic but explains itself instead of
+//     being a dead control.
+import { GitCompareArrows, Square } from 'lucide-react'
 import { Badge } from '@renderer/components/ui/badge'
 import { Button } from '@renderer/components/ui/button'
-import { Checkbox } from '@renderer/components/ui/checkbox'
-import { Select } from '@renderer/components/ui/select'
+import type { MenuItem } from '@renderer/components/ui/dropdown-menu'
+import type { ProgressState } from '@renderer/components/ui/progress-bar'
+import { Toolbar } from '@renderer/components/ui/toolbar'
+import { Tooltip } from '@renderer/components/ui/tooltip'
 import { useI18n } from '@renderer/i18n'
 
 export interface DiffPanelToolbarSummary {
@@ -13,87 +29,117 @@ export interface DiffPanelToolbarSummary {
 }
 
 interface DiffPanelToolbarProps {
+  subtitle: string
   compareButtonLabel: string
   compareData: boolean
-  concurrency: number
-  concurrencyOptions: readonly number[]
   diffSummary: DiffPanelToolbarSummary | null
   loading: boolean
+  canCancel: boolean
   canPlanSync: boolean
+  planSyncDisabledReason: string
+  progress: ProgressState | null
+  progressLabel: string | null
+  overflow: MenuItem[]
   onCompare: () => void
-  onCompareDataChange: (checked: boolean) => void
-  onConcurrencyChange: (value: string) => void
+  onCancel: () => void
   onPlanSync: () => void
 }
 
 export function DiffPanelToolbar({
+  subtitle,
   compareButtonLabel,
   compareData,
-  concurrency,
-  concurrencyOptions,
   diffSummary,
   loading,
+  canCancel,
   canPlanSync,
+  planSyncDisabledReason,
+  progress,
+  progressLabel,
+  overflow,
   onCompare,
-  onCompareDataChange,
-  onConcurrencyChange,
+  onCancel,
   onPlanSync
 }: DiffPanelToolbarProps) {
   const { t } = useI18n()
+
+  const planSync = (
+    <Button size="sm" variant="secondary" disabled={!canPlanSync} onClick={onPlanSync}>
+      {t('diff.toolbar.planSync')}
+    </Button>
+  )
+
   return (
-    <div className="border-b border-border px-4 py-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="flex flex-wrap items-center gap-2 rounded-xl bg-card/15 p-1.5">
-          <Button size="sm" className="h-8 min-w-[10rem] px-3" onClick={onCompare} disabled={loading}>
+    <Toolbar
+      icon={GitCompareArrows}
+      title={t('app.diffSync')}
+      subtitle={subtitle}
+      progress={progress}
+      overflowLabel={t('common.moreActions')}
+      overflow={overflow}
+      actions={
+        <>
+          {canCancel ? (
+            <Button size="sm" variant="danger-ghost" icon={Square} onClick={onCancel}>
+              {t('common.cancel')}
+            </Button>
+          ) : null}
+          <Button
+            size="sm"
+            variant="primary"
+            loading={loading}
+            disabled={loading}
+            onClick={onCompare}
+          >
             {compareButtonLabel}
           </Button>
-          <label className="flex h-8 items-center gap-2 rounded-lg bg-background/35 px-2.5 text-xs text-muted-foreground">
-            <Checkbox
-              className="h-3.5 w-3.5"
-              checked={compareData}
-              onChange={(event) => onCompareDataChange(event.target.checked)}
-            />
-            <span>{t('diff.toolbar.compareRows')}</span>
-          </label>
-          <div className="flex h-8 items-center gap-2 rounded-lg bg-background/35 px-2.5 text-xs text-muted-foreground">
-            <span>{t('diff.toolbar.parallel')}</span>
-            <Select
-              className="h-7 w-20 border-border/50 bg-transparent px-2 text-xs"
-              value={String(concurrency)}
-              disabled={loading}
-              onChange={(event) => onConcurrencyChange(event.target.value)}
-              options={concurrencyOptions.map((value) => ({ value: String(value), label: `${value}` }))}
-            />
-          </div>
-          <Button size="sm" variant="outline" className="h-8 px-3" disabled={!canPlanSync} onClick={onPlanSync}>
-            {t('diff.toolbar.planSync')}
-          </Button>
-        </div>
-        {diffSummary && (
-          <div className="ml-auto flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-            <Badge className="border border-border/60 bg-card/70 text-muted-foreground">
-              {t('diff.toolbar.structure', { count: diffSummary.structureDiffCount })}
-            </Badge>
-            {compareData && diffSummary.checkedRowCount > 0 && (
+          {canPlanSync ? (
+            planSync
+          ) : (
+            // A disabled button never receives pointer events, so the tooltip
+            // hangs off a wrapper (PRIMITIVES §10).
+            <Tooltip content={planSyncDisabledReason} side="bottom">
+              <span className="inline-flex">{planSync}</span>
+            </Tooltip>
+          )}
+        </>
+      }
+      filters={
+        progressLabel || diffSummary ? (
+          <div
+            className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-fg-muted"
+            aria-live="polite"
+          >
+            {progressLabel ? <span className="text-fg">{progressLabel}</span> : null}
+            {diffSummary ? (
               <>
-                <Badge className="border border-border/60 bg-card/70 text-muted-foreground">
-                  {t('diff.toolbar.checked', { count: diffSummary.checkedRowCount })}
+                <Badge>
+                  {t('diff.toolbar.structure', { count: diffSummary.structureDiffCount })}
                 </Badge>
-                {diffSummary.rowsIdentical ? (
-                  <Badge variant="success">{t('diff.toolbar.rowsIdentical')}</Badge>
-                ) : (
-                  <Badge className="border border-border/60 bg-card/70 text-muted-foreground">
-                    {t('diff.toolbar.changed', { count: diffSummary.rowChangedTableCount })}
+                {compareData && diffSummary.checkedRowCount > 0 ? (
+                  <>
+                    <Badge>
+                      {t('diff.toolbar.checked', { count: diffSummary.checkedRowCount })}
+                    </Badge>
+                    {diffSummary.rowsIdentical ? (
+                      <Badge tone="success">{t('diff.toolbar.rowsIdentical')}</Badge>
+                    ) : (
+                      <Badge>
+                        {t('diff.toolbar.changed', { count: diffSummary.rowChangedTableCount })}
+                      </Badge>
+                    )}
+                  </>
+                ) : null}
+                {compareData && diffSummary.rowSkippedTableCount > 0 ? (
+                  <Badge tone="warning">
+                    {t('diff.toolbar.skipped', { count: diffSummary.rowSkippedTableCount })}
                   </Badge>
-                )}
+                ) : null}
               </>
-            )}
-            {compareData && diffSummary.rowSkippedTableCount > 0 && (
-              <Badge variant="warning">{t('diff.toolbar.skipped', { count: diffSummary.rowSkippedTableCount })}</Badge>
-            )}
+            ) : null}
           </div>
-        )}
-      </div>
-    </div>
+        ) : null
+      }
+    />
   )
 }

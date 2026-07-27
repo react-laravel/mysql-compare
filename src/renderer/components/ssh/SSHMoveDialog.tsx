@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Button } from '@renderer/components/ui/button'
 import { Dialog } from '@renderer/components/ui/dialog'
+import { Field } from '@renderer/components/ui/field'
 import { Input } from '@renderer/components/ui/input'
 import { useI18n } from '@renderer/i18n'
 import type { SSHFileEntry } from '../../../shared/types'
@@ -34,31 +35,25 @@ export function SSHMoveDialog({ entry, open, busy, onOpenChange, onConfirm }: SS
       description={entry ? t('sshFiles.moveDialog.description', { name: entry.name }) : undefined}
       footer={
         <>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
+          <Button variant="secondary" onClick={() => onOpenChange(false)} disabled={busy}>
             {t('common.cancel')}
           </Button>
-          <Button onClick={() => onConfirm({ directory, name })} disabled={busy || !entry}>
+          <Button variant="primary" onClick={() => onConfirm({ directory, name })} disabled={busy || !entry}>
             {t('sshFiles.moveDialog.confirm')}
           </Button>
         </>
       }
     >
-      <div className="space-y-4">
-        <label className="block space-y-1 text-sm">
-          <span className="text-muted-foreground">{t('sshFiles.moveDialog.destinationFolder')}</span>
-          <Input
-            value={directory}
-            onChange={(event) => setDirectory(event.target.value)}
-            className="font-mono text-xs"
-          />
-        </label>
-        <label className="block space-y-1 text-sm">
-          <span className="text-muted-foreground">{t('sshFiles.moveDialog.name')}</span>
-          <Input value={name} onChange={(event) => setName(event.target.value)} className="font-mono text-xs" />
-        </label>
-        <div className="rounded-md border border-border/70 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+      <div className="flex flex-col gap-3">
+        <Field label={t('sshFiles.moveDialog.destinationFolder')}>
+          <Input mono value={directory} onChange={(event) => setDirectory(event.target.value)} />
+        </Field>
+        <Field label={t('sshFiles.moveDialog.name')}>
+          <Input mono value={name} onChange={(event) => setName(event.target.value)} />
+        </Field>
+        <div className="rounded-md border border-border bg-inset px-3 py-2 text-xs text-fg-muted">
           <div>{t('sshFiles.moveDialog.preview')}</div>
-          <div className="mt-1 break-all font-mono text-foreground">{previewPath}</div>
+          <div className="mt-1 break-all font-mono text-fg">{previewPath}</div>
         </div>
       </div>
     </Dialog>

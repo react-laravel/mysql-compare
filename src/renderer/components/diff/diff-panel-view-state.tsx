@@ -43,10 +43,10 @@ export function buildDiffPanelTabItems(
       label: (
         <span className="flex items-center gap-2">
           <span>{t('diff.tabs.tables')}</span>
-          <Badge className="border border-border/60 bg-card/70 text-muted-foreground">
+          <Badge>
             {t('diff.tabs.sBadge', { count: sourceTableCount })}
           </Badge>
-          <Badge className="border border-border/60 bg-card/70 text-muted-foreground">
+          <Badge>
             {t('diff.tabs.tBadge', { count: targetTableCount })}
           </Badge>
         </span>
@@ -57,11 +57,11 @@ export function buildDiffPanelTabItems(
       label: (
         <span className="flex items-center gap-2">
           <span>{t('diff.tabs.status')}</span>
-          <Badge className="border border-border/60 bg-card/70 text-muted-foreground">
+          <Badge>
             {comparisonEntryCount}
           </Badge>
           {compareErrorCount > 0 && (
-            <Badge variant="destructive">{t('diff.tabs.errors', { count: compareErrorCount })}</Badge>
+            <Badge tone="danger">{t('diff.tabs.errors', { count: compareErrorCount })}</Badge>
           )}
         </span>
       )
@@ -71,11 +71,11 @@ export function buildDiffPanelTabItems(
       label: (
         <span className="flex items-center gap-2">
           <span>{t('diff.tabs.structureDiff')}</span>
-          <Badge className="border border-border/60 bg-card/70 text-muted-foreground">
+          <Badge>
             {t('diff.tabs.changed', { count: visibleSchemaDiffCount })}
           </Badge>
           {compareErrorCount > 0 && (
-            <Badge variant="destructive">{t('diff.tabs.errors', { count: compareErrorCount })}</Badge>
+            <Badge tone="danger">{t('diff.tabs.errors', { count: compareErrorCount })}</Badge>
           )}
         </span>
       )
@@ -87,16 +87,16 @@ export function buildDiffPanelTabItems(
             label: (
               <span className="flex items-center gap-2">
                 <span>{t('diff.tabs.contentDiff')}</span>
-                <Badge className="border border-border/60 bg-card/70 text-muted-foreground">
+                <Badge>
                   {t('diff.tabs.changed', { count: rowChangedTableCount })}
                 </Badge>
                 {rowSkippedTableCount > 0 && (
-                  <Badge variant="warning">
+                  <Badge tone="warning">
                     {t('diff.tabs.skipped', { count: rowSkippedTableCount })}
                   </Badge>
                 )}
                 {compareErrorCount > 0 && (
-                  <Badge variant="destructive">
+                  <Badge tone="danger">
                     {t('diff.tabs.errors', { count: compareErrorCount })}
                   </Badge>
                 )}

@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Braces } from 'lucide-react'
+import { IconButton } from '@renderer/components/ui/icon-button'
 import { useI18n } from '@renderer/i18n'
 import type { ColumnInfo } from '../../../shared/types'
 import { JsonViewerDialog } from './JsonViewerDialog'
@@ -18,17 +19,18 @@ export function JsonViewerTrigger({ column, row, content, readOnly = false, onSa
 
   return (
     <>
-      <button
-        type="button"
-        className="shrink-0 rounded border border-border bg-background p-1 text-muted-foreground hover:text-foreground"
-        title={t('tableData.viewJson')}
+      <IconButton
+        icon={Braces}
+        label={t('tableData.viewJson')}
+        size="xs"
+        variant="secondary"
+        className="shrink-0"
+        data-focus-inset
         onClick={(event) => {
           event.stopPropagation()
           setOpen(true)
         }}
-      >
-        <Braces className="h-3 w-3" />
-      </button>
+      />
       {open && (
         <JsonViewerDialog
           state={{ column, row, content }}

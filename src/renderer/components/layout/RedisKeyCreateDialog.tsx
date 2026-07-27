@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Button } from '@renderer/components/ui/button'
 import { Dialog } from '@renderer/components/ui/dialog'
-import { Input } from '@renderer/components/ui/input'
+import { Input, Textarea } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
 import { Select } from '@renderer/components/ui/select'
 import { useI18n } from '@renderer/i18n'
@@ -108,13 +108,13 @@ export function RedisKeyCreateDialog({
       onOpenChange={onOpenChange}
       title={t('redis.createKey')}
       description={`${dialog.connection.name} / ${dialog.database}`}
-      className="max-w-2xl"
+      size="lg"
       footer={
         <>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
+          <Button variant="secondary" onClick={() => onOpenChange(false)} disabled={busy}>
             {t('common.cancel')}
           </Button>
-          <Button onClick={submit} disabled={busy || !keyName.trim()}>
+          <Button variant="primary" onClick={submit} disabled={busy || !keyName.trim()}>
             {t('common.insert')}
           </Button>
         </>
@@ -158,27 +158,27 @@ export function RedisKeyCreateDialog({
         {type === 'stream' ? (
           <div className="md:col-span-2">
             <Label className="mb-1 block">{t('redis.fieldsJson')}</Label>
-            <textarea
+            <Textarea
+              mono
               value={fieldsJson}
               onChange={(event) => setFieldsJson(event.target.value)}
               rows={7}
-              className="w-full rounded-md border border-input bg-background p-2 font-mono text-xs"
             />
           </div>
         ) : type !== 'set' && type !== 'zset' ? (
           <div className="md:col-span-2">
             <Label className="mb-1 block">{t('common.content')}</Label>
-            <textarea
+            <Textarea
+              mono
               value={value}
               onChange={(event) => setValue(event.target.value)}
               rows={7}
-              className="w-full rounded-md border border-input bg-background p-2 font-mono text-xs"
             />
           </div>
         ) : null}
       </div>
       {error && (
-        <div className="mt-3 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-700 dark:text-red-300">
+        <div role="alert" className="mt-3 rounded-md border border-danger/30 bg-danger-quiet px-3 py-2 text-sm text-danger-text">
           {error}
         </div>
       )}

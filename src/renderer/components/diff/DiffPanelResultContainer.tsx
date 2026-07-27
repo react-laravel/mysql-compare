@@ -5,6 +5,7 @@ interface DiffPanelResultContainerProps<T extends string> {
   resultTab: T
   tabItems: { value: T; label: ReactNode }[]
   onResultTabChange: (value: T) => void
+  tabListLabel: string
   children: ReactNode
 }
 
@@ -12,17 +13,20 @@ export function DiffPanelResultContainer<T extends string>({
   resultTab,
   tabItems,
   onResultTabChange,
+  tabListLabel,
   children
 }: DiffPanelResultContainerProps<T>) {
   return (
-    <div className="flex min-h-[32rem] min-w-0 flex-1 flex-col rounded-xl border border-border/60 bg-card/10">
+    <div className="flex min-w-0 flex-1 flex-col rounded-lg border border-border bg-surface">
       <Tabs
-        className="px-4 pt-3"
+        aria-label={tabListLabel}
+        className="px-3"
+        size="sm"
         value={resultTab}
         onValueChange={(value) => onResultTabChange(value as T)}
         items={tabItems}
       />
-      <div className="flex min-h-0 flex-1 flex-col p-4 pt-3">{children}</div>
+      <div className="flex min-w-0 flex-1 flex-col p-3">{children}</div>
     </div>
   )
 }

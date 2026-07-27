@@ -41,6 +41,25 @@ export interface RenameDialogState {
   table: string
 }
 
+/**
+ * Every destructive sidebar action funnels through one `ConfirmDialog`
+ * (blueprint §2.8), so the tree row's `⋯`, the right-click menu and the command
+ * palette cannot drift into three different confirmations — or into a native
+ * `confirm()`, which is what copy-table and delete-connection used to do.
+ */
+export type SidebarConfirmRequest =
+  | {
+      kind: 'copy-table'
+      connection: SafeConnection
+      database: string
+      table: string
+      targetTable: string
+    }
+  | { kind: 'truncate-table'; connection: SafeConnection; database: string; table: string }
+  | { kind: 'drop-table'; connection: SafeConnection; database: string; table: string }
+  | { kind: 'drop-database'; connection: SafeConnection; database: string }
+  | { kind: 'delete-connection'; connection: SafeConnection }
+
 export interface CreateSQLDialogState {
   title: string
   sql: string
@@ -59,6 +78,16 @@ export interface ExportDatabaseDialogState {
 }
 
 export interface ImportDialogState {
+  connection: SafeConnection
+  database: string
+  table: string
+}
+
+/**
+ * "Compare with…" from a table row (blueprint §2.4). It carries the *source*
+ * endpoint; the dialog picks the target and opens the `table-compare` tab.
+ */
+export interface TableCompareTargetDialogState {
   connection: SafeConnection
   database: string
   table: string

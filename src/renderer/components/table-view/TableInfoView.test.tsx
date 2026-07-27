@@ -3,9 +3,26 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useI18nStore } from '@renderer/i18n'
+import { useConnectionStore } from '@renderer/store/connection-store'
+import { useSidebarStore } from '@renderer/store/sidebar-store'
 import { useUIStore } from '@renderer/store/ui-store'
-import type { TableSchema } from '../../../shared/types'
+import type { SafeConnection, TableSchema } from '../../../shared/types'
 import { TableInfoView } from './TableInfoView'
+
+const connection: SafeConnection = {
+  id: 'conn-1',
+  engine: 'mysql',
+  name: 'prod',
+  host: '127.0.0.1',
+  port: 3306,
+  username: 'root',
+  useSSH: false,
+  createdAt: 0,
+  updatedAt: 0,
+  hasPassword: true,
+  hasSSHPassword: false,
+  hasSSHPrivateKey: false
+}
 
 const { dropTableMock, executeSQLMock, getTableMock } = vi.hoisted(() => ({
   dropTableMock: vi.fn(),
@@ -85,6 +102,8 @@ describe('TableInfoView', () => {
       closeTableTabs: vi.fn(),
       markTableDropped: vi.fn()
     })
+    useConnectionStore.setState({ connections: [connection] })
+    useSidebarStore.getState().setPendingConfirm(null)
   })
 
   afterEach(() => {
@@ -95,9 +114,7 @@ describe('TableInfoView', () => {
     })
   })
 
-  it('renders table details and deletes the table from the danger zone', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
-
+  it('renders table details and routes Drop table through the shared confirmation', async () => {
     render(<TableInfoView connectionId="conn-1" database="app_db" table="users" />)
 
     await screen.findByText('User accounts')
@@ -108,21 +125,19 @@ describe('TableInfoView', () => {
     expect(screen.getByText('CREATE TABLE users (id int primary key)')).toBeTruthy()
     expect(screen.getByText('Danger Zone')).toBeTruthy()
 
+    // Blueprint §2.8 / §3.3: the Info tab used to call a native `confirm()`
+    // while the tree opened a themed dialog for the very same operation. Both
+    // now request the one `sidebar-store.pendingConfirm`.
     fireEvent.click(screen.getByRole('button', { name: 'Delete Table' }))
 
     await waitFor(() =>
-      expect(dropTableMock).toHaveBeenCalledWith({
-        connectionId: 'conn-1',
+      expect(useSidebarStore.getState().pendingConfirm).toEqual({
+        kind: 'drop-table',
+        connection,
         database: 'app_db',
         table: 'users'
       })
     )
-
-    expect(confirmSpy).toHaveBeenCalledWith(
-      'Drop table "app_db.users"? Its structure and all data will be permanently deleted. This cannot be undone.'
-    )
-    expect(useUIStore.getState().markTableDropped).toHaveBeenCalledWith('conn-1', 'app_db', 'users')
-    expect(useUIStore.getState().closeTableTabs).toHaveBeenCalledWith('conn-1', 'app_db', 'users')
-    expect(useUIStore.getState().showToast).toHaveBeenCalledWith('Dropped table users', 'success')
+    expect(dropTableMock).not.toHaveBeenCalled()
   })
 })

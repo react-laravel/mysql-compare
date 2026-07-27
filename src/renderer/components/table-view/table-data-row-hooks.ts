@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from 'react'
+import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { api, unwrap } from '@renderer/lib/api'
 import type { Translator } from '@renderer/i18n'
 import { pickPK } from '@renderer/lib/utils'
@@ -28,16 +28,20 @@ interface UseTableDataRowActionsResult {
   editing: TableDataEditingState | null
   selectedRows: Record<string, unknown>[]
   exportScopes: ExportScope[]
-  allRowsOnPageSelected: boolean
-  someRowsOnPageSelected: boolean
-  selectionShiftPressedRef: MutableRefObject<boolean>
+  /** the rows a `ConfirmDialog` is currently asking about — never `confirm()` */
+  pendingDelete: number[] | null
   setEditing: Dispatch<SetStateAction<TableDataEditingState | null>>
   onToggleSelect: (rowIndex: number, shiftKey: boolean) => void
+  /** the grid's select-all header checkbox (`DataTable` computes its state) */
   onToggleSelectPage: () => void
   onClearSelection: () => void
   onCopySelectedRows: () => Promise<void>
   onRowClick: (rowIndex: number, shiftKey: boolean) => void
-  onDeleteSelected: () => Promise<void>
+  onDeleteSelected: () => void
+  /** row context menu → "Delete row" */
+  requestDeleteRows: (rowIndexes: number[]) => void
+  cancelDeleteRows: () => void
+  confirmDeleteRows: () => Promise<void>
   submitEditing: (values: Record<string, unknown>, pkOld?: Record<string, unknown>) => Promise<void>
 }
 
@@ -52,19 +56,21 @@ export function useTableDataRowActions({
 }: UseTableDataRowActionsArgs): UseTableDataRowActionsResult {
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [editing, setEditing] = useState<TableDataEditingState | null>(null)
+  const [pendingDelete, setPendingDelete] = useState<number[] | null>(null)
   const selectionAnchorRef = useRef<number | null>(null)
-  const selectionShiftPressedRef = useRef(false)
 
   useEffect(() => {
     setSelected(new Set())
     selectionAnchorRef.current = null
     setEditing(null)
+    setPendingDelete(null)
   }, [connectionId, database, table])
 
   useEffect(() => {
     if (!data) return
     setSelected(new Set())
     selectionAnchorRef.current = null
+    setPendingDelete(null)
   }, [data])
 
   const selectedRows = useMemo(
@@ -81,13 +87,6 @@ export function useTableDataRowActions({
     () => (selectedRows.length > 0 ? ['all', 'filtered', 'page', 'selected'] : ['all', 'filtered', 'page']),
     [selectedRows.length]
   )
-  const allRowsOnPageSelected = Boolean(
-    data?.hasPrimaryKey && data.rows.length > 0 && selected.size === data.rows.length
-  )
-  const someRowsOnPageSelected = Boolean(
-    data?.hasPrimaryKey && selected.size > 0 && selected.size < data.rows.length
-  )
-
   const onToggleSelect = (rowIndex: number, shiftKey: boolean) => {
     setSelected((current) => {
       const nextSelection = toggleRowSelection({
@@ -137,14 +136,26 @@ export function useTableDataRowActions({
     onToggleSelect(rowIndex, shiftKey)
   }
 
-  const onDeleteSelected = async () => {
-    if (!data || selected.size === 0) return
+  // The native `confirm()` this replaced ignored the theme, the type scale and
+  // the focus ring, and disagreed with the themed dialog the tree already used
+  // for the same class of action (blueprint §2.8).
+  const requestDeleteRows = (rowIndexes: number[]) => {
+    if (!data || rowIndexes.length === 0) return
     if (!data.hasPrimaryKey) {
       showToast(t('tableData.refuseNoPrimaryKey'), 'error')
       return
     }
-    if (!confirm(t('tableData.confirmDeleteRows', { count: selected.size }))) return
-    const pkRows = Array.from(selected).map((index) => pickPK(data.rows[index]!, data.primaryKey))
+    setPendingDelete(rowIndexes)
+  }
+
+  const confirmDeleteRows = async () => {
+    if (!data || !pendingDelete || pendingDelete.length === 0) return
+    const pkRows = pendingDelete.flatMap((index) => {
+      const row = data.rows[index]
+      return row ? [pickPK(row, data.primaryKey)] : []
+    })
+    setPendingDelete(null)
+    if (pkRows.length === 0) return
     try {
       const result = await unwrap(api.db.deleteRows({ connectionId, database, table, pkRows }))
       showToast(t('tableData.rowsDeleted', { count: (result as { affectedRows: number }).affectedRows }), 'success')
@@ -153,6 +164,8 @@ export function useTableDataRowActions({
       showToast((error as Error).message, 'error')
     }
   }
+
+  const onDeleteSelected = () => requestDeleteRows(Array.from(selected))
 
   const submitEditing = async (values: Record<string, unknown>, pkOld?: Record<string, unknown>) => {
     if (!editing) return
@@ -179,9 +192,7 @@ export function useTableDataRowActions({
     editing,
     selectedRows,
     exportScopes,
-    allRowsOnPageSelected,
-    someRowsOnPageSelected,
-    selectionShiftPressedRef,
+    pendingDelete,
     setEditing,
     onToggleSelect,
     onToggleSelectPage,
@@ -189,6 +200,9 @@ export function useTableDataRowActions({
     onCopySelectedRows,
     onRowClick,
     onDeleteSelected,
+    requestDeleteRows,
+    cancelDeleteRows: () => setPendingDelete(null),
+    confirmDeleteRows,
     submitEditing
   }
 }

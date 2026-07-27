@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { api, unwrap } from '@renderer/lib/api'
+import { useSettingsStore } from '@renderer/store/settings-store'
 import type { ColumnInfo, QueryRowsResult } from '../../../shared/types'
 
 type ToastLevel = 'info' | 'error' | 'success'
@@ -22,6 +23,8 @@ interface UseTableDataQueryArgs {
 interface UseTableDataQueryResult {
   data: QueryRowsResult | null
   loading: boolean
+  /** drives `EmptyState variant="error"` with a Retry action (DS §7.5) */
+  error: Error | null
   page: number
   pageDraft: string
   pageSize: number
@@ -59,16 +62,20 @@ export function useTableDataQuery({
   showToast
 }: UseTableDataQueryArgs): UseTableDataQueryResult {
   const [data, setData] = useState<QueryRowsResult | null>(null)
+  const [error, setError] = useState<Error | null>(null)
   const [page, setPage] = useState(1)
   const [pageDraft, setPageDraft] = useState('1')
-  const [pageSize, setPageSize] = useState(100)
+  // Settings supply the *initial* value only — changing the default must not
+  // reshuffle a table the user has already tuned.
+  const settings = useSettingsStore.getState()
+  const [pageSize, setPageSize] = useState(settings.defaultPageSize)
   const [where, setWhere] = useState('')
   const [appliedWhere, setAppliedWhere] = useState('')
   const [orderBy, setOrderBy] = useState<TableDataSortOrder>()
   const [loading, setLoading] = useState(false)
   const [visibleColumns, setVisibleColumnsState] = useState<Set<string>>(new Set())
-  const [wrapCells, setWrapCells] = useState(false)
-  const [density, setDensity] = useState<'compact' | 'comfortable'>('compact')
+  const [wrapCells, setWrapCells] = useState(settings.wrapCells)
+  const [density, setDensity] = useState<'compact' | 'comfortable'>(settings.density)
   const [reloadToken, setReloadToken] = useState(0)
   const requestIdRef = useRef(0)
   const orderByKey = orderBy ? `${orderBy.column}:${orderBy.dir}` : ''
@@ -84,6 +91,7 @@ export function useTableDataQuery({
     setAppliedWhere('')
     setVisibleColumnsState(new Set())
     setData(null)
+    setError(null)
   }, [connectionId, database, table])
 
   useEffect(() => {
@@ -105,10 +113,14 @@ export function useTableDataQuery({
         )
         if (requestId !== requestIdRef.current) return
         setData(result)
-      } catch (error) {
+        setError(null)
+      } catch (caught) {
         if (requestId !== requestIdRef.current) return
         setData(null)
-        showToast((error as Error).message, 'error')
+        // The view renders the failure itself; the toast is the "you navigated
+        // away" channel, so both stay.
+        setError(caught instanceof Error ? caught : new Error(String(caught)))
+        showToast((caught as Error).message, 'error')
       } finally {
         if (requestId === requestIdRef.current) {
           setLoading(false)
@@ -235,6 +247,7 @@ export function useTableDataQuery({
   return {
     data,
     loading,
+    error,
     page,
     pageDraft,
     pageSize,

@@ -1,11 +1,45 @@
 // 用于在右侧主区域切换显示什么：表数据 / 表结构 / diff
-import { create } from 'zustand'
+import { create, type StateCreator } from 'zustand'
+import { persist } from 'zustand/middleware'
+import { safeJSONStorage } from './persist'
+import { toast } from './toast-store'
 import type { DbEngine, ExportDatabaseRequest } from '../../shared/types'
 
-let toastTimer: ReturnType<typeof setTimeout> | null = null
-const tabCloseGuards = new Map<string, () => boolean>()
+/**
+ * Why a guard is being asked.
+ *
+ * `close` — the user asked to close this one tab, so the owning view may open
+ * its own `ConfirmDialog` and answer `false` for now (the confirm re-issues the
+ * close). `check` — somebody only wants to know whether the tab is clean; the
+ * guard must answer without side effects, because the caller owns the prompt.
+ *
+ * The reason exists because native `confirm()` used to make this distinction
+ * unnecessary: it blocked the thread and returned a boolean. A themed dialog
+ * cannot, so the *asker* has to say whether it can cope with a prompt.
+ */
+export type TabCloseReason = 'close' | 'check'
+
+/**
+ * Close guards are live callbacks (an editor asking "discard unsaved changes?"),
+ * so they stay a module-level map and are deliberately **not** persisted.
+ */
+const tabCloseGuards = new Map<string, (reason: TabCloseReason) => boolean>()
+
+export const WORKSPACE_STORAGE_KEY = 'mysql-compare:workspace'
+export const WORKSPACE_STORAGE_VERSION = 1
+
+/**
+ * Tab kinds that cannot survive a relaunch: `ssh-terminal` is a live PTY and
+ * `database-export` is a one-shot job. Everything else lazy-loads, so restoring
+ * it costs nothing until the user looks at it.
+ */
+const VOLATILE_TAB_KINDS: ReadonlySet<string> = new Set(['ssh-terminal', 'database-export'])
 
 export type TableViewTabKind = 'data' | 'structure' | 'info'
+
+export function isTableViewTabKind(value: unknown): value is TableViewTabKind {
+  return value === 'data' || value === 'structure' || value === 'info'
+}
 
 export type RightView =
   | { kind: 'empty' }
@@ -62,6 +96,22 @@ export interface DatabaseDropEvent {
   database: string
 }
 
+/**
+ * "Compare this database…" from a database row (blueprint §2.2 entrance 3).
+ *
+ * It is a one-shot event rather than a field on `RightView.diff` on purpose:
+ * `getTabId` collapses every diff view to the single `diff` tab, so a prefill
+ * carried on the view would either be persisted and silently re-applied on the
+ * next launch, or lost when the tab already exists. The incrementing `id`
+ * mirrors `latestTableDropEvent` and lets `DiffPanel` apply the same
+ * source twice in a row.
+ */
+export interface DiffPrefillRequest {
+  id: number
+  connectionId: string
+  database: string
+}
+
 interface UIState {
   rightView: RightView
   workspaceTabs: WorkspaceTab[]
@@ -69,6 +119,7 @@ interface UIState {
   tableReloadTokens: Record<string, number>
   latestDatabaseDropEvent: DatabaseDropEvent | null
   latestTableDropEvent: TableDropEvent | null
+  latestDiffPrefillRequest: DiffPrefillRequest | null
   setRightView: (v: RightView) => void
   setActiveTab: (tabId: string) => void
   closeTab: (tabId: string) => void
@@ -76,8 +127,12 @@ interface UIState {
   closeTabsToRight: (tabId: string) => void
   closeAllTabs: () => void
   moveTab: (tabId: string, targetTabId: string) => void
-  registerTabCloseGuard: (tabId: string, guard: () => boolean) => () => void
-  confirmSSHPathTabRetarget: (connectionId: string, oldPath: string) => boolean
+  registerTabCloseGuard: (tabId: string, guard: (reason: TabCloseReason) => boolean) => () => void
+  /**
+   * `true` when an open SSH editor under `oldPath` has unsaved changes. The
+   * caller (the file manager) owns the confirmation — this is only the query.
+   */
+  hasUnsavedSSHPathTabs: (connectionId: string, oldPath: string) => boolean
   closeDatabaseTabs: (connectionId: string, database: string) => void
   closeConnectionDatabaseTabs: (connectionId: string) => void
   renameTableTabs: (connectionId: string, database: string, oldTable: string, newTable: string) => void
@@ -86,9 +141,21 @@ interface UIState {
   refreshTableData: (connectionId: string, database: string, table: string) => void
   markDatabaseDropped: (connectionId: string, database: string) => void
   markTableDropped: (connectionId: string, database: string, table: string) => void
-  toast: { message: string; level: 'info' | 'error' | 'success' } | null
+  /** Opens (or focuses) the Diff & Sync tab with its source endpoint prefilled. */
+  requestDiffCompare: (connectionId: string, database: string) => void
+  /**
+   * Data / Structure / Info lives on the tab's view, not in `Workspace`'s local
+   * state. It gets its own action because `getTabId` does not include
+   * `tableTab` — routing it through `setRightView` would recreate the tab
+   * object (and reset scroll/selection) on every sub-tab click.
+   */
+  setTableTab: (tabId: string, tableTab: TableViewTabKind) => void
+  /**
+   * Thin adapter over the stacking `toast-store`. The single-toast state and
+   * its module-level 3s timer are gone — that timer is why the Redis
+   * truncation warning used to vanish with no marker left behind.
+   */
   showToast: (message: string, level?: 'info' | 'error' | 'success') => void
-  clearToast: () => void
 }
 
 function isSameOrDescendantRemotePath(path: string, root: string): boolean {
@@ -144,8 +211,15 @@ function viewReferencesDatabaseConnection(view: WorkspaceView, connectionId: str
   )
 }
 
+/**
+ * There is only ever one Diff & Sync tab, so its id is a constant. `job-store`
+ * entries created by the diff use it as their `tabId` — that is what puts the
+ * compare on the tab's status dot and under `⌘.`.
+ */
+export const DIFF_TAB_ID = 'diff'
+
 function getTabId(view: WorkspaceView): string {
-  if (view.kind === 'diff') return 'diff'
+  if (view.kind === 'diff') return DIFF_TAB_ID
   if (view.kind === 'database') return `database:${view.connectionId}:${view.database}`
   if (view.kind === 'sql') return `sql:${view.connectionId}:${view.database}`
   if (view.kind === 'database-export') return `database-export:${view.exportTaskId}`
@@ -187,6 +261,17 @@ function getTabTitle(view: WorkspaceView): string {
   return ''
 }
 
+/**
+ * The Data/Structure/Info sub-tab lives on the view, so re-opening a table that
+ * is already open must not silently reset it — that is the behaviour the local
+ * `tableTabs` map in `Workspace.tsx` used to provide.
+ */
+function mergeTableTab(next: WorkspaceView, previous: WorkspaceView | undefined): WorkspaceView {
+  if (next.kind !== 'table' || next.tableTab) return next
+  if (previous?.kind !== 'table' || !previous.tableTab) return next
+  return { ...next, tableTab: previous.tableTab }
+}
+
 function createTab(view: WorkspaceView): WorkspaceTab {
   return {
     id: getTabId(view),
@@ -210,8 +295,8 @@ function pickActiveState(tabs: WorkspaceTab[], preferredIndex: number): ActiveSt
   }
 }
 
-function tabCanClose(tabId: string): boolean {
-  return tabCloseGuards.get(tabId)?.() ?? true
+function tabCanClose(tabId: string, reason: TabCloseReason = 'close'): boolean {
+  return tabCloseGuards.get(tabId)?.(reason) ?? true
 }
 
 function pickActiveById(tabs: WorkspaceTab[], activeTabId: string | null, preferredTabId?: string): ActiveState {
@@ -232,13 +317,120 @@ function pickActiveById(tabs: WorkspaceTab[], activeTabId: string | null, prefer
   }
 }
 
-export const useUIStore = create<UIState>((set) => ({
+export interface PersistedUIState {
+  workspaceTabs: WorkspaceTab[]
+  activeTabId: string | null
+  rightView: RightView
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function hasStrings(view: Record<string, unknown>, keys: string[]): boolean {
+  return keys.every((key) => typeof view[key] === 'string')
+}
+
+/**
+ * Persisted JSON is user-editable and survives across app versions, so every
+ * restored tab is shape-checked before it reaches a view that would crash on it.
+ */
+function isRestorableView(value: unknown): value is WorkspaceView {
+  if (!isRecord(value)) return false
+  const kind = value.kind
+  if (typeof kind !== 'string' || VOLATILE_TAB_KINDS.has(kind)) return false
+
+  switch (kind) {
+    case 'diff':
+      return true
+    case 'database':
+      return hasStrings(value, ['connectionId', 'database'])
+    case 'sql':
+      return hasStrings(value, ['connectionId', 'database'])
+    case 'table':
+      return hasStrings(value, ['connectionId', 'database', 'table'])
+    case 'table-compare':
+      return (
+        hasStrings(value, [
+          'compareSessionId',
+          'sourceConnectionId',
+          'sourceDatabase',
+          'targetConnectionId',
+          'targetDatabase',
+          'table'
+        ]) &&
+        Array.isArray(value.comparedTables) &&
+        Array.isArray(value.diffTables)
+      )
+    case 'ssh-files':
+      return hasStrings(value, ['connectionId', 'connectionName'])
+    case 'ssh-editor':
+      return hasStrings(value, ['connectionId', 'connectionName', 'path'])
+    default:
+      return false
+  }
+}
+
+/**
+ * `tableTab` used to be an ephemeral `useState` map in `Workspace.tsx`; it is
+ * persisted state now, so an unknown value survives a restart and leaves the
+ * Data/Structure/Info strip with nothing selected. Drop the value, keep the tab
+ * — losing an open table over one bad enum would be the worse trade.
+ */
+function normalizeRestoredView(view: WorkspaceView): WorkspaceView {
+  if (view.kind !== 'table') return view
+  if (view.tableTab === undefined || isTableViewTabKind(view.tableTab)) return view
+  const { tableTab: _invalid, ...rest } = view
+  return rest
+}
+
+/**
+ * Rebuilds `workspaceTabs` / `activeTabId` / `rightView` from persisted JSON.
+ * Volatile and malformed tabs are dropped, ids are de-duplicated, and the
+ * active view is recomputed from the surviving tab rather than trusted — the
+ * three fields must not be able to disagree after a restore.
+ */
+export function restorePersistedUIState(persisted: unknown): PersistedUIState {
+  const empty: PersistedUIState = { workspaceTabs: [], activeTabId: null, rightView: { kind: 'empty' } }
+  if (!isRecord(persisted)) return empty
+
+  const rawTabs = Array.isArray(persisted.workspaceTabs) ? persisted.workspaceTabs : []
+  const seen = new Set<string>()
+  const workspaceTabs: WorkspaceTab[] = []
+
+  for (const raw of rawTabs) {
+    if (!isRecord(raw)) continue
+    if (!isRestorableView(raw.view)) continue
+    const view = normalizeRestoredView(raw.view)
+    const id = getTabId(view)
+    if (seen.has(id)) continue
+    seen.add(id)
+    workspaceTabs.push({ id, title: typeof raw.title === 'string' ? raw.title : getTabTitle(view), view })
+  }
+
+  if (workspaceTabs.length === 0) return empty
+
+  const activeTabId = typeof persisted.activeTabId === 'string' ? persisted.activeTabId : null
+  if (activeTabId === null) {
+    // The workspace was showing the empty state with tabs still open.
+    return { workspaceTabs, activeTabId: null, rightView: { kind: 'empty' } }
+  }
+
+  const activeTab = workspaceTabs.find((tab) => tab.id === activeTabId) ?? workspaceTabs[0]!
+  return { workspaceTabs, activeTabId: activeTab.id, rightView: activeTab.view }
+}
+
+const uiStateCreator: StateCreator<UIState, [['zustand/persist', unknown]], [], UIState> = (
+  set,
+  get
+) => ({
   rightView: { kind: 'empty' },
   workspaceTabs: [],
   activeTabId: null,
   tableReloadTokens: {},
   latestDatabaseDropEvent: null,
   latestTableDropEvent: null,
+  latestDiffPrefillRequest: null,
   setRightView: (view) =>
     set((state) => {
       if (view.kind === 'empty') {
@@ -246,10 +438,13 @@ export const useUIStore = create<UIState>((set) => ({
       }
       const tabId = getTabId(view)
       const existing = state.workspaceTabs.find((tab) => tab.id === tabId)
+      // Re-selecting an already open table keeps the sub-tab it was left on;
+      // only an explicit `tableTab` (the tree's "Details…") overrides it.
+      const nextView = mergeTableTab(view, existing?.view)
       const workspaceTabs = existing
-        ? state.workspaceTabs.map((tab) => (tab.id === tabId ? createTab(view) : tab))
-        : [...state.workspaceTabs, createTab(view)]
-      const nextTab = workspaceTabs.find((tab) => tab.id === tabId) ?? createTab(view)
+        ? state.workspaceTabs.map((tab) => (tab.id === tabId ? createTab(nextView) : tab))
+        : [...state.workspaceTabs, createTab(nextView)]
+      const nextTab = workspaceTabs.find((tab) => tab.id === tabId) ?? createTab(nextView)
       return {
         ...state,
         workspaceTabs,
@@ -280,7 +475,12 @@ export const useUIStore = create<UIState>((set) => ({
       const anchor = state.workspaceTabs.find((tab) => tab.id === tabId)
       if (!anchor) return state
 
-      const workspaceTabs = state.workspaceTabs.filter((tab) => tab.id === tabId || !tabCanClose(tab.id))
+      // Bulk closes ask with `check`: a view may not open a dialog here, or
+      // three dirty editors would stack three of them. A tab that answers
+      // "not clean" simply stays open, and closing it on its own prompts.
+      const workspaceTabs = state.workspaceTabs.filter(
+        (tab) => tab.id === tabId || !tabCanClose(tab.id, 'check')
+      )
       if (workspaceTabs.length === state.workspaceTabs.length) return state
 
       return {
@@ -296,7 +496,7 @@ export const useUIStore = create<UIState>((set) => ({
       if (anchorIndex < 0) return state
 
       const workspaceTabs = state.workspaceTabs.filter(
-        (tab, index) => index <= anchorIndex || !tabCanClose(tab.id)
+        (tab, index) => index <= anchorIndex || !tabCanClose(tab.id, 'check')
       )
       if (workspaceTabs.length === state.workspaceTabs.length) return state
       const activeKept = workspaceTabs.some((tab) => tab.id === state.activeTabId)
@@ -309,7 +509,7 @@ export const useUIStore = create<UIState>((set) => ({
     }),
   closeAllTabs: () =>
     set((state) => {
-      const workspaceTabs = state.workspaceTabs.filter((tab) => !tabCanClose(tab.id))
+      const workspaceTabs = state.workspaceTabs.filter((tab) => !tabCanClose(tab.id, 'check'))
       if (workspaceTabs.length === state.workspaceTabs.length) return state
 
       return {
@@ -341,21 +541,16 @@ export const useUIStore = create<UIState>((set) => ({
       }
     }
   },
-  confirmSSHPathTabRetarget: (connectionId, oldPath) => {
+  hasUnsavedSSHPathTabs: (connectionId, oldPath) => {
     const { workspaceTabs } = useUIStore.getState()
 
-    for (const tab of workspaceTabs) {
-      if (
+    return workspaceTabs.some(
+      (tab) =>
         tab.view.kind === 'ssh-editor' &&
         tab.view.connectionId === connectionId &&
-        isSameOrDescendantRemotePath(tab.view.path, oldPath)
-      ) {
-        const allow = tabCloseGuards.get(tab.id)?.() ?? true
-        if (!allow) return false
-      }
-    }
-
-    return true
+        isSameOrDescendantRemotePath(tab.view.path, oldPath) &&
+        !tabCanClose(tab.id, 'check')
+    )
   },
   closeDatabaseTabs: (connectionId, database) =>
     set((state) => {
@@ -574,22 +769,55 @@ export const useUIStore = create<UIState>((set) => ({
         }
       }
     }),
-  toast: null,
-  showToast: (message, level = 'info') => {
-    if (toastTimer) {
-      clearTimeout(toastTimer)
-    }
-    set({ toast: { message, level } })
-    toastTimer = setTimeout(() => {
-      set({ toast: null })
-      toastTimer = null
-    }, 3000)
+  requestDiffCompare: (connectionId, database) => {
+    set((state) => ({
+      ...state,
+      latestDiffPrefillRequest: {
+        id: (state.latestDiffPrefillRequest?.id ?? 0) + 1,
+        connectionId,
+        database
+      }
+    }))
+    get().setRightView({ kind: 'diff' })
   },
-  clearToast: () => {
-    if (toastTimer) {
-      clearTimeout(toastTimer)
-      toastTimer = null
-    }
-    set({ toast: null })
+  setTableTab: (tabId, tableTab) =>
+    set((state) => {
+      const tab = state.workspaceTabs.find((item) => item.id === tabId)
+      if (!tab || tab.view.kind !== 'table') return state
+      if (tab.view.tableTab === tableTab) return state
+
+      const nextView: WorkspaceView = { ...tab.view, tableTab }
+      const workspaceTabs = state.workspaceTabs.map((item) =>
+        item.id === tabId ? { ...item, view: nextView } : item
+      )
+
+      return {
+        ...state,
+        workspaceTabs,
+        rightView: state.activeTabId === tabId ? nextView : state.rightView
+      }
+    }),
+  showToast: (message, level = 'info') => {
+    toast.show({
+      title: message,
+      tone: level === 'error' ? 'danger' : level === 'success' ? 'success' : 'neutral'
+    })
   }
-}))
+})
+
+export const useUIStore = create<UIState>()(
+  persist(uiStateCreator, {
+    name: WORKSPACE_STORAGE_KEY,
+    version: WORKSPACE_STORAGE_VERSION,
+    storage: safeJSONStorage<PersistedUIState>(),
+    partialize: (state): PersistedUIState => ({
+      workspaceTabs: state.workspaceTabs,
+      activeTabId: state.activeTabId,
+      rightView: state.rightView
+    }),
+    // Both hooks funnel through the same sanitizer: `migrate` covers a version
+    // bump, `merge` covers the normal path, and the sanitizer is idempotent.
+    migrate: (persisted) => restorePersistedUIState(persisted),
+    merge: (persisted, current) => ({ ...current, ...restorePersistedUIState(persisted) })
+  })
+)

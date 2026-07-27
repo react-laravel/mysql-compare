@@ -95,7 +95,12 @@ describe('DatabaseInfoView', () => {
     expect(dropDatabaseMock).not.toHaveBeenCalled()
     expect(screen.queryByText('Confirm database deletion')).toBeNull()
 
+    // Blueprint §3.3: dropping a database is gated on typing its name.
     fireEvent.click(screen.getByRole('button', { name: 'Delete Database' }))
+    const gated = screen.getByRole('button', { name: 'Delete permanently' }) as HTMLButtonElement
+    expect(gated.disabled).toBe(true)
+
+    fireEvent.change(screen.getByPlaceholderText('app_db'), { target: { value: 'app_db' } })
     fireEvent.click(screen.getByRole('button', { name: 'Delete permanently' }))
 
     await waitFor(() =>

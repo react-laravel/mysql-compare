@@ -1,3 +1,10 @@
+// The ONLY sanctioned hex literals outside `styles/tokens.css`.
+//
+// These are third-party trademarks (MySQL #4479A1, PostgreSQL #4169E1, Redis
+// #DC382D), not theme colours. A brand mark that re-tints with the theme stops
+// being the brand mark, so they are deliberately exempt from the "no hex outside
+// tokens.css" sweep. Every *other* colour in this app must come from a token.
+// Do not add a new hex here for anything that is not an official logo.
 import type { SVGProps } from 'react'
 import type { DbEngine } from '../../../shared/types'
 

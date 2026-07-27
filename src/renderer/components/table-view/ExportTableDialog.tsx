@@ -134,13 +134,12 @@ export function ExportTableDialog({
       onOpenChange={onOpenChange}
       title={t('exportDialog.title')}
       description={`${database}.${table}`}
-      className="max-w-lg"
       footer={
         <>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
+          <Button variant="secondary" onClick={() => onOpenChange(false)} disabled={busy}>
             {t('common.cancel')}
           </Button>
-          <Button onClick={submit} disabled={busy || !canExport}>
+          <Button variant="primary" onClick={submit} disabled={busy || !canExport}>
             {busy ? t('exportDialog.exporting') : t('common.export')}
           </Button>
         </>
@@ -181,7 +180,7 @@ export function ExportTableDialog({
             disabled={scopeOptions.length === 1}
           />
           {scope === 'filtered' && !where?.trim() && (
-            <div className="mt-1 text-xs text-muted-foreground">
+            <div className="mt-1 text-xs text-fg-muted">
               {t('exportDialog.noFilterHint')}
             </div>
           )}
@@ -204,7 +203,7 @@ export function ExportTableDialog({
               <Checkbox checked={includeHeaders} onChange={(event) => setIncludeHeaders(event.target.checked)} />
               {t('exportDialog.includeHeader')}
             </label>
-            <div className="text-xs text-muted-foreground">
+            <div className="text-xs text-fg-muted">
               {t('exportDialog.textHint')}
             </div>
           </div>

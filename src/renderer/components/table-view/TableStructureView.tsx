@@ -1,21 +1,29 @@
 // 表结构视图：字段、索引、CREATE TABLE，并支持列/索引结构修改。
-import { useEffect, useMemo, useState } from 'react'
-import { Copy, Pencil, Plus, RefreshCw, Search, Trash2, X } from 'lucide-react'
+//
+// Blueprint §3.2: one `Toolbar` (title · sub-tabs · actions · `⋯`) over a
+// filters row, then two `DataTable variant="report"` inside `Panel`s and a
+// `Panel` holding the CREATE statement. The per-row Edit/Delete buttons became
+// a row `⋯`, and the two dashed empty boxes became `EmptyState`s with actions.
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Copy, EllipsisVertical, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { api, unwrap } from '@renderer/lib/api'
-import { Button } from '@renderer/components/ui/button'
-import { Input } from '@renderer/components/ui/input'
-import { Table, TBody, THead, Th, Tr, Td } from '@renderer/components/ui/table'
 import { Badge } from '@renderer/components/ui/badge'
+import { Button } from '@renderer/components/ui/button'
+import { DataTable, type Column } from '@renderer/components/ui/data-table'
+import { DropdownMenu, type MenuItem } from '@renderer/components/ui/dropdown-menu'
+import { EmptyState } from '@renderer/components/ui/empty-state'
+import { IconButton } from '@renderer/components/ui/icon-button'
+import { Panel } from '@renderer/components/ui/panel'
+import { SearchInput } from '@renderer/components/ui/search-input'
+import { Skeleton } from '@renderer/components/ui/skeleton'
+import { Toolbar } from '@renderer/components/ui/toolbar'
+import { useAppAction } from '@renderer/lib/app-actions'
+import { useConnectionStore } from '@renderer/store/connection-store'
 import { useUIStore } from '@renderer/store/ui-store'
 import { useI18n } from '@renderer/i18n'
-import { cn } from '@renderer/lib/utils'
 import type { ColumnInfo, DbEngine, IndexInfo, TableSchema } from '../../../shared/types'
 import { TableStructureDialogs } from './TableStructureDialogs'
-import {
-  buildAlterColumnSQL,
-  buildDropIndexSQL,
-  buildIndexSQL
-} from './table-structure-sql'
+import { buildAlterColumnSQL, buildDropIndexSQL, buildIndexSQL } from './table-structure-sql'
 import type { ColumnDraft, IndexDraft, PendingAction } from './table-structure-types'
 
 interface Props {
@@ -23,33 +31,62 @@ interface Props {
   database: string
   table: string
   engine?: DbEngine
+  /** the Data / Structure / Info pill `Tabs` owned by the workspace */
+  tabs?: ReactNode
+  active?: boolean
 }
 
-export function TableStructureView({ connectionId, database, table, engine = 'mysql' }: Props) {
+export function TableStructureView({
+  connectionId,
+  database,
+  table,
+  engine = 'mysql',
+  tabs,
+  active = true
+}: Props) {
   const sqlEngine = engine === 'postgres' ? 'postgres' : 'mysql'
   const { showToast } = useUIStore()
   const { t } = useI18n()
+  const connectionName = useConnectionStore(
+    (state) => state.connections.find((item) => item.id === connectionId)?.name
+  )
   const [schema, setSchema] = useState<TableSchema | null>(null)
+  const [schemaError, setSchemaError] = useState<Error | null>(null)
   const [editingColumn, setEditingColumn] = useState<ColumnDraft | null>(null)
   const [editingIndex, setEditingIndex] = useState<IndexDraft | null>(null)
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null)
   const [structureQuery, setStructureQuery] = useState('')
   const [schemaLoading, setSchemaLoading] = useState(false)
   const [busy, setBusy] = useState(false)
+  const filterInputRef = useRef<HTMLInputElement | null>(null)
 
   const loadSchema = async () => {
     setSchemaLoading(true)
     try {
       const next = await unwrap<TableSchema>(api.schema.getTable(connectionId, database, table))
       setSchema(next)
+      setSchemaError(null)
     } finally {
       setSchemaLoading(false)
     }
   }
 
+  const reloadSchema = () => {
+    loadSchema().catch((caught) => {
+      setSchemaError(caught instanceof Error ? caught : new Error(String(caught)))
+      showToast((caught as Error).message, 'error')
+    })
+  }
+
   useEffect(() => {
-    loadSchema().catch((e) => showToast((e as Error).message, 'error'))
+    loadSchema().catch((caught) => {
+      setSchemaError(caught instanceof Error ? caught : new Error(String(caught)))
+      showToast((caught as Error).message, 'error')
+    })
   }, [connectionId, database, table, showToast])
+
+  useAppAction('focus-filter', active ? () => filterInputRef.current?.focus() : null)
+  useAppAction('refresh-view', active ? reloadSchema : null)
 
   const pendingColumnSQL = useMemo(() => {
     if (!editingColumn) return ''
@@ -187,194 +224,339 @@ export function TableStructureView({ connectionId, database, table, engine = 'my
     }
   }
 
-  if (!schema) {
-    return (
-      <div className="flex h-full items-center justify-center gap-2 p-3 text-xs text-muted-foreground">
-        <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-        {t('common.loading')}
-      </div>
-    )
+  const copyCreateSQL = () => {
+    if (!schema) return
+    void navigator.clipboard.writeText(schema.createSQL)
+    showToast(t('common.sqlCopied'), 'success')
   }
+
+  const columnColumns = useMemo<Column<ColumnInfo>[]>(
+    () => [
+      { id: 'name', header: t('common.name'), mono: true, cell: (column) => column.name },
+      {
+        id: 'type',
+        header: t('common.type'),
+        mono: true,
+        cell: (column) => <span className="text-fg-muted">{column.type}</span>
+      },
+      {
+        id: 'null',
+        header: t('tableStructure.columnHeaders.null'),
+        cell: (column) => (column.nullable ? t('common.yes') : t('common.no'))
+      },
+      {
+        id: 'default',
+        header: t('tableStructure.columnHeaders.default'),
+        mono: true,
+        cell: (column) => column.defaultValue ?? <span className="opacity-50">NULL</span>
+      },
+      {
+        id: 'key',
+        header: t('tableStructure.columnHeaders.key'),
+        cell: (column) =>
+          column.isPrimaryKey ? (
+            <Badge tone="warning">{t('tableStructure.pri')}</Badge>
+          ) : column.columnKey ? (
+            <Badge>{column.columnKey}</Badge>
+          ) : null
+      },
+      {
+        id: 'extra',
+        header: t('tableStructure.columnHeaders.extra'),
+        cell: (column) =>
+          column.isAutoIncrement ? <Badge tone="accent">{t('tableStructure.autoInc')}</Badge> : null
+      },
+      {
+        id: 'comment',
+        header: t('common.comment'),
+        truncate: true,
+        cell: (column) => <span className="text-fg-muted">{column.comment}</span>
+      },
+      {
+        id: 'actions',
+        header: <span className="sr-only">{t('common.action')}</span>,
+        align: 'right',
+        width: 44,
+        cell: (column) => (
+          <RowMenu
+            label={t('common.action')}
+            items={[
+              {
+                id: 'edit-column',
+                icon: Pencil,
+                label: t('tableStructure.editColumn'),
+                onSelect: () => startEditColumn(column)
+              }
+            ]}
+          />
+        )
+      }
+    ],
+    [t]
+  )
+
+  const indexColumns = useMemo<Column<IndexInfo>[]>(
+    () => [
+      { id: 'name', header: t('common.name'), mono: true, cell: (index) => index.name },
+      {
+        id: 'columns',
+        header: t('common.columns'),
+        mono: true,
+        truncate: true,
+        cell: (index) => index.columns.join(', ')
+      },
+      {
+        id: 'unique',
+        header: t('tableStructure.indexHeaders.unique'),
+        cell: (index) => (index.unique ? t('common.yes') : t('common.no'))
+      },
+      { id: 'type', header: t('common.type'), cell: (index) => index.type },
+      {
+        id: 'actions',
+        header: <span className="sr-only">{t('common.action')}</span>,
+        align: 'right',
+        width: 44,
+        cell: (index) => (
+          <RowMenu
+            label={t('common.action')}
+            items={[
+              {
+                id: 'edit-index',
+                icon: Pencil,
+                label: t('tableStructure.editIndex'),
+                onSelect: () => startEditIndex(index)
+              },
+              {
+                id: 'drop-index',
+                icon: Trash2,
+                label: t('tableStructure.dropIndex'),
+                danger: true,
+                onSelect: () => reviewDeleteIndex(index)
+              }
+            ]}
+          />
+        )
+      }
+    ],
+    [t]
+  )
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-card/70 px-3 py-2">
-        <div className="flex flex-wrap items-center gap-2 text-xs">
-          <Badge>{t('tableStructure.columnCount', { count: schema.columns.length })}</Badge>
-          <Badge>{t('tableStructure.indexCount', { count: schema.indexes.length })}</Badge>
-          {schema.primaryKey.length > 0 && (
-            <Badge variant="warning">{t('tableStructure.primaryKey', { columns: schema.primaryKey.join(', ') })}</Badge>
-          )}
-        </div>
-        <div className="flex min-w-[18rem] flex-1 items-center justify-end gap-2">
-          <div className="relative w-full max-w-sm">
-            <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={structureQuery}
-              onChange={(event) => setStructureQuery(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Escape') setStructureQuery('')
-              }}
-              placeholder={t('tableStructure.searchPlaceholder')}
-              className="h-8 pl-8 pr-8 text-xs"
+      <Toolbar
+        title={<span className="font-mono">{table}</span>}
+        subtitle={[connectionName, database].filter(Boolean).join(' / ')}
+        center={tabs}
+        progress={schemaLoading ? { status: 'running', label: t('common.loading') } : null}
+        overflowLabel={t('common.moreActions')}
+        overflow={[
+          {
+            id: 'copy-create',
+            icon: Copy,
+            label: t('common.copySql'),
+            disabled: !schema?.createSQL,
+            disabledReason: t('common.loading'),
+            onSelect: copyCreateSQL
+          }
+        ]}
+        actions={
+          <>
+            <IconButton
+              icon={RefreshCw}
+              label={t('common.refresh')}
+              shortcut="Mod+R"
+              size="sm"
+              variant="ghost"
+              loading={schemaLoading}
+              disabled={schemaLoading}
+              onClick={reloadSchema}
             />
-            {structureQuery && (
-              <button
-                type="button"
-                className="absolute right-2 top-1/2 rounded p-0.5 text-muted-foreground -translate-y-1/2 hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                onClick={() => setStructureQuery('')}
-                title={t('common.clear')}
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            )}
-          </div>
-          <Button size="sm" variant="ghost" onClick={() => loadSchema().catch((e) => showToast((e as Error).message, 'error'))} disabled={schemaLoading}>
-            <RefreshCw className={cn('h-4 w-4', schemaLoading && 'animate-spin')} />
-          </Button>
-        </div>
-      </div>
-
-      <div className="min-h-0 flex-1 space-y-4 overflow-auto p-3 pb-8">
-      <section>
-        <div className="mb-2 flex items-center justify-between gap-2">
-          <h3 className="text-sm font-medium">{t('common.columns')}</h3>
-          <span className="text-xs text-muted-foreground">
-            {t('tableStructure.visibleColumns', { visible: filteredColumns.length, total: schema.columns.length })}
-          </span>
-        </div>
-        <Table>
-          <THead>
-            <Tr>
-              <Th>{t('common.name')}</Th>
-              <Th>{t('common.type')}</Th>
-              <Th>{t('tableStructure.columnHeaders.null')}</Th>
-              <Th>{t('tableStructure.columnHeaders.default')}</Th>
-              <Th>{t('tableStructure.columnHeaders.key')}</Th>
-              <Th>{t('tableStructure.columnHeaders.extra')}</Th>
-              <Th>{t('common.comment')}</Th>
-              <Th className="w-20">{t('common.action')}</Th>
-            </Tr>
-          </THead>
-          <TBody>
-            {filteredColumns.map((column) => (
-              <Tr key={column.name}>
-                <Td>{column.name}</Td>
-                <Td className="text-muted-foreground">{column.type}</Td>
-                <Td>{column.nullable ? t('common.yes') : t('common.no')}</Td>
-                <Td>{column.defaultValue ?? <span className="opacity-50">NULL</span>}</Td>
-                <Td>
-                  {column.isPrimaryKey && <Badge variant="warning">{t('tableStructure.pri')}</Badge>}
-                  {!column.isPrimaryKey && column.columnKey && <Badge>{column.columnKey}</Badge>}
-                </Td>
-                <Td>{column.isAutoIncrement && <Badge variant="info">{t('tableStructure.autoInc')}</Badge>}</Td>
-                <Td className="text-muted-foreground">{column.comment}</Td>
-                <Td>
-                  <Button size="sm" variant="outline" onClick={() => startEditColumn(column)}>
-                    <Pencil className="h-3 w-3" /> {t('common.edit')}
-                  </Button>
-                </Td>
-              </Tr>
-            ))}
-          </TBody>
-        </Table>
-        {filteredColumns.length === 0 && (
-          <div className="rounded-md border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
-            {t('tableStructure.noColumnsMatch')}
-          </div>
-        )}
-      </section>
-
-      <section>
-        <div className="mb-2 flex items-center justify-between gap-2">
-          <h3 className="text-sm font-medium">{t('tableStructure.indexes')}</h3>
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-muted-foreground">
-              {t('tableStructure.visibleIndexes', { visible: filteredIndexes.length, total: schema.indexes.length })}
-            </span>
-            <Button size="sm" variant="outline" onClick={startAddIndex}>
-              <Plus className="h-3.5 w-3.5" /> {t('tableStructure.addIndex')}
+            <Button size="sm" variant="primary" icon={Plus} onClick={startAddIndex} disabled={!schema}>
+              {t('tableStructure.addIndex')}
             </Button>
-          </div>
-        </div>
-        <Table>
-          <THead>
-            <Tr>
-              <Th>{t('common.name')}</Th>
-              <Th>{t('common.columns')}</Th>
-              <Th>{t('tableStructure.indexHeaders.unique')}</Th>
-              <Th>{t('common.type')}</Th>
-              <Th className="w-36">{t('common.action')}</Th>
-            </Tr>
-          </THead>
-          <TBody>
-            {filteredIndexes.map((index) => (
-              <Tr key={index.name}>
-                <Td>{index.name}</Td>
-                <Td>{index.columns.join(', ')}</Td>
-                <Td>{index.unique ? t('common.yes') : t('common.no')}</Td>
-                <Td>{index.type}</Td>
-                <Td>
-                  <div className="flex gap-2">
-                    <Button size="sm" variant="outline" onClick={() => startEditIndex(index)}>
-                      <Pencil className="h-3 w-3" /> {t('common.edit')}
-                    </Button>
-                    <Button size="sm" variant="outline" onClick={() => reviewDeleteIndex(index)}>
-                      <Trash2 className="h-3 w-3" /> {t('common.delete')}
-                    </Button>
-                  </div>
-                </Td>
-              </Tr>
-            ))}
-          </TBody>
-        </Table>
-        {filteredIndexes.length === 0 && (
-          <div className="rounded-md border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
-            {schema.indexes.length === 0 ? t('tableStructure.noIndexes') : t('tableStructure.noIndexesMatch')}
-          </div>
-        )}
-      </section>
+          </>
+        }
+        filters={
+          <>
+            <SearchInput
+              ref={filterInputRef}
+              size="sm"
+              value={structureQuery}
+              onValueChange={setStructureQuery}
+              placeholder={t('tableStructure.searchPlaceholder')}
+              clearLabel={t('common.clear')}
+              containerClassName="min-w-[14rem] flex-[1_1_20rem]"
+            />
+            <span className="ml-auto flex items-center gap-1.5" aria-live="polite">
+              <Badge>{t('tableStructure.columnCount', { count: schema?.columns.length ?? 0 })}</Badge>
+              <Badge>{t('tableStructure.indexCount', { count: schema?.indexes.length ?? 0 })}</Badge>
+              {schema && schema.primaryKey.length > 0 ? (
+                <Badge tone="warning">
+                  {t('tableStructure.primaryKey', { columns: schema.primaryKey.join(', ') })}
+                </Badge>
+              ) : null}
+            </span>
+          </>
+        }
+      />
 
-      <section>
-        <div className="mb-2 flex items-center justify-between">
-          <h3 className="text-sm font-medium">CREATE TABLE</h3>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => {
-              navigator.clipboard.writeText(schema.createSQL)
-              showToast(t('common.sqlCopied'), 'success')
-            }}
-          >
-            <Copy className="w-3 h-3" /> {t('common.copy')}
-          </Button>
-        </div>
-        <pre className="overflow-auto whitespace-pre rounded border border-border bg-card p-3 text-xs">
-{schema.createSQL}
-        </pre>
-      </section>
+      <div className="min-h-0 flex-1 space-y-3 overflow-auto p-3">
+        {schemaError && !schema ? (
+          <EmptyState
+            variant="error"
+            title={t('tableStructure.loadFailed')}
+            description={schemaError.message}
+            error={schemaError}
+            detailsLabel={t('common.details')}
+            action={
+              <Button variant="primary" icon={RefreshCw} onClick={reloadSchema}>
+                {t('common.retry')}
+              </Button>
+            }
+          />
+        ) : !schema ? (
+          <Skeleton variant="row" count={8} />
+        ) : (
+          <>
+            <Panel
+              header={t('common.columns')}
+              headerActions={
+                <span className="text-xs text-fg-muted">
+                  {t('tableStructure.visibleColumns', {
+                    visible: filteredColumns.length,
+                    total: schema.columns.length
+                  })}
+                </span>
+              }
+              padded={false}
+            >
+              <DataTable<ColumnInfo>
+                aria-label={t('common.columns')}
+                columns={columnColumns}
+                rows={filteredColumns}
+                rowKey={(column) => column.name}
+                empty={
+                  <EmptyState
+                    size="sm"
+                    variant="no-results"
+                    title={t('tableStructure.noColumnsMatch')}
+                    action={
+                      <Button size="sm" variant="secondary" onClick={() => setStructureQuery('')}>
+                        {t('tableData.clearFilter')}
+                      </Button>
+                    }
+                  />
+                }
+              />
+            </Panel>
+
+            <Panel
+              header={t('tableStructure.indexes')}
+              headerActions={
+                <>
+                  <span className="text-xs text-fg-muted">
+                    {t('tableStructure.visibleIndexes', {
+                      visible: filteredIndexes.length,
+                      total: schema.indexes.length
+                    })}
+                  </span>
+                  <Button size="sm" variant="secondary" icon={Plus} onClick={startAddIndex}>
+                    {t('tableStructure.addIndex')}
+                  </Button>
+                </>
+              }
+              padded={false}
+            >
+              <DataTable<IndexInfo>
+                aria-label={t('tableStructure.indexes')}
+                columns={indexColumns}
+                rows={filteredIndexes}
+                rowKey={(index) => index.name}
+                empty={
+                  <EmptyState
+                    size="sm"
+                    variant={schema.indexes.length === 0 ? 'first-run' : 'no-results'}
+                    title={
+                      schema.indexes.length === 0
+                        ? t('tableStructure.noIndexes')
+                        : t('tableStructure.noIndexesMatch')
+                    }
+                    action={
+                      schema.indexes.length === 0 ? (
+                        <Button size="sm" variant="primary" icon={Plus} onClick={startAddIndex}>
+                          {t('tableStructure.addIndex')}
+                        </Button>
+                      ) : (
+                        <Button size="sm" variant="secondary" onClick={() => setStructureQuery('')}>
+                          {t('tableData.clearFilter')}
+                        </Button>
+                      )
+                    }
+                  />
+                }
+              />
+            </Panel>
+
+            <Panel
+              header="CREATE TABLE"
+              headerActions={
+                <Button size="sm" variant="secondary" icon={Copy} onClick={copyCreateSQL}>
+                  {t('common.copy')}
+                </Button>
+              }
+            >
+              <pre className="max-h-[40vh] overflow-auto rounded-md border border-border bg-inset p-3 font-mono text-xs whitespace-pre">
+                {schema.createSQL}
+              </pre>
+            </Panel>
+          </>
+        )}
       </div>
 
-      <TableStructureDialogs
-        database={database}
-        table={table}
-        busy={busy}
-        columns={schema.columns}
-        editingColumn={editingColumn}
-        setEditingColumn={setEditingColumn}
-        onReviewColumnSQL={reviewColumnSQL}
-        editingIndex={editingIndex}
-        setEditingIndex={setEditingIndex}
-        onReviewIndexSQL={reviewIndexSQL}
-        pendingAction={pendingAction}
-        onClosePendingAction={() => setPendingAction(null)}
-        onCopyPendingSQL={() => {
-          if (!pendingAction) return
-          navigator.clipboard.writeText(pendingAction.sql)
-          showToast(t('common.sqlCopied'), 'success')
-        }}
-        onExecutePendingAction={executePendingAction}
-      />
+      {schema ? (
+        <TableStructureDialogs
+          database={database}
+          table={table}
+          busy={busy}
+          columns={schema.columns}
+          editingColumn={editingColumn}
+          setEditingColumn={setEditingColumn}
+          onReviewColumnSQL={reviewColumnSQL}
+          editingIndex={editingIndex}
+          setEditingIndex={setEditingIndex}
+          onReviewIndexSQL={reviewIndexSQL}
+          pendingAction={pendingAction}
+          onClosePendingAction={() => setPendingAction(null)}
+          onCopyPendingSQL={() => {
+            if (!pendingAction) return
+            void navigator.clipboard.writeText(pendingAction.sql)
+            showToast(t('common.sqlCopied'), 'success')
+          }}
+          onExecutePendingAction={executePendingAction}
+        />
+      ) : null}
     </div>
+  )
+}
+
+/** The persistent per-row `⋯` that replaced two inline buttons per row. */
+function RowMenu({ items, label }: { items: MenuItem[]; label: string }) {
+  return (
+    <DropdownMenu
+      items={items}
+      side="bottom"
+      align="end"
+      aria-label={label}
+      trigger={
+        <IconButton
+          icon={EllipsisVertical}
+          label={label}
+          size="xs"
+          variant="ghost"
+          tooltip={false}
+          onClick={(event) => event.stopPropagation()}
+        />
+      }
+    />
   )
 }

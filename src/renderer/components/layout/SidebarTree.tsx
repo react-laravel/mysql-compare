@@ -1,691 +1,673 @@
-import { useMemo, useState, type MouseEvent, type MutableRefObject } from 'react'
+// The connection → database → table/key explorer.
+//
+// Rebuilt on the shared `TreeRow` (blueprint §3.9): every row is a real
+// `treeitem` with `aria-level`, `aria-expanded`, arrow-key navigation and
+// type-ahead — connection and database rows were `<button>`s inside `<div>`s
+// with no tree semantics and no keyboard reachability at all. Hover-gated
+// icons are gone: each row carries a persistent `⋯` whose items come from the
+// same builders the right-click menu uses.
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  CircleEllipsis,
-  ChevronDown,
-  ChevronRight,
   Database,
-  Download,
-  FileCode2,
+  EllipsisVertical,
   Folder,
   KeyRound,
+  PanelLeftClose,
   Plus,
   RefreshCw,
-  Search,
+  SquareTerminal,
   Table as TableIcon,
-  X
+  TriangleAlert
 } from 'lucide-react'
+import { EngineIcon } from '@renderer/components/icons/EngineIcon'
+import { Badge } from '@renderer/components/ui/badge'
 import { Button } from '@renderer/components/ui/button'
-import { Input } from '@renderer/components/ui/input'
-import { cn } from '@renderer/lib/utils'
+import { DropdownMenu, type MenuItem } from '@renderer/components/ui/dropdown-menu'
+import { EmptyState } from '@renderer/components/ui/empty-state'
+import { IconButton } from '@renderer/components/ui/icon-button'
+import { ScrollArea } from '@renderer/components/ui/scroll-area'
+import { SearchInput } from '@renderer/components/ui/search-input'
+import { Skeleton } from '@renderer/components/ui/skeleton'
+import { TreeRow } from '@renderer/components/ui/tree-row'
 import { useI18n } from '@renderer/i18n'
-import type { SafeConnection } from '../../../shared/types'
-import { SidebarAppMenu } from './SidebarAppMenu'
-import { SidebarConnectionRow } from './SidebarConnectionRow'
-import type {
-  DatabaseRowRefEntry,
-  NodeState,
-  RenameDialogState,
-  StickyDatabaseContext
-} from './sidebar-types'
+import { useAppAction } from '@renderer/lib/app-actions'
+import { formatNumber } from '@renderer/lib/format'
+import { useConnectionStore } from '@renderer/store/connection-store'
+import { useSidebarStore } from '@renderer/store/sidebar-store'
+import { useUIStore } from '@renderer/store/ui-store'
+import { useSidebarActions } from './sidebar-actions'
+import {
+  buildDatabaseMenuItems,
+  buildConnectionMenuItems,
+  buildTableMenuItems
+} from './sidebar-menus'
+import {
+  buildSidebarRows,
+  groupConnections,
+  type SidebarRow,
+  type SidebarRowMessage
+} from './sidebar-tree-rows'
+import type { StickyDatabaseContext } from './sidebar-types'
 
-interface SidebarTreeProps {
-  keyword: string
-  onKeywordChange: (value: string) => void
-  onCreateConnection: () => void
-  filteredConnections: SafeConnection[]
-  nodes: Record<string, NodeState>
-  stickyDatabase: StickyDatabaseContext | null
-  treeScrollRef: MutableRefObject<HTMLDivElement | null>
-  dbRowRefs: MutableRefObject<Record<string, DatabaseRowRefEntry>>
-  getTableFilter: (connectionId: string, database: string) => string
-  isSelectedDatabase: (connectionId: string, database: string) => boolean
-  isSelectedTable: (connectionId: string, database: string, table: string) => boolean
-  onToggleConnection: (connection: SafeConnection) => void | Promise<void>
-  onEditConnection: (connection: SafeConnection) => void
-  onOpenSSHFiles: (connection: SafeConnection) => void
-  onOpenSSHTerminal: (connection: SafeConnection) => void | Promise<void>
-  onOpenConnectionMenu: (
-    event: MouseEvent<HTMLDivElement>,
-    connection: SafeConnection
-  ) => void
-  onToggleDatabase: (connection: SafeConnection, database: string) => void | Promise<void>
-  onOpenDatabaseDetails: (connection: SafeConnection, database: string) => void
-  onOpenSQLConsole: (connection: SafeConnection, database: string) => void
-  onOpenDatabaseCredential: (connection: SafeConnection, database: string) => void
-  onExportDatabase: (connection: SafeConnection, database: string) => void
-  onCreateRedisKey: (connection: SafeConnection, database: string) => void
-  onRefreshDatabase: (connection: SafeConnection, database: string) => void | Promise<void>
-  onTableFilterChange: (connectionId: string, database: string, value: string) => void
-  onSelectTable: (connection: SafeConnection, database: string, table: string) => void
-  renamingTable: RenameDialogState | null
-  renameDraft: string
-  renameBusy: boolean
-  onStartRenameTable: (connection: SafeConnection, database: string, table: string) => void
-  onRenameDraftChange: (value: string) => void
-  onSubmitTableRename: () => void | Promise<void>
-  onCancelTableRename: () => void
-  onOpenDatabaseMenu: (
-    event: MouseEvent<HTMLDivElement>,
-    connection: SafeConnection,
-    database: string
-  ) => void
-  onOpenTableMenu: (
-    event: MouseEvent<HTMLDivElement>,
-    connection: SafeConnection,
-    database: string,
-    table: string
-  ) => void
+const MESSAGE_KEY: Record<SidebarRowMessage, string> = {
+  noTables: 'sidebar.noTables',
+  noTablesMatch: 'sidebar.noTablesMatch',
+  noKeys: 'sidebar.noKeys',
+  noKeysMatch: 'sidebar.noKeysMatch'
 }
 
-export function SidebarTree({
-  keyword,
-  onKeywordChange,
-  onCreateConnection,
-  filteredConnections,
-  nodes,
-  stickyDatabase,
-  treeScrollRef,
-  dbRowRefs,
-  getTableFilter,
-  isSelectedDatabase,
-  isSelectedTable,
-  onToggleConnection,
-  onEditConnection,
-  onOpenSSHFiles,
-  onOpenSSHTerminal,
-  onOpenConnectionMenu,
-  onToggleDatabase,
-  onOpenDatabaseDetails,
-  onOpenSQLConsole,
-  onOpenDatabaseCredential,
-  onExportDatabase,
-  onCreateRedisKey,
-  onRefreshDatabase,
-  onTableFilterChange,
-  onSelectTable,
-  renamingTable,
-  renameDraft,
-  renameBusy,
-  onStartRenameTable,
-  onRenameDraftChange,
-  onSubmitTableRename,
-  onCancelTableRename,
-  onOpenDatabaseMenu,
-  onOpenTableMenu
-}: SidebarTreeProps) {
+export function SidebarTree() {
   const { t } = useI18n()
+  const actions = useSidebarActions()
+  const connections = useConnectionStore((state) => state.connections)
+  const refreshConnections = useConnectionStore((state) => state.refresh)
+  const rightView = useUIStore((state) => state.rightView)
+
+  const keyword = useSidebarStore((state) => state.keyword)
+  const setKeyword = useSidebarStore((state) => state.setKeyword)
+  const nodes = useSidebarStore((state) => state.nodes)
+  const tableFilters = useSidebarStore((state) => state.tableFilters)
+  const inlineRename = useSidebarStore((state) => state.inlineRename)
+  const stickyDatabase = useSidebarStore((state) => state.stickyDatabase)
+  const setStickyDatabase = useSidebarStore((state) => state.setStickyDatabase)
+  const setConnectionMenu = useSidebarStore((state) => state.setConnectionMenu)
+  const setDatabaseMenu = useSidebarStore((state) => state.setDatabaseMenu)
+  const setTableMenu = useSidebarStore((state) => state.setTableMenu)
+  const setCollapsed = useSidebarStore((state) => state.setCollapsed)
+
   const [collapsedRedisFolders, setCollapsedRedisFolders] = useState<Set<string>>(new Set())
+  const [activeIndex, setActiveIndex] = useState(0)
+  const searchRef = useRef<HTMLInputElement>(null)
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+  const rowRefs = useRef<(HTMLDivElement | null)[]>([])
+  const databaseRowRefs = useRef<Record<string, { element: HTMLElement; connectionName: string; database: string }>>({})
+  const typeahead = useRef({ query: '', at: 0 })
+
+  // ⌘⇧F. The shell dispatches through `app-actions` because it cannot know
+  // which input a view considers its search box.
+  useAppAction(
+    'focus-sidebar-search',
+    useCallback(() => {
+      searchRef.current?.focus()
+      searchRef.current?.select()
+    }, [])
+  )
+
+  const filtered = useMemo(() => {
+    const query = keyword.trim().toLowerCase()
+    if (!query) return connections
+    return connections.filter((connection) => connection.name.toLowerCase().includes(query))
+  }, [connections, keyword])
+
+  const { rows, focusables } = useMemo(
+    () =>
+      buildSidebarRows({
+        groups: groupConnections(filtered, t('sidebar.ungroupedGroup')),
+        nodes,
+        tableFilters,
+        collapsedRedisFolders
+      }),
+    [collapsedRedisFolders, filtered, nodes, t, tableFilters]
+  )
+
+  // The sticky database header (a genuinely good touch worth keeping) now lives
+  // with the scroll region that produces it instead of being computed in
+  // `Sidebar` and passed down.
+  useEffect(() => {
+    const container = scrollRef.current
+    if (!container) return
+
+    const sync = () => {
+      if (container.scrollTop < 12) {
+        setStickyDatabase(null)
+        return
+      }
+      const containerTop = container.getBoundingClientRect().top
+      let next: StickyDatabaseContext | null = null
+      let closestTop = Number.NEGATIVE_INFINITY
+      Object.values(databaseRowRefs.current).forEach((entry) => {
+        if (!entry.element.isConnected) return
+        const top = entry.element.getBoundingClientRect().top - containerTop
+        if (top <= 4 && top > closestTop) {
+          closestTop = top
+          next = { connectionName: entry.connectionName, database: entry.database }
+        }
+      })
+      setStickyDatabase(next)
+    }
+
+    sync()
+    container.addEventListener('scroll', sync)
+    return () => container.removeEventListener('scroll', sync)
+  }, [rows, setStickyDatabase])
+
+  const focusRow = (index: number) => {
+    const clamped = Math.min(Math.max(index, 0), Math.max(focusables.length - 1, 0))
+    setActiveIndex(clamped)
+    rowRefs.current[clamped]?.focus()
+  }
 
   const toggleRedisFolder = (folderId: string) => {
     setCollapsedRedisFolders((current) => {
       const next = new Set(current)
-      if (next.has(folderId)) {
-        next.delete(folderId)
-      } else {
-        next.add(folderId)
-      }
+      if (next.has(folderId)) next.delete(folderId)
+      else next.add(folderId)
       return next
     })
   }
 
-  const connectionGroups = useMemo(() => {
-    const groups: Array<{ key: string; label: string; connections: SafeConnection[] }> = []
-    const groupByKey = new Map<string, { key: string; label: string; connections: SafeConnection[] }>()
+  const activateRow = (row: SidebarRow) => {
+    switch (row.type) {
+      case 'connection':
+        void actions.toggleConnection(row.connection)
+        return
+      case 'database':
+        void actions.toggleDatabase(row.connection, row.database)
+        return
+      case 'redis-folder':
+        toggleRedisFolder(row.folderId)
+        return
+      case 'table':
+        actions.selectTable(row.connection, row.database, row.table)
+        return
+      case 'redis-key':
+        actions.selectTable(row.connection, row.database, row.keyName)
+    }
+  }
 
-    filteredConnections.forEach((connection) => {
-      const groupName = connection.group?.trim()
-      const key = groupName || '__ungrouped'
-      let group = groupByKey.get(key)
-      if (!group) {
-        group = {
-          key,
-          label: groupName || t('sidebar.ungroupedGroup'),
-          connections: []
-        }
-        groupByKey.set(key, group)
-        groups.push(group)
+  const overflowFor = (row: SidebarRow): MenuItem[] => {
+    switch (row.type) {
+      case 'connection':
+        return buildConnectionMenuItems({ connection: row.connection, t, actions })
+      case 'database':
+        return buildDatabaseMenuItems({
+          connection: row.connection,
+          database: row.database,
+          t,
+          actions
+        })
+      case 'table':
+        return buildTableMenuItems({
+          connection: row.connection,
+          database: row.database,
+          table: row.table,
+          t,
+          actions
+        })
+      case 'redis-key':
+        return buildTableMenuItems({
+          connection: row.connection,
+          database: row.database,
+          table: row.keyName,
+          t,
+          actions
+        })
+      default:
+        return []
+    }
+  }
+
+  const openContextMenu = (event: React.MouseEvent, row: SidebarRow) => {
+    event.preventDefault()
+    event.stopPropagation()
+    const at = { x: event.clientX, y: event.clientY }
+    if (row.type === 'connection') setConnectionMenu({ ...at, connection: row.connection })
+    else if (row.type === 'database')
+      setDatabaseMenu({ ...at, connection: row.connection, database: row.database })
+    else if (row.type === 'table')
+      setTableMenu({ ...at, connection: row.connection, database: row.database, table: row.table })
+    else if (row.type === 'redis-key')
+      setTableMenu({
+        ...at,
+        connection: row.connection,
+        database: row.database,
+        table: row.keyName
+      })
+  }
+
+  const onRowKeyDown = (event: React.KeyboardEvent, row: SidebarRow) => {
+    const index = row.focusIndex ?? 0
+    const meta = focusables[index]
+    if (!meta) return
+
+    switch (event.key) {
+      case 'ArrowDown':
+        event.preventDefault()
+        focusRow(index + 1)
+        return
+      case 'ArrowUp':
+        event.preventDefault()
+        focusRow(index - 1)
+        return
+      case 'Home':
+        event.preventDefault()
+        focusRow(0)
+        return
+      case 'End':
+        event.preventDefault()
+        focusRow(focusables.length - 1)
+        return
+      case 'ArrowRight':
+        event.preventDefault()
+        if (!meta.expandable) return
+        if (meta.expanded) focusRow(index + 1)
+        else activateRow(row)
+        return
+      case 'ArrowLeft':
+        event.preventDefault()
+        if (meta.expandable && meta.expanded) activateRow(row)
+        else if (row.parentIndex != null && row.parentIndex >= 0) focusRow(row.parentIndex)
+        return
+      case 'Enter':
+      case ' ':
+        event.preventDefault()
+        activateRow(row)
+        return
+      case 'F2':
+        event.preventDefault()
+        if (row.type === 'table') actions.startRename(row.connection, row.database, row.table)
+        else if (row.type === 'redis-key')
+          actions.startRename(row.connection, row.database, row.keyName)
+        return
+      default:
+        break
+    }
+
+    if (event.key.length !== 1 || event.metaKey || event.ctrlKey || event.altKey) return
+    const now = Date.now()
+    const state = typeahead.current
+    state.query = now - state.at > 700 ? event.key : state.query + event.key
+    state.at = now
+    const query = state.query.toLowerCase()
+    const order = [...focusables.slice(index + 1), ...focusables.slice(0, index + 1)]
+    const match = order.find((candidate) => candidate.label.toLowerCase().startsWith(query))
+    if (match) focusRow(match.row.focusIndex ?? 0)
+  }
+
+  // One stable object for the row being renamed: `TreeRow` resets its draft
+  // whenever the `editing` prop's identity changes.
+  const editing = useMemo(
+    () =>
+      inlineRename
+        ? {
+            value: inlineRename.table,
+            onCommit: (next: string) => {
+              if (!next.trim()) {
+                actions.cancelRename()
+                return
+              }
+              void actions.submitRename(next)
+            },
+            onCancel: actions.cancelRename
+          }
+        : undefined,
+    [actions, inlineRename]
+  )
+
+  const editingFor = (connectionId: string, database: string, table: string) =>
+    inlineRename &&
+    inlineRename.connection.id === connectionId &&
+    inlineRename.database === database &&
+    inlineRename.table === table
+      ? editing
+      : undefined
+
+  const sidebarMenu: MenuItem[] = [
+    {
+      id: 'new-connection',
+      icon: Plus,
+      label: t('sidebar.newConnection'),
+      shortcut: 'Mod+N',
+      onSelect: actions.createConnection
+    },
+    {
+      id: 'refresh-connections',
+      icon: RefreshCw,
+      label: t('sidebar.refreshConnections'),
+      onSelect: () => void refreshConnections()
+    },
+    { kind: 'separator', id: 'sep-1' },
+    {
+      id: 'collapse',
+      icon: PanelLeftClose,
+      label: t('sidebar.collapseSidebar'),
+      shortcut: 'Mod+\\',
+      onSelect: () => setCollapsed(true)
+    }
+  ]
+
+  const renderRow = (row: SidebarRow) => {
+    const index = row.focusIndex ?? -1
+    const tabIndex = index === Math.min(activeIndex, Math.max(focusables.length - 1, 0)) ? 0 : -1
+    const common = {
+      depth: row.depth,
+      tabIndex,
+      setSize: row.setSize,
+      posInSet: row.posInSet,
+      onKeyDown: (event: React.KeyboardEvent) => onRowKeyDown(event, row),
+      onContextMenu: (event: React.MouseEvent) => openContextMenu(event, row),
+      onFocus: () => setActiveIndex(index),
+      ref: (element: HTMLDivElement | null) => {
+        rowRefs.current[index] = element
       }
-      group.connections.push(connection)
-    })
+    }
 
-    return groups
-  }, [filteredConnections, t])
+    switch (row.type) {
+      case 'group':
+        return (
+          <div
+            key={row.key}
+            role="presentation"
+            className="flex items-center justify-between px-2 pt-2 pb-1 text-2xs font-medium tracking-wide text-fg-subtle uppercase"
+          >
+            <span className="truncate">{row.label}</span>
+            <span>{row.count}</span>
+          </div>
+        )
+
+      case 'loading':
+        // DS §7.6 names this exact line as the bad case: a bare "Loading…"
+        // string where the shape is known. Three row skeletons after 300ms —
+        // a fast expand shows nothing at all rather than a flash.
+        return (
+          <div key={row.key} role="presentation" aria-busy className="px-2 py-1 pl-8">
+            <span className="sr-only">{t('common.loading')}</span>
+            <Skeleton variant="row" count={3} />
+          </div>
+        )
+
+      case 'connection':
+        return (
+          <TreeRow
+            {...common}
+            key={row.key}
+            expandable
+            expanded={row.expanded}
+            onToggle={() => void actions.toggleConnection(row.connection)}
+            onActivate={() => void actions.toggleConnection(row.connection)}
+            label={
+              <span className="flex min-w-0 items-center gap-1.5">
+                <EngineIcon engine={row.connection.engine} className="size-3.5 shrink-0" />
+                <span className="truncate">{row.connection.name}</span>
+              </span>
+            }
+            badges={
+              // SSH files/terminal are the whole point of an SSH connection row,
+              // so they stay inline and — unlike before — always visible.
+              row.connection.useSSH ? (
+                <span data-tree-action className="flex shrink-0 items-center gap-0.5">
+                  <Badge tone="warning" size="xs">
+                    SSH
+                  </Badge>
+                  <IconButton
+                    icon={Folder}
+                    label={t('sidebar.openSshFiles')}
+                    size="xs"
+                    variant="ghost"
+                    onClick={() => actions.openSSHFiles(row.connection)}
+                  />
+                  <IconButton
+                    icon={SquareTerminal}
+                    label={t('sidebar.openSshTerminal')}
+                    size="xs"
+                    variant="ghost"
+                    onClick={() => actions.openSSHTerminal(row.connection)}
+                  />
+                </span>
+              ) : null
+            }
+            overflow={overflowFor(row)}
+            overflowLabel={t('sidebar.moreActionsFor', { name: row.connection.name })}
+          />
+        )
+
+      case 'database': {
+        const selected =
+          rightView.kind === 'database' &&
+          rightView.connectionId === row.connection.id &&
+          rightView.database === row.database
+        return (
+          <TreeRow
+            {...common}
+            key={row.key}
+            ref={(element: HTMLDivElement | null) => {
+              rowRefs.current[index] = element
+              const key = `${row.connection.id}:${row.database}`
+              if (!element) delete databaseRowRefs.current[key]
+              else
+                databaseRowRefs.current[key] = {
+                  element,
+                  connectionName: row.connection.name,
+                  database: row.database
+                }
+            }}
+            expandable
+            expanded={row.expanded}
+            selected={selected}
+            icon={Database}
+            label={row.database}
+            onToggle={() => void actions.toggleDatabase(row.connection, row.database)}
+            onActivate={() => void actions.toggleDatabase(row.connection, row.database)}
+            badges={
+              row.hasCustomCredential ? (
+                // Persistent, because a hover-only key icon was unreachable by
+                // keyboard and invisible until you happened to point at it.
+                <Badge
+                  tone="accent"
+                  size="xs"
+                  icon={KeyRound}
+                  title={t('sidebar.editCustomDatabaseCredential', {
+                    username: row.connection.databaseCredentials?.[row.database]?.username ?? ''
+                  })}
+                >
+                  {t('sidebar.customAccount')}
+                </Badge>
+              ) : null
+            }
+            meta={row.keyCount === undefined ? undefined : formatNumber(row.keyCount)}
+            actions={
+              <IconButton
+                icon={RefreshCw}
+                label={t('common.refresh')}
+                size="xs"
+                variant="ghost"
+                onClick={() => void actions.refreshDatabase(row.connection, row.database)}
+              />
+            }
+            overflow={overflowFor(row)}
+            overflowLabel={t('sidebar.moreActionsFor', { name: row.database })}
+          />
+        )
+      }
+
+      case 'filter':
+        return (
+          <div
+            key={row.key}
+            role="presentation"
+            className="py-1 pr-1"
+            style={{ paddingLeft: row.depth * 12 + 8 }}
+          >
+            <SearchInput
+              size="sm"
+              value={row.value}
+              onValueChange={(value) =>
+                actions.setTableFilter(row.connection.id, row.database, value)
+              }
+              placeholder={
+                row.connection.engine === 'redis'
+                  ? t('sidebar.filterKeys')
+                  : t('sidebar.filterTables')
+              }
+              clearLabel={t('common.clear')}
+            />
+          </div>
+        )
+
+      case 'table': {
+        const selected =
+          rightView.kind === 'table' &&
+          rightView.connectionId === row.connection.id &&
+          rightView.database === row.database &&
+          rightView.table === row.table
+        return (
+          <TreeRow
+            {...common}
+            key={row.key}
+            icon={TableIcon}
+            label={row.table}
+            selected={selected}
+            editing={editingFor(row.connection.id, row.database, row.table)}
+            onActivate={() => actions.selectTable(row.connection, row.database, row.table)}
+            overflow={overflowFor(row)}
+            overflowLabel={t('sidebar.moreActionsFor', { name: row.table })}
+          />
+        )
+      }
+
+      case 'redis-folder':
+        return (
+          <TreeRow
+            {...common}
+            key={row.key}
+            expandable
+            expanded={row.expanded}
+            icon={Folder}
+            label={row.label}
+            meta={formatNumber(row.count)}
+            onToggle={() => toggleRedisFolder(row.folderId)}
+            onActivate={() => toggleRedisFolder(row.folderId)}
+          />
+        )
+
+      case 'redis-key': {
+        const selected =
+          rightView.kind === 'table' &&
+          rightView.connectionId === row.connection.id &&
+          rightView.database === row.database &&
+          rightView.table === row.keyName
+        return (
+          <TreeRow
+            {...common}
+            key={row.key}
+            icon={KeyRound}
+            label={row.label}
+            selected={selected}
+            editing={editingFor(row.connection.id, row.database, row.keyName)}
+            onActivate={() => actions.selectTable(row.connection, row.database, row.keyName)}
+            overflow={overflowFor(row)}
+            overflowLabel={t('sidebar.moreActionsFor', { name: row.keyName })}
+          />
+        )
+      }
+
+      case 'message':
+        return (
+          <div
+            key={row.key}
+            role="presentation"
+            className="py-1 text-xs text-fg-subtle"
+            style={{ paddingLeft: row.depth * 12 + 8 }}
+          >
+            {t(MESSAGE_KEY[row.message])}
+          </div>
+        )
+
+      case 'truncated':
+        return (
+          <div
+            key={row.key}
+            role="status"
+            className="py-1 pr-1"
+            style={{ paddingLeft: row.depth * 12 + 8 }}
+          >
+            <Badge tone="warning" size="xs" icon={TriangleAlert} className="whitespace-normal">
+              {t('sidebar.redisKeysTruncated', {
+                shown: formatNumber(row.shown),
+                total: formatNumber(row.total)
+              })}
+            </Badge>
+          </div>
+        )
+    }
+  }
 
   return (
     <>
-      <div className="flex h-[53px] items-center border-b border-border px-2">
-        <div className="flex w-full items-center gap-1">
-          <SidebarAppMenu />
-          <div className="relative min-w-0 flex-1">
-            <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={keyword}
-              onChange={(event) => onKeywordChange(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Escape') onKeywordChange('')
-              }}
-              placeholder={t('sidebar.searchConnection')}
-              className="h-9 pl-7 pr-7"
+      <div className="flex h-toolbar shrink-0 items-center gap-1 border-b border-border px-2">
+        {/*
+          Theme, language and Diff & Sync used to be crammed in here behind an
+          unlabeled icon; they are in Settings and the titlebar now (§1.3).
+        */}
+        <SearchInput
+          ref={searchRef}
+          size="sm"
+          value={keyword}
+          onValueChange={setKeyword}
+          placeholder={t('sidebar.searchConnection')}
+          clearLabel={t('common.clear')}
+          containerClassName="min-w-0 flex-1"
+        />
+        <DropdownMenu
+          items={sidebarMenu}
+          align="end"
+          aria-label={t('sidebar.sidebarMenu')}
+          trigger={
+            <IconButton
+              icon={EllipsisVertical}
+              label={t('sidebar.sidebarMenu')}
+              size="sm"
+              variant="ghost"
             />
-            {keyword && (
-              <button
-                type="button"
-                className="absolute right-1.5 top-1/2 rounded p-0.5 text-muted-foreground -translate-y-1/2 hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                onClick={() => onKeywordChange('')}
-                title={t('common.clear')}
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            )}
-          </div>
-          <Button size="icon" variant="outline" onClick={onCreateConnection} title={t('sidebar.newConnection')}>
-            <Plus className="h-4 w-4" />
-          </Button>
-        </div>
+          }
+        />
       </div>
 
-      <div ref={treeScrollRef} className="relative flex-1 overflow-auto py-1 text-sm">
-        {stickyDatabase && (
-          <div className="pointer-events-none sticky top-0 z-20 mx-2 mb-1 rounded-md border border-border bg-card/95 px-3 py-1.5 shadow-sm backdrop-blur">
-            <div className="truncate text-[10px] text-muted-foreground">{stickyDatabase.connectionName}</div>
-            <div className="truncate text-xs font-medium">{stickyDatabase.database}</div>
+      <ScrollArea viewportRef={scrollRef} className="relative pb-1" stickyShadow>
+        {stickyDatabase ? (
+          <div className="pointer-events-none sticky top-0 z-[var(--ds-z-sticky)] mx-1 mb-1 rounded-md border border-border bg-surface/95 px-2 py-1 backdrop-blur">
+            <div className="truncate text-2xs text-fg-subtle">{stickyDatabase.connectionName}</div>
+            <div className="truncate text-xs font-medium text-fg">{stickyDatabase.database}</div>
           </div>
-        )}
+        ) : null}
 
-        {filteredConnections.length === 0 && (
-          <div className="px-3 py-4 text-xs text-muted-foreground">{t('sidebar.noConnection')}</div>
-        )}
-
-        {connectionGroups.map((group) => (
-          <div key={group.key} className="pb-1">
-            <div className="mx-2 flex items-center justify-between px-1 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-              <span className="truncate">{group.label}</span>
-              <span>{group.connections.length}</span>
-            </div>
-
-            {group.connections.map((connection) => {
-              const node = nodes[connection.id]
-
-              return (
-                <div key={connection.id}>
-                  <SidebarConnectionRow
-                    connection={connection}
-                    expanded={Boolean(node?.expanded)}
-                    onToggle={onToggleConnection}
-                    onEdit={onEditConnection}
-                    onOpenSSHFiles={onOpenSSHFiles}
-                    onOpenSSHTerminal={onOpenSSHTerminal}
-                    onOpenMenu={onOpenConnectionMenu}
-                  />
-
-                  {node?.expanded && (
-                    <div className="pl-4">
-                      {node.loading && (
-                        <div className="px-2 py-1 text-xs text-muted-foreground">{t('common.loading')}</div>
-                      )}
-                      {node.databases?.map((database) => {
-                        const dbExpanded = node.expandedDbs.has(database)
-                        const filterValue = getTableFilter(connection.id, database)
-                        const tables = node.tables[database]
-                        const visibleTables = (tables ?? []).filter((table) => {
-                          return !filterValue || table.toLowerCase().includes(filterValue.toLowerCase())
-                        })
-                        const isRedis = connection.engine === 'redis'
-                        const customCredential = connection.engine === 'postgres'
-                          ? connection.databaseCredentials?.[database]
-                          : undefined
-                        const keyCount = isRedis ? node.tableCounts?.[database] : undefined
-
-                        return (
-                          <div key={database}>
-                            <div
-                              ref={(element) => {
-                                const key = `${connection.id}:${database}`
-                                if (!element) {
-                                  delete dbRowRefs.current[key]
-                                  return
-                                }
-
-                                dbRowRefs.current[key] = {
-                                  element,
-                                  connectionName: connection.name,
-                                  database
-                                }
-                              }}
-                              className={cn(
-                                'group mx-1 flex items-center rounded-md hover:bg-accent focus-within:bg-accent/70',
-                                isSelectedDatabase(connection.id, database) && 'bg-accent text-foreground'
-                              )}
-                              onContextMenu={(event) => onOpenDatabaseMenu(event, connection, database)}
-                              title={t('sidebar.databaseRightClickHint')}
-                            >
-                              <button
-                                type="button"
-                                aria-expanded={dbExpanded}
-                                className="flex min-w-0 flex-1 items-center px-2 py-1 text-left focus-visible:outline-none"
-                                onClick={() => onToggleDatabase(connection, database)}
-                              >
-                                {dbExpanded ? (
-                                  <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
-                                ) : (
-                                  <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
-                                )}
-                                <Database className="mx-1 h-3 w-3 text-emerald-400" />
-                                <span className="flex-1 truncate">{database}</span>
-                                {isRedis && keyCount !== undefined && (
-                                  <span className="ml-1 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                                    {keyCount.toLocaleString()}
-                                  </span>
-                                )}
-                              </button>
-                              {connection.engine === 'postgres' && (
-                                <button
-                                  type="button"
-                                  onClick={(event) => {
-                                    event.stopPropagation()
-                                    onOpenDatabaseCredential(connection, database)
-                                  }}
-                                  className={cn(
-                                    'mr-1 shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-background/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
-                                    customCredential
-                                      ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
-                                      : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'
-                                  )}
-                                  title={customCredential
-                                    ? t('sidebar.editCustomDatabaseCredential', { username: customCredential.username ?? '' })
-                                    : t('sidebar.addCustomDatabaseCredential')}
-                                  aria-label={customCredential
-                                    ? t('sidebar.editCustomDatabaseCredential', { username: customCredential.username ?? '' })
-                                    : t('sidebar.addCustomDatabaseCredential')}
-                                >
-                                  <KeyRound className="h-3.5 w-3.5" />
-                                </button>
-                              )}
-                              {dbExpanded && (
-                                <div className="flex items-center pr-1">
-                                  <button
-                                    onClick={(event) => {
-                                      event.stopPropagation()
-                                      onOpenDatabaseDetails(connection, database)
-                                    }}
-                                    className="p-1 text-muted-foreground hover:text-foreground"
-                                    title={t('sidebar.overlays.databaseDetails')}
-                                  >
-                                    <CircleEllipsis className="h-3 w-3" />
-                                  </button>
-                                  {!isRedis && (
-                                    <>
-                                      <button
-                                        onClick={(event) => {
-                                          event.stopPropagation()
-                                          onOpenSQLConsole(connection, database)
-                                        }}
-                                        className="p-1 text-muted-foreground hover:text-foreground"
-                                        title={t('sidebar.openSqlConsole', { database })}
-                                      >
-                                        <FileCode2 className="h-3 w-3" />
-                                      </button>
-                                      <button
-                                        onClick={(event) => {
-                                          event.stopPropagation()
-                                          onExportDatabase(connection, database)
-                                        }}
-                                        className="p-1 text-muted-foreground hover:text-foreground"
-                                        title={t('sidebar.exportDatabase', { database })}
-                                      >
-                                        <Download className="h-3 w-3" />
-                                      </button>
-                                    </>
-                                  )}
-                                  {isRedis && (
-                                    <button
-                                      onClick={(event) => {
-                                        event.stopPropagation()
-                                        onCreateRedisKey(connection, database)
-                                      }}
-                                      className="p-1 text-muted-foreground hover:text-foreground"
-                                      title={t('sidebar.overlays.newRedisKey')}
-                                    >
-                                      <Plus className="h-3 w-3" />
-                                    </button>
-                                  )}
-                                  <button
-                                    onClick={(event) => {
-                                      event.stopPropagation()
-                                      onRefreshDatabase(connection, database)
-                                    }}
-                                    className="p-1 text-muted-foreground hover:text-foreground"
-                                    title={t('common.refresh')}
-                                  >
-                                    <RefreshCw className="h-3 w-3" />
-                                  </button>
-                                </div>
-                              )}
-                            </div>
-
-                            {dbExpanded && (
-                              <div className="pl-5">
-                                <div className="relative my-1">
-                                  <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
-                                  <Input
-                                    value={filterValue}
-                                    onChange={(event) =>
-                                      onTableFilterChange(connection.id, database, event.target.value)
-                                    }
-                                    onKeyDown={(event) => {
-                                      if (event.key === 'Escape') {
-                                        onTableFilterChange(connection.id, database, '')
-                                      }
-                                    }}
-                                    placeholder={isRedis ? t('sidebar.filterKeys') : t('sidebar.filterTables')}
-                                    className="h-6 pl-6 pr-7 text-xs"
-                                  />
-                                  {filterValue && (
-                                    <button
-                                      type="button"
-                                      className="absolute right-1.5 top-1/2 rounded p-0.5 text-muted-foreground -translate-y-1/2 hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                      onClick={() => onTableFilterChange(connection.id, database, '')}
-                                      title={t('common.clear')}
-                                    >
-                                      <X className="h-3 w-3" />
-                                    </button>
-                                  )}
-                                </div>
-                                {isRedis ? (
-                                  <RedisKeyTree
-                                    keys={visibleTables}
-                                    collapsedFolders={collapsedRedisFolders}
-                                    folderIdPrefix={`${connection.id}:${database}`}
-                                    isSelectedKey={(key) => isSelectedTable(connection.id, database, key)}
-                                    onToggleFolder={toggleRedisFolder}
-                                    onSelectKey={(key) => onSelectTable(connection, database, key)}
-                                    onOpenKeyMenu={(event, key) => onOpenTableMenu(event, connection, database, key)}
-                                    rightClickHint={t('sidebar.rightClickHint')}
-                                  />
-                                ) : (
-                                  visibleTables.map((table) => (
-                                    <div
-                                      key={table}
-                                      role="button"
-                                      tabIndex={0}
-                                      className={cn(
-                                        'flex cursor-pointer items-center rounded-md px-2 py-1 hover:bg-accent focus:bg-accent/70 focus:outline-none',
-                                        isSelectedTable(connection.id, database, table) && 'bg-accent text-foreground'
-                                      )}
-                                      onClick={() => onSelectTable(connection, database, table)}
-                                      onKeyDown={(event) => {
-                                        if (event.key === 'Enter' || event.key === 'F2') {
-                                          event.preventDefault()
-                                          onStartRenameTable(connection, database, table)
-                                          return
-                                        }
-                                        if (event.key === ' ') {
-                                          event.preventDefault()
-                                          onSelectTable(connection, database, table)
-                                        }
-                                      }}
-                                      onContextMenu={(event) => onOpenTableMenu(event, connection, database, table)}
-                                      title={t('sidebar.rightClickHint')}
-                                    >
-                                      <TableIcon className="mr-1 h-3 w-3 text-muted-foreground" />
-                                      {renamingTable?.connection.id === connection.id &&
-                                      renamingTable.database === database &&
-                                      renamingTable.table === table ? (
-                                        <Input
-                                          autoFocus
-                                          value={renameDraft}
-                                          readOnly={renameBusy}
-                                          className="h-6 min-w-0 flex-1 px-1 text-xs"
-                                          aria-label={t('sidebar.overlays.newTableName')}
-                                          onFocus={(event) => event.currentTarget.select()}
-                                          onClick={(event) => event.stopPropagation()}
-                                          onChange={(event) => onRenameDraftChange(event.target.value)}
-                                          onKeyDown={(event) => {
-                                            event.stopPropagation()
-                                            if (event.key === 'Enter' && renameDraft.trim()) {
-                                              event.preventDefault()
-                                              void onSubmitTableRename()
-                                            } else if (event.key === 'Escape') {
-                                              event.preventDefault()
-                                              onCancelTableRename()
-                                            }
-                                          }}
-                                          onBlur={() => {
-                                            if (renameBusy) return
-                                            if (renameDraft.trim()) {
-                                              void onSubmitTableRename()
-                                            } else {
-                                              onCancelTableRename()
-                                            }
-                                          }}
-                                        />
-                                      ) : (
-                                        <span className="flex-1 truncate text-xs">{table}</span>
-                                      )}
-                                    </div>
-                                  ))
-                                )}
-                                {tables && visibleTables.length === 0 && (
-                                  <div className="px-2 py-2 text-xs text-muted-foreground">
-                                    {filterValue
-                                      ? isRedis
-                                        ? t('sidebar.noKeysMatch')
-                                        : t('sidebar.noTablesMatch')
-                                      : isRedis
-                                        ? t('sidebar.noKeys')
-                                        : t('sidebar.noTables')}
-                                  </div>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        )
-                      })}
-                    </div>
-                  )}
-                </div>
+        {filtered.length === 0 ? (
+          <EmptyState
+            size="sm"
+            variant={keyword ? 'no-results' : 'first-run'}
+            icon={Database}
+            title={keyword ? t('sidebar.noConnectionMatch') : t('sidebar.emptyTitle')}
+            description={keyword ? undefined : t('sidebar.emptyDescription')}
+            action={
+              keyword ? (
+                <Button size="sm" onClick={() => setKeyword('')}>
+                  {t('sidebar.clearSearch')}
+                </Button>
+              ) : (
+                <Button size="sm" variant="primary" icon={Plus} onClick={actions.createConnection}>
+                  {t('sidebar.newConnection')}
+                </Button>
               )
-            })}
+            }
+          />
+        ) : (
+          <div role="tree" aria-label={t('sidebar.treeLabel')}>
+            {rows.map(renderRow)}
           </div>
-        ))}
+        )}
+      </ScrollArea>
+
+      <div className="flex h-statusbar shrink-0 items-center border-t border-border px-1">
+        <Button
+          size="xs"
+          variant="ghost"
+          icon={PanelLeftClose}
+          onClick={() => setCollapsed(true)}
+          className="text-fg-subtle"
+        >
+          {t('sidebar.collapseSidebar')}
+        </Button>
       </div>
     </>
   )
-}
-
-interface RedisKeyTreeNode {
-  id: string
-  label: string
-  keyName?: string
-  count: number
-  children: RedisKeyTreeNode[]
-}
-
-interface RedisKeyBuildNode {
-  id: string
-  label: string
-  keyName?: string
-  count: number
-  children: Map<string, RedisKeyBuildNode>
-}
-
-interface RedisKeyTreeProps {
-  keys: string[]
-  collapsedFolders: Set<string>
-  folderIdPrefix: string
-  isSelectedKey: (key: string) => boolean
-  onToggleFolder: (folderId: string) => void
-  onSelectKey: (key: string) => void
-  onOpenKeyMenu: (event: MouseEvent<HTMLDivElement>, key: string) => void
-  rightClickHint: string
-}
-
-type RedisKeyTreeItemProps = Omit<RedisKeyTreeProps, 'keys'> & {
-  node: RedisKeyTreeNode
-  depth: number
-}
-
-function RedisKeyTree({
-  keys,
-  collapsedFolders,
-  folderIdPrefix,
-  isSelectedKey,
-  onToggleFolder,
-  onSelectKey,
-  onOpenKeyMenu,
-  rightClickHint
-}: RedisKeyTreeProps) {
-  const tree = useMemo(() => buildRedisKeyTree(keys), [keys])
-
-  return (
-    <div>
-      {tree.map((node) => (
-        <RedisKeyTreeItem
-          key={node.id}
-          node={node}
-          depth={0}
-          collapsedFolders={collapsedFolders}
-          folderIdPrefix={folderIdPrefix}
-          isSelectedKey={isSelectedKey}
-          onToggleFolder={onToggleFolder}
-          onSelectKey={onSelectKey}
-          onOpenKeyMenu={onOpenKeyMenu}
-          rightClickHint={rightClickHint}
-        />
-      ))}
-    </div>
-  )
-}
-
-function RedisKeyTreeItem({
-  node,
-  depth,
-  collapsedFolders,
-  folderIdPrefix,
-  isSelectedKey,
-  onToggleFolder,
-  onSelectKey,
-  onOpenKeyMenu,
-  rightClickHint
-}: RedisKeyTreeItemProps) {
-  if (node.keyName) {
-    return (
-      <div
-        role="button"
-        tabIndex={0}
-        className={cn(
-          'flex cursor-pointer items-center rounded-md px-2 py-1 hover:bg-accent focus:bg-accent/70 focus:outline-none',
-          isSelectedKey(node.keyName) && 'bg-accent text-foreground'
-        )}
-        style={{ paddingLeft: 8 + depth * 12 }}
-        onClick={() => onSelectKey(node.keyName!)}
-        onKeyDown={(event) => {
-          if (event.key !== 'Enter' && event.key !== ' ') return
-          event.preventDefault()
-          onSelectKey(node.keyName!)
-        }}
-        onContextMenu={(event) => onOpenKeyMenu(event, node.keyName!)}
-        title={rightClickHint}
-      >
-        <KeyRound className="mr-1 h-3 w-3 shrink-0 text-muted-foreground" />
-        <span className="flex-1 truncate text-xs">{node.label}</span>
-      </div>
-    )
-  }
-
-  const folderId = `${folderIdPrefix}:${node.id}`
-  const expanded = !collapsedFolders.has(folderId)
-
-  return (
-    <div>
-      <button
-        type="button"
-        className="flex w-full items-center rounded-md px-2 py-1 text-left hover:bg-accent focus:bg-accent/70 focus:outline-none"
-        style={{ paddingLeft: 4 + depth * 12 }}
-        onClick={() => onToggleFolder(folderId)}
-      >
-        {expanded ? (
-          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-        ) : (
-          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-        )}
-        <Folder className="mx-1 h-3 w-3 shrink-0 text-muted-foreground" />
-        <span className="min-w-0 flex-1 truncate text-xs">{node.label}</span>
-        <span className="ml-1 text-[10px] text-muted-foreground">{node.count}</span>
-      </button>
-      {expanded && node.children.map((child) => (
-        <RedisKeyTreeItem
-          key={child.id}
-          node={child}
-          depth={depth + 1}
-          collapsedFolders={collapsedFolders}
-          folderIdPrefix={folderIdPrefix}
-          isSelectedKey={isSelectedKey}
-          onToggleFolder={onToggleFolder}
-          onSelectKey={onSelectKey}
-          onOpenKeyMenu={onOpenKeyMenu}
-          rightClickHint={rightClickHint}
-        />
-      ))}
-    </div>
-  )
-}
-
-function buildRedisKeyTree(keys: string[]): RedisKeyTreeNode[] {
-  const root = new Map<string, RedisKeyBuildNode>()
-
-  keys.forEach((key) => {
-    const parts = key.split(':')
-    if (parts.length <= 1) {
-      root.set(`leaf:${key}`, createRedisBuildLeaf(key, key))
-      return
-    }
-
-    let siblings = root
-    let path = ''
-    parts.forEach((part, index) => {
-      const label = part || '(empty)'
-      path = path ? `${path}:${part}` : part
-      const last = index === parts.length - 1
-
-      if (last) {
-        siblings.set(`leaf:${key}`, createRedisBuildLeaf(label, key))
-        return
-      }
-
-      const folderMapKey = `folder:${path}`
-      let folder = siblings.get(folderMapKey)
-      if (!folder) {
-        folder = { id: path, label, count: 0, children: new Map() }
-        siblings.set(folderMapKey, folder)
-      }
-      folder.count += 1
-      siblings = folder.children
-    })
-  })
-
-  return sortRedisTreeNodes(Array.from(root.values()).map(toRedisKeyTreeNode))
-}
-
-function createRedisBuildLeaf(label: string, keyName: string): RedisKeyBuildNode {
-  return { id: keyName, label, keyName, count: 1, children: new Map() }
-}
-
-function toRedisKeyTreeNode(node: RedisKeyBuildNode): RedisKeyTreeNode {
-  return {
-    id: node.id,
-    label: node.label,
-    keyName: node.keyName,
-    count: node.count,
-    children: Array.from(node.children.values()).map(toRedisKeyTreeNode)
-  }
-}
-
-function sortRedisTreeNodes(nodes: RedisKeyTreeNode[]): RedisKeyTreeNode[] {
-  return nodes
-    .map((node) => ({ ...node, children: sortRedisTreeNodes(node.children) }))
-    .sort((left, right) => {
-      if (Boolean(left.keyName) !== Boolean(right.keyName)) return left.keyName ? 1 : -1
-      return left.label.localeCompare(right.label)
-    })
 }

@@ -1,7 +1,9 @@
 // 行的新增 / 编辑弹窗。根据列类型选择不同输入控件。
 import { useEffect, useMemo, useState } from 'react'
+import { KeyRound } from 'lucide-react'
+import { Badge } from '@renderer/components/ui/badge'
 import { Dialog } from '@renderer/components/ui/dialog'
-import { Input } from '@renderer/components/ui/input'
+import { Input, Textarea } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
 import { Button } from '@renderer/components/ui/button'
 import { Checkbox } from '@renderer/components/ui/checkbox'
@@ -91,13 +93,13 @@ export function RowEditDialog({ mode, columns, primaryKey, row, onClose, onSubmi
       open
       onOpenChange={(o) => !o && onClose()}
       title={mode === 'insert' ? t('rowEdit.insertTitle') : t('rowEdit.editTitle')}
-      className="max-w-4xl"
+      size="xl"
       footer={
         <>
-          <Button variant="outline" onClick={onClose} disabled={busy}>
+          <Button variant="secondary" onClick={onClose} disabled={busy}>
             {t('common.cancel')}
           </Button>
-          <Button onClick={handleSubmit} disabled={busy || (mode === 'edit' && !hasChanges)}>
+          <Button variant="primary" onClick={handleSubmit} disabled={busy || (mode === 'edit' && !hasChanges)}>
             {mode === 'insert' ? t('common.insert') : t('common.update')}
           </Button>
         </>
@@ -109,19 +111,25 @@ export function RowEditDialog({ mode, columns, primaryKey, row, onClose, onSubmi
             <Label className="mb-1 block">
               <div className="flex flex-wrap items-center gap-1.5">
                 <span>{column.name}</span>
-                <span className="text-[10px] opacity-60">{column.type}</span>
-                {column.isPrimaryKey && <span className="text-[10px] text-amber-400">{t('rowEdit.pk')}</span>}
-                {!column.nullable && <span className="text-[10px] text-red-400">*</span>}
-                {column.comment && (
-                  <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300">
-                    {t('common.comment')}
+                <span className="font-mono text-2xs text-fg-subtle">{column.type}</span>
+                {column.isPrimaryKey && (
+                  <Badge size="xs" tone="warning" icon={KeyRound}>
+                    {t('rowEdit.pk')}
+                  </Badge>
+                )}
+                {!column.nullable && (
+                  <span className="text-2xs text-danger-text" title={t('rowEdit.required')}>
+                    *
                   </span>
+                )}
+                {column.comment && (
+                  <Badge size="xs" tone="neutral">
+                    {t('common.comment')}
+                  </Badge>
                 )}
               </div>
               {column.comment && (
-                <div className="mt-1 text-[11px] leading-4 text-muted-foreground">
-                  {column.comment}
-                </div>
+                <div className="mt-1 text-xs leading-4 text-fg-muted">{column.comment}</div>
               )}
             </Label>
             {renderInput(column, values[column.name], t, (nextValue) => {
@@ -132,7 +140,7 @@ export function RowEditDialog({ mode, columns, primaryKey, row, onClose, onSubmi
         ))}
       </div>
       {error && (
-        <div className="mt-3 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-700 dark:text-red-300">
+        <div role="alert" className="mt-3 rounded-md border border-danger/30 bg-danger-quiet px-3 py-2 text-sm text-danger-text">
           {error}
         </div>
       )}
@@ -243,11 +251,12 @@ function renderInput(
   if (c.type === 'json') {
     return (
       <div className="flex min-w-0 items-start gap-1.5">
-        <textarea
+        <Textarea
+          mono
           value={formatInputValue(c, value)}
           onChange={(e) => onChange(e.target.value)}
           rows={4}
-          className="min-w-0 flex-1 rounded-md border border-input bg-background p-2 text-xs font-mono"
+          className="min-w-0 flex-1"
         />
         <JsonViewerTrigger
           column={c}
@@ -262,11 +271,11 @@ function renderInput(
   }
   if (c.type.startsWith('text') || c.type.includes('blob')) {
     return (
-      <textarea
+      <Textarea
+        mono
         value={formatInputValue(c, value)}
         onChange={(e) => onChange(e.target.value)}
         rows={4}
-        className="w-full rounded-md border border-input bg-background p-2 text-xs font-mono"
       />
     )
   }

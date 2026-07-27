@@ -121,13 +121,12 @@ export function ImportTableDialog({
       onOpenChange={onOpenChange}
       title={t('importDialog.title')}
       description={`${database}.${table}`}
-      className="max-w-lg"
       footer={
         <>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
+          <Button variant="secondary" onClick={() => onOpenChange(false)} disabled={busy}>
             {t('common.cancel')}
           </Button>
-          <Button onClick={submit} disabled={busy || !selectedFile}>
+          <Button variant="primary" onClick={submit} disabled={busy || !selectedFile}>
             {busy ? t('importDialog.importing') : t('common.import')}
           </Button>
         </>
@@ -161,8 +160,8 @@ export function ImportTableDialog({
           />
           <div
             className={cn(
-              'flex min-h-28 flex-col items-center justify-center gap-3 rounded-md border border-dashed border-border bg-background p-4 text-center transition-colors',
-              dragActive && 'border-primary bg-primary/10'
+              'flex min-h-28 flex-col items-center justify-center gap-3 rounded-md border border-dashed border-border bg-canvas p-4 text-center transition-colors',
+              dragActive && 'border-accent bg-accent/10'
             )}
             onDragOver={(event) => {
               event.preventDefault()
@@ -173,23 +172,23 @@ export function ImportTableDialog({
           >
             {selectedFile ? (
               <div className="flex max-w-full items-center gap-2 text-sm">
-                <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
+                <FileText className="h-4 w-4 shrink-0 text-fg-muted" />
                 <span className="truncate font-medium">{selectedFile.name}</span>
               </div>
             ) : (
               <>
-                <UploadCloud className="h-6 w-6 text-muted-foreground" />
-                <div className="text-sm text-muted-foreground">{t('importDialog.dropFileHint')}</div>
+                <UploadCloud className="h-6 w-6 text-fg-muted" />
+                <div className="text-sm text-fg-muted">{t('importDialog.dropFileHint')}</div>
               </>
             )}
-            <Button type="button" variant="outline" size="sm" onClick={() => inputRef.current?.click()} disabled={busy}>
+            <Button type="button" variant="secondary" size="sm" onClick={() => inputRef.current?.click()} disabled={busy}>
               {t('importDialog.chooseFile')}
             </Button>
           </div>
         </div>
 
         {format === 'sql' ? (
-          <div className="rounded-md border border-border bg-background p-3 text-xs text-muted-foreground">
+          <div className="rounded-md border border-border bg-canvas p-3 text-xs text-fg-muted">
             {t('importDialog.sqlHint')}
           </div>
         ) : (
@@ -202,7 +201,7 @@ export function ImportTableDialog({
               <Checkbox checked={emptyAsNull} onChange={(event) => setEmptyAsNull(event.target.checked)} />
               {t('importDialog.emptyAsNull')}
             </label>
-            <div className="text-xs text-muted-foreground">
+            <div className="text-xs text-fg-muted">
               {format === 'csv' ? t('importDialog.csvHint') : t('importDialog.textHint')}
             </div>
           </div>
