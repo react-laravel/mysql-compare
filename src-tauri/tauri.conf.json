@@ -27,6 +27,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": "all",
     "icon": [
       "icons/32x32.png",
@@ -36,5 +37,12 @@
       "icons/icon.ico"
     ]
   },
-  "plugins": {}
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDJENDIxNEUyMzZFNjc4Q0UKUldUT2VPWTI0aFJDTGVWdU1XTE52OHhsTWxDL3E5cmNSSGRmQVN1SU93WmhBbjYzSGRuc3pHVVAK",
+      "endpoints": [
+        "https://github.com/react-laravel/mysql-compare/releases/latest/download/latest.json"
+      ]
+    }
+  }
 }

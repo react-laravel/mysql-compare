@@ -51,6 +51,13 @@ export const zhCN: Dictionary = {
     moreActions: '更多操作',
     cannotBeUndone: '此操作无法撤销。',
   },
+  updater: {
+    available: '发现新版本 {{version}}。',
+    installNow: '立即更新',
+    downloading: '正在下载更新…',
+    installing: '更新已安装，正在重新启动…',
+    failed: '更新失败',
+  },
   workspace: {
     emptyTitle: '还没有打开任何内容',
     firstRunTitle: '还没有连接',

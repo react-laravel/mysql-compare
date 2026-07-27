@@ -49,6 +49,13 @@ export const en = {
     moreActions: 'More actions',
     cannotBeUndone: 'This cannot be undone.',
   },
+  updater: {
+    available: 'Version {{version}} is available.',
+    installNow: 'Install now',
+    downloading: 'Downloading update…',
+    installing: 'Update installed. Restarting…',
+    failed: 'Update failed',
+  },
   workspace: {
     emptyTitle: 'Nothing open yet',
     firstRunTitle: 'No connections yet',
