@@ -129,7 +129,7 @@ describe('ship criteria — focus', () => {
 describe('ship criteria — one z ladder', () => {
   it('never writes a numeric z-index — stacking comes from the token ladder', () => {
     // Before the redesign every popover (z-[80]/[85]/[90]) rendered above every
-    // dialog (z-50). Layers are `z-[var(--ds-z-*)]` now, ordered in tokens.css.
+    // dialog (z-50). Layers now use named --ds-z-* tokens ordered in tokens.css.
     const hits = scan(
       SOURCE_FILES.filter((file) => file !== 'styles/tokens.css'),
       /\bz-(?:\[\s*[0-9]{2,}\s*\]|[0-9]{2,})\b/,

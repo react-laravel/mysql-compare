@@ -9,7 +9,6 @@
 // Result rendering lives in `SQLResultPanel` / `SQLExplainPanel`, and the
 // driver-shape normalisation in `sql-result-normalize.ts`.
 import { useCallback, useEffect, useRef, useState } from 'react'
-import Editor, { type OnMount } from '@monaco-editor/react'
 import type { editor as MonacoEditor } from 'monaco-editor'
 import {
   ClipboardCopy,
@@ -27,6 +26,7 @@ import { Button } from '@renderer/components/ui/button'
 import { Dialog } from '@renderer/components/ui/dialog'
 import type { MenuItem } from '@renderer/components/ui/dropdown-menu'
 import { Kbd } from '@renderer/components/ui/kbd'
+import { MonacoEditor as Editor, type OnMount } from '@renderer/components/ui/monaco-editor'
 import { SplitPane } from '@renderer/components/ui/split-pane'
 import { Toolbar } from '@renderer/components/ui/toolbar'
 import { api, unwrap } from '@renderer/lib/api'

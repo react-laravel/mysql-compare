@@ -4,12 +4,12 @@
 // `window.confirm`（重新载入 / 关闭标签页时丢弃改动）换成同一个
 // `ConfirmDialog`。
 import { useEffect, useMemo, useRef, useState } from 'react'
-import Editor, { type OnMount } from '@monaco-editor/react'
 import { Copy, FileCode, RefreshCw, Save } from 'lucide-react'
 import { Badge } from '@renderer/components/ui/badge'
 import { Button } from '@renderer/components/ui/button'
 import { ConfirmDialog } from '@renderer/components/ui/confirm-dialog'
 import { Kbd } from '@renderer/components/ui/kbd'
+import { MonacoEditor as Editor, type OnMount } from '@renderer/components/ui/monaco-editor'
 import { Panel } from '@renderer/components/ui/panel'
 import { Toolbar } from '@renderer/components/ui/toolbar'
 import type { MenuItem } from '@renderer/components/ui/dropdown-menu'

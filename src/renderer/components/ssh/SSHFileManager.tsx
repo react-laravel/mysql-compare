@@ -4,42 +4,31 @@
 // 背景在提示。现在是：`Toolbar`（Refresh · Upload ▾ · Download · ⋯）+ 面包屑/
 // 过滤行 + `DataTable`，每一行常驻一个 `⋯`，所以动作和对象在同一处。
 // 删除走 `ConfirmDialog`，不再是 `window.confirm`。
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import {
-  ArrowUp,
-  Check,
   Download,
-  EllipsisVertical,
-  File,
   FilePen,
-  Folder,
   FolderPlus,
   FolderUp,
   PencilLine,
-  RefreshCw,
   Trash2,
   Upload
 } from 'lucide-react'
-import { Button } from '@renderer/components/ui/button'
 import { ConfirmDialog } from '@renderer/components/ui/confirm-dialog'
-import { DataTable, type Column } from '@renderer/components/ui/data-table'
-import { DropdownMenu, type MenuItem } from '@renderer/components/ui/dropdown-menu'
-import { EmptyState } from '@renderer/components/ui/empty-state'
-import { IconButton } from '@renderer/components/ui/icon-button'
-import { Input } from '@renderer/components/ui/input'
-import { SearchInput } from '@renderer/components/ui/search-input'
-import { SplitButton } from '@renderer/components/ui/split-button'
-import { Toolbar } from '@renderer/components/ui/toolbar'
+import type { MenuItem } from '@renderer/components/ui/dropdown-menu'
 import { api, unwrap } from '@renderer/lib/api'
 import { useAppAction } from '@renderer/lib/app-actions'
-import { formatBytes, formatDateTime } from '@renderer/lib/format'
 import { cn } from '@renderer/lib/utils'
 import { useI18n } from '@renderer/i18n'
 import { useUIStore } from '@renderer/store/ui-store'
 import { SSHMoveDialog } from './SSHMoveDialog'
 import { SSHNewFolderDialog } from './SSHNewFolderDialog'
+import { SSHFileTable } from './SSHFileTable'
+import { SSHFileToolbar } from './SSHFileToolbar'
+import { buildSSHRemotePath, hasDraggedFiles } from './ssh-file-path'
 import { getDroppedUploadEntries } from './ssh-drop-utils'
-import type { SSHFileEntry, SSHListFilesResult } from '../../../shared/types'
+import { useSSHFileListing } from './useSSHFileListing'
+import type { SSHFileEntry } from '../../../shared/types'
 
 interface SSHFileManagerProps {
   connectionId: string
@@ -56,12 +45,19 @@ interface PendingMove {
 export function SSHFileManager({ connectionId, connectionName, active = true }: SSHFileManagerProps) {
   const { t } = useI18n()
   const { hasUnsavedSSHPathTabs, moveSSHPathTabs, setRightView, showToast } = useUIStore()
-  const [currentPath, setCurrentPath] = useState('.')
-  const [pathDraft, setPathDraft] = useState('.')
-  const [editingPath, setEditingPath] = useState(false)
-  const [listing, setListing] = useState<SSHListFilesResult | null>(null)
-  const [selected, setSelected] = useState<SSHFileEntry | null>(null)
-  const [loading, setLoading] = useState(false)
+  const {
+    currentPath,
+    pathDraft,
+    setPathDraft,
+    editingPath,
+    setEditingPath,
+    listing,
+    selected,
+    setSelected,
+    loading,
+    loadError,
+    loadFiles
+  } = useSSHFileListing(connectionId)
   const [busy, setBusy] = useState(false)
   const [draggingUpload, setDraggingUpload] = useState(false)
   const [filter, setFilter] = useState('')
@@ -69,41 +65,13 @@ export function SSHFileManager({ connectionId, connectionName, active = true }: 
   const [newFolderOpen, setNewFolderOpen] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<SSHFileEntry | null>(null)
   const [pendingMove, setPendingMove] = useState<PendingMove | null>(null)
-  const [loadError, setLoadError] = useState<Error | null>(null)
   const dragDepth = useRef(0)
-  const requestSeq = useRef(0)
   const filterRef = useRef<HTMLInputElement | null>(null)
 
   const entries = listing?.entries ?? []
   const selectedIsFile = selected?.type === 'file' || selected?.type === 'symlink'
   const selectedCanDelete = !!selected && selected.path !== '/' && selected.path !== '.'
   const selectedCanMove = selectedCanDelete
-
-  const loadFiles = async (path = currentPath) => {
-    const requestId = requestSeq.current + 1
-    requestSeq.current = requestId
-    setLoading(true)
-    try {
-      const result = await unwrap(api.ssh.listFiles({ connectionId, path }))
-      if (requestSeq.current !== requestId) return
-      setListing(result)
-      setLoadError(null)
-      setCurrentPath(result.path)
-      setPathDraft(result.path)
-      setEditingPath(false)
-      setSelected(null)
-    } catch (error) {
-      if (requestSeq.current !== requestId) return
-      setLoadError(error as Error)
-      showToast((error as Error).message, 'error')
-    } finally {
-      if (requestSeq.current === requestId) setLoading(false)
-    }
-  }
-
-  useEffect(() => {
-    void loadFiles('.')
-  }, [connectionId])
 
   // ⌘R 刷新当前目录，⌘F 聚焦过滤框（blueprint §4.2）。
   useAppAction('refresh-view', active && !busy ? () => void loadFiles(currentPath) : null)
@@ -216,7 +184,7 @@ export function SSHFileManager({ connectionId, connectionName, active = true }: 
       return
     }
 
-    const move: PendingMove = { entry: moveEntry, nextPath: buildRemotePath(directory, name) }
+    const move: PendingMove = { entry: moveEntry, nextPath: buildSSHRemotePath(directory, name) }
     // 移动会让已打开的编辑器指向新路径并重新载入，未保存的改动会丢。以前这是
     // 一个 `window.confirm`；现在是一个可主题化的确认框，取消 = 不移动。
     if (hasUnsavedSSHPathTabs(connectionId, move.entry.path)) {
@@ -332,72 +300,6 @@ export function SSHFileManager({ connectionId, connectionName, active = true }: 
     return entries.filter((entry) => entry.name.toLowerCase().includes(query))
   }, [entries, filter])
 
-  const columns = useMemo<Column<SSHFileEntry>[]>(
-    () => [
-      {
-        id: 'name',
-        header: t('common.name'),
-        cell: (entry) => (
-          <span className="flex min-w-0 items-center gap-2">
-            {entry.type === 'directory' ? (
-              <Folder aria-hidden strokeWidth={1.75} className="size-3.5 shrink-0 text-accent-text" />
-            ) : (
-              <File aria-hidden strokeWidth={1.75} className="size-3.5 shrink-0 text-fg-muted" />
-            )}
-            <span className="truncate font-mono">{entry.name}</span>
-          </span>
-        ),
-        title: (entry) => entry.path
-      },
-      { id: 'type', header: t('common.type'), width: 96, cell: (entry) => t(`sshFiles.type.${entry.type}`) },
-      {
-        id: 'size',
-        header: t('sshFiles.size'),
-        width: 104,
-        align: 'right',
-        cell: (entry) => (entry.type === 'directory' ? '—' : formatBytes(entry.size))
-      },
-      {
-        id: 'permissions',
-        header: t('sshFiles.permissions'),
-        width: 120,
-        mono: true,
-        cell: (entry) => entry.permissions
-      },
-      {
-        id: 'modified',
-        header: t('sshFiles.modifiedAt'),
-        width: 168,
-        cell: (entry) => formatDateTime(entry.modifiedAt)
-      },
-      {
-        id: 'actions',
-        header: <span className="sr-only">{t('common.action')}</span>,
-        width: 44,
-        align: 'right',
-        cell: (entry) => (
-          <DropdownMenu
-            items={entryMenuItems(entry)}
-            side="bottom"
-            align="end"
-            aria-label={t('common.moreActions')}
-            trigger={
-              <IconButton
-                icon={EllipsisVertical}
-                label={t('common.moreActions')}
-                size="xs"
-                variant="ghost"
-                tooltipSide="left"
-              />
-            }
-          />
-        )
-      }
-    ],
-    // 菜单闭包依赖当前目录与忙碌态，交给 React 每次渲染重建即可。
-    [t, currentPath, busy, loading]
-  )
-
   const onDragEnter = (event: React.DragEvent<HTMLDivElement>) => {
     if (!hasDraggedFiles(event.dataTransfer) || busy || loading) return
     event.preventDefault()
@@ -435,202 +337,53 @@ export function SSHFileManager({ connectionId, connectionName, active = true }: 
       onDragLeave={onDragLeave}
       onDrop={onDrop}
     >
-      <Toolbar
-        icon={Folder}
-        title={connectionName}
-        subtitle={<span className="font-mono">{currentPath}</span>}
-        progress={loading || busy ? { status: 'running', label: t('common.loading') } : null}
-        overflowLabel={t('common.moreActions')}
+      <SSHFileToolbar
+        connectionName={connectionName}
+        currentPath={currentPath}
+        parentPath={listing?.parentPath}
+        pathDraft={pathDraft}
+        editingPath={editingPath}
+        filter={filter}
+        selected={selected}
+        loading={loading}
+        busy={busy}
         overflow={toolbarOverflow}
-        actions={
-          <>
-            <IconButton
-              icon={RefreshCw}
-              label={t('common.refresh')}
-              shortcut="Mod+R"
-              size="sm"
-              variant="ghost"
-              loading={loading}
-              disabled={loading || busy}
-              onClick={() => void loadFiles(currentPath)}
-            />
-            <SplitButton
-              size="sm"
-              variant="secondary"
-              icon={Upload}
-              disabled={loading || busy}
-              onClick={() => void uploadFile()}
-              menuLabel={t('sshFiles.uploadOptions')}
-              items={[
-                {
-                  id: 'upload-folder',
-                  icon: FolderUp,
-                  label: t('sshFiles.uploadFolder'),
-                  onSelect: () => void uploadDirectory()
-                }
-              ]}
-            >
-              {t('sshFiles.uploadFile')}
-            </SplitButton>
-            <Button
-              size="sm"
-              variant="secondary"
-              icon={Download}
-              disabled={loading || busy || !selected}
-              onClick={() => selected && download(selected)}
-            >
-              {t('sshFiles.download')}
-            </Button>
-          </>
-        }
-        filters={
-          <>
-            <IconButton
-              icon={ArrowUp}
-              label={t('sshFiles.goParent')}
-              size="xs"
-              variant="ghost"
-              onClick={goParent}
-              disabled={!listing?.parentPath || loading || busy}
-            />
-            {editingPath ? (
-              <>
-                <Input
-                  autoFocus
-                  size="sm"
-                  mono
-                  aria-label={t('sshFiles.pathLabel')}
-                  value={pathDraft}
-                  onChange={(event) => setPathDraft(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter') submitPath()
-                    if (event.key === 'Escape') {
-                      event.stopPropagation()
-                      setPathDraft(currentPath)
-                      setEditingPath(false)
-                    }
-                  }}
-                  className="min-w-[12rem] flex-[1_1_20rem]"
-                />
-                <IconButton
-                  icon={Check}
-                  label={t('common.apply')}
-                  size="xs"
-                  variant="ghost"
-                  disabled={loading || busy}
-                  onClick={submitPath}
-                />
-              </>
-            ) : (
-              <>
-                <nav aria-label={t('sshFiles.pathLabel')} className="flex min-w-0 flex-wrap items-center">
-                  {breadcrumbSegments(currentPath).map((segment, index, all) => (
-                    <span key={segment.path} className="flex items-center">
-                      {index > 0 ? <span className="px-0.5 text-fg-subtle">/</span> : null}
-                      <Button
-                        size="xs"
-                        variant="ghost"
-                        className="font-mono"
-                        aria-current={index === all.length - 1 ? 'page' : undefined}
-                        disabled={loading || busy}
-                        onClick={() => void loadFiles(segment.path)}
-                      >
-                        {segment.label}
-                      </Button>
-                    </span>
-                  ))}
-                </nav>
-                <IconButton
-                  icon={PencilLine}
-                  label={t('sshFiles.editPath')}
-                  size="xs"
-                  variant="ghost"
-                  onClick={() => {
-                    setPathDraft(currentPath)
-                    setEditingPath(true)
-                  }}
-                />
-              </>
-            )}
-            <SearchInput
-              ref={filterRef}
-              size="sm"
-              value={filter}
-              onValueChange={setFilter}
-              placeholder={t('sshFiles.filterPlaceholder')}
-              clearLabel={t('common.clear')}
-              containerClassName="ml-auto w-56 shrink-0"
-            />
-          </>
-        }
+        filterRef={filterRef}
+        onRefresh={() => void loadFiles(currentPath)}
+        onUploadFile={() => void uploadFile()}
+        onUploadDirectory={() => void uploadDirectory()}
+        onDownload={download}
+        onGoParent={goParent}
+        onNavigate={(path) => void loadFiles(path)}
+        onPathDraftChange={setPathDraft}
+        onStartPathEdit={() => {
+          setPathDraft(currentPath)
+          setEditingPath(true)
+        }}
+        onCancelPathEdit={() => {
+          setPathDraft(currentPath)
+          setEditingPath(false)
+        }}
+        onSubmitPath={submitPath}
+        onFilterChange={setFilter}
       />
 
       <div className="min-h-0 flex-1 overflow-auto">
-        {loadError && !listing ? (
-          <div className="p-3">
-            <EmptyState
-              variant="error"
-              title={t('sshFiles.loadFailed')}
-              description={loadError.message}
-              error={loadError}
-              detailsLabel={t('common.details')}
-              action={
-                <Button variant="primary" icon={RefreshCw} onClick={() => void loadFiles(currentPath)}>
-                  {t('common.retry')}
-                </Button>
-              }
-            />
-          </div>
-        ) : (
-          <DataTable<SSHFileEntry>
-            aria-label={t('sshFiles.title')}
-            columns={columns}
-            rows={visibleEntries}
-            rowKey={(entry) => entry.path}
-            loading={loading && !listing}
-            onRowClick={(entry) => setSelected(entry)}
-            onRowActivate={openEntry}
-            activateOn="double-click"
-            onRowContextMenu={entryMenuItems}
-            rowClassName={(entry) => (selected?.path === entry.path ? 'bg-selected' : undefined)}
-            empty={
-              filter.trim() ? (
-                <EmptyState
-                  size="sm"
-                  variant="no-results"
-                  title={t('sshFiles.noMatches')}
-                  action={
-                    <Button size="sm" variant="secondary" onClick={() => setFilter('')}>
-                      {t('common.clear')}
-                    </Button>
-                  }
-                />
-              ) : (
-                <EmptyState
-                  size="sm"
-                  variant="first-run"
-                  icon={Folder}
-                  title={t('sshFiles.empty')}
-                  action={
-                    <Button size="sm" variant="primary" icon={Upload} onClick={() => void uploadFile()}>
-                      {t('sshFiles.uploadFile')}
-                    </Button>
-                  }
-                  secondaryAction={
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      icon={FolderPlus}
-                      onClick={() => setNewFolderOpen(true)}
-                    >
-                      {t('sshFiles.newFolder')}
-                    </Button>
-                  }
-                />
-              )
-            }
-          />
-        )}
+        <SSHFileTable
+          entries={visibleEntries}
+          selectedPath={selected?.path}
+          filter={filter}
+          loading={loading}
+          hasListing={!!listing}
+          loadError={loadError}
+          onRetry={() => void loadFiles(currentPath)}
+          onClearFilter={() => setFilter('')}
+          onUploadFile={() => void uploadFile()}
+          onNewFolder={() => setNewFolderOpen(true)}
+          onSelect={setSelected}
+          onActivate={openEntry}
+          getEntryMenuItems={entryMenuItems}
+        />
       </div>
 
       <div
@@ -698,30 +451,4 @@ export function SSHFileManager({ connectionId, connectionName, active = true }: 
       />
     </div>
   )
-}
-
-/** `/var/www/app` → `[/, var, www, app]`，每一段都能点回去。 */
-function breadcrumbSegments(path: string): { label: string; path: string }[] {
-  if (path === '.' || path === '') return [{ label: '.', path: '.' }]
-  const parts = path.split('/').filter(Boolean)
-  const absolute = path.startsWith('/')
-  const segments = absolute ? [{ label: '/', path: '/' }] : []
-  let prefix = absolute ? '' : '.'
-
-  for (const part of parts) {
-    prefix = prefix === '.' ? part : `${prefix}/${part}`
-    segments.push({ label: part, path: prefix })
-  }
-
-  return segments
-}
-
-function buildRemotePath(directory: string, name: string): string {
-  if (directory === '/') return `/${name}`
-  if (directory === '.') return name
-  return directory.endsWith('/') ? `${directory}${name}` : `${directory}/${name}`
-}
-
-function hasDraggedFiles(dataTransfer: DataTransfer): boolean {
-  return Array.from(dataTransfer.types ?? []).includes('Files')
 }
