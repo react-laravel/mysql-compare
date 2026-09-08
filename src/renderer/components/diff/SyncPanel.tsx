@@ -57,29 +57,34 @@ export function SyncPanel({
 }: Props) {
   const { showToast } = useUIStore()
   const { t } = useI18n()
-  const candidateTables = useMemo(() => diff.tableDiffs.map((item) => item.table), [diff])
+  const candidateTables = useMemo(() => diff.tableDiffs.filter((item) => item.kind !== 'only-in-target').map((item) => item.table), [diff])
   const crossEngine = sourceEngine !== targetEngine
 
   const [selected, setSelected] = useState<Set<string>>(new Set(candidateTables))
   const [syncStructure, setSyncStructure] = useState(true)
   const [syncData, setSyncData] = useState(false)
   const [strategy, setStrategy] = useState<ExistingTableStrategy>('skip')
-  const [plan, setPlan] = useState<SyncPlan | null>(null)
+  const [preview, setPreview] = useState<{ plan: SyncPlan; request: SyncRequest; key: string } | null>(null)
+  const [previewing, setPreviewing] = useState(false)
+  const previewRunRef = useRef(0)
+  const runningRef = useRef(false)
+  const [outcome, setOutcome] = useState<'done' | 'error' | null>(null)
   const [logs, setLogs] = useState<string[]>([])
   const [running, setRunning] = useState(false)
-  const [progress, setProgress] = useState<{ done: number; total: number; step: string } | null>(null)
+  const [progress, setProgress] = useState<{ done: number; total?: number; step: string } | null>(null)
   const [confirming, setConfirming] = useState(false)
   const jobIdRef = useRef<string | null>(null)
 
   useEffect(() => {
     const off = api.sync.onProgress((event: SyncProgressEvent) => {
+      const jobId = jobIdRef.current
+      if (!jobId || event.taskId !== jobId) return
       setLogs((current) => [
-        ...current,
+        ...current.slice(-499),
         `[${event.level}] ${event.table} · ${event.step} ${event.done}/${event.total} ${event.message || ''}`
       ])
-      setProgress({ done: event.done, total: event.total, step: `${event.table} · ${event.step}` })
-      const jobId = jobIdRef.current
-      if (jobId) {
+      setProgress({ done: event.done, total: event.total > 0 ? event.total : undefined, step: `${event.table} · ${event.step}` })
+      if (jobId && event.step !== 'progress') {
         jobs.update(jobId, {
           count: { done: event.done, total: event.total },
           detail: `${event.table} · ${event.step}`
@@ -92,9 +97,11 @@ export function SyncPanel({
   useEffect(() => {
     if (!open) return
     setSelected(new Set(candidateTables))
-    setSyncStructure(true)
+    setSyncStructure(!crossEngine)
     setSyncData(crossEngine)
-    setPlan(null)
+    setPreview(null)
+    setOutcome(null)
+    setLogs([])
     setProgress(null)
   }, [candidateTables, crossEngine, open])
 
@@ -114,23 +121,50 @@ export function SyncPanel({
     }
   }
 
+  const requestKey = JSON.stringify(buildReq(true))
+  const currentRequestKeyRef = useRef(requestKey)
+  currentRequestKeyRef.current = requestKey
+  const plan = preview?.key === requestKey ? preview.plan : null
+  const validRequest = selected.size > 0 && (syncStructure || syncData)
+    && !(source.connectionId === target.connectionId && source.database === target.database)
+
+  useEffect(() => {
+    previewRunRef.current += 1
+    setPreview(null)
+    setPreviewing(false)
+    setConfirming(false)
+    return () => { previewRunRef.current += 1 }
+  }, [requestKey, open])
+
   const targetLabel = [targetConnectionName, target.database].filter(Boolean).join(' / ')
 
   const onPreview = async () => {
+    if (runningRef.current || !validRequest) return
+    const request = buildReq(true)
+    const key = JSON.stringify(request)
+    const runId = ++previewRunRef.current
+    setPreview(null)
+    setPreviewing(true)
     try {
-      const next = await unwrap<SyncPlan>(submitSyncRequest(api.sync, buildReq(true)))
-      setPlan(next)
+      const next = await unwrap<SyncPlan>(submitSyncRequest(api.sync, { ...request, dryRun: true }))
+      if (runId !== previewRunRef.current || key !== currentRequestKeyRef.current) return
+      setPreview({ plan: next, request, key })
     } catch (err) {
-      showToast((err as Error).message, 'error')
+      if (runId === previewRunRef.current) showToast((err as Error).message, 'error')
+    } finally {
+      if (runId === previewRunRef.current) setPreviewing(false)
     }
   }
 
   const executeSync = async () => {
-    if (!plan) {
+    if (runningRef.current) return
+    if (!plan || !preview || preview.key !== currentRequestKeyRef.current || !validRequest) {
       showToast(t('diff.sync.buildPreviewFirst'), 'error')
       return
     }
+    runningRef.current = true
     setRunning(true)
+    setOutcome(null)
     setLogs([])
     setProgress(null)
     const jobId = jobs.start({
@@ -141,12 +175,13 @@ export function SyncPanel({
     jobIdRef.current = jobId
     try {
       const result = await unwrap<{ executed: number; errors: number }>(
-        submitSyncRequest(api.sync, buildReq(false))
+        submitSyncRequest(api.sync, { ...preview.request, dryRun: false, taskId: jobId, planId: preview.plan.planId })
       )
       const message = t('diff.sync.executeResult', {
         executed: result.executed,
         errors: result.errors
       })
+      setOutcome(result.errors === 0 ? 'done' : 'error')
       showToast(message, result.errors === 0 ? 'success' : 'error')
       jobs.finish(jobId, {
         status: result.errors === 0 ? 'done' : 'error',
@@ -154,10 +189,13 @@ export function SyncPanel({
       })
     } catch (err) {
       showToast((err as Error).message, 'error')
+      setOutcome('error')
       jobs.finish(jobId, { status: 'error', detail: (err as Error).message })
     } finally {
       jobIdRef.current = null
+      runningRef.current = false
       setRunning(false)
+      setPreview(null)
     }
   }
 
@@ -197,6 +235,7 @@ export function SyncPanel({
                   <li key={table}>
                     <Checkbox
                       size="sm"
+                      disabled={running}
                       checked={selected.has(table)}
                       onChange={() => toggle(table)}
                       label={<span className="font-mono text-xs">{table}</span>}
@@ -210,11 +249,13 @@ export function SyncPanel({
           <div className="flex flex-col gap-3">
             <div className="flex flex-wrap gap-3">
               <Checkbox
+                disabled={running || crossEngine}
                 checked={syncStructure}
                 onChange={(event) => setSyncStructure(event.target.checked)}
                 label={t('common.structure')}
               />
               <Checkbox
+                disabled={running}
                 checked={syncData}
                 onChange={(event) => setSyncData(event.target.checked)}
                 label={t('common.data')}
@@ -232,11 +273,12 @@ export function SyncPanel({
               error={destructiveStrategy ? t('diff.sync.destructiveWarning') : undefined}
             >
               <Select
+                disabled={running}
                 value={strategy}
                 onChange={(event) => setStrategy(event.target.value as ExistingTableStrategy)}
                 options={[
                   { value: 'skip', label: t('diff.sync.strategy.skip') },
-                  { value: 'overwrite-structure', label: t('diff.sync.strategy.drop') },
+                  { value: 'overwrite-structure', label: t('diff.sync.strategy.drop'), disabled: crossEngine },
                   { value: 'append-data', label: t('diff.sync.strategy.keep') },
                   { value: 'truncate-and-import', label: t('diff.sync.strategy.truncate') }
                 ]}
@@ -244,13 +286,13 @@ export function SyncPanel({
             </Field>
 
             <div className="flex flex-wrap gap-2">
-              <Button variant="secondary" onClick={onPreview} disabled={running}>
+              <Button variant="secondary" onClick={onPreview} loading={previewing} disabled={running || previewing || !validRequest}>
                 {t('diff.sync.previewSql')}
               </Button>
               <Button
                 variant="danger"
                 loading={running}
-                disabled={running || !plan}
+                disabled={running || previewing || !plan || !validRequest}
                 onClick={() => setConfirming(true)}
               >
                 {running ? t('diff.sync.running') : t('diff.sync.execute')}
@@ -259,8 +301,8 @@ export function SyncPanel({
 
             {running || progress ? (
               <ProgressBar
-                status={running ? 'running' : 'done'}
-                label={t('diff.sync.running')}
+                status={running ? 'running' : outcome ?? 'done'}
+                label={running ? t('diff.sync.running') : t(outcome === 'error' ? 'statusbar.status.error' : 'statusbar.status.done')}
                 detail={progress?.step}
                 count={progress ? { done: progress.done, total: progress.total } : undefined}
               />

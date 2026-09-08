@@ -10,8 +10,8 @@ use tauri::{AppHandle, Emitter};
 use crate::drivers::dialect::{
   quote_mysql_ident, quote_mysql_table, quote_pg_ident, quote_pg_table,
 };
+use crate::drivers::dialect::{read_rows_sql, SqlDialect};
 use crate::drivers::EngineDriver;
-use crate::export_import::sql_literal;
 use crate::sync::fk_order::order_tables_by_foreign_keys;
 use crate::types::{SyncPlan, SyncProgressEvent, SyncRequest, SyncStep};
 
@@ -60,6 +60,14 @@ impl TargetDialect {
       // PgDriver 连接到目标库本身，表操作固定走 public schema。
       Self::Postgres => quote_pg_table("public", table),
     }
+  }
+
+  fn value(&self, value: Option<&Value>) -> String {
+    match self {
+      Self::Mysql => SqlDialect::Mysql,
+      Self::Postgres => SqlDialect::Postgres,
+    }
+    .literal(value)
   }
 
   fn quote_ident(&self, name: &str) -> String {
@@ -169,16 +177,122 @@ fn build_insert_statements(
         .map(|row| {
           let vals = columns
             .iter()
-            .map(|c| sql_literal(row.get(c)))
+            .map(|c| dialect.value(row.get(c)))
             .collect::<Vec<_>>()
             .join(", ");
           format!("  ({vals})")
         })
         .collect::<Vec<_>>()
         .join(",\n");
-      format!("INSERT INTO {target_table} ({col_sql}) VALUES\n{values}")
+      format!(
+        "INSERT INTO {target_table} ({col_sql}){} VALUES\n{values}",
+        if dialect == TargetDialect::Postgres {
+          " OVERRIDING SYSTEM VALUE"
+        } else {
+          ""
+        }
+      )
     })
     .collect()
+}
+
+struct PreviewRecord {
+  created: std::time::Instant,
+  request: String,
+  schema: String,
+}
+static PREVIEWS: once_cell::sync::Lazy<parking_lot::Mutex<HashMap<String, PreviewRecord>>> =
+  once_cell::sync::Lazy::new(|| parking_lot::Mutex::new(HashMap::new()));
+
+fn request_key(req: &SyncRequest) -> Result<String, String> {
+  let mut request = req.clone();
+  request.task_id = None;
+  request.plan_id = None;
+  request.dry_run = None;
+  request.tables.sort();
+  request.tables.dedup();
+  serde_json::to_string(&request).map_err(|e| e.to_string())
+}
+
+async fn preflight(
+  source: &EngineDriver,
+  target: &EngineDriver,
+  req: &SyncRequest,
+) -> Result<String, String> {
+  if req.tables.is_empty()
+    || (!req.sync_structure.unwrap_or(true) && !req.sync_data.unwrap_or(true))
+  {
+    return Err("Select tables and at least one sync operation".into());
+  }
+  if source.same_database(target, &req.source_database, &req.target_database) {
+    return Err("Source and target must be different databases".into());
+  }
+  let source_dialect = source.dialect()?;
+  let target_dialect = target.dialect()?;
+  if source_dialect != target_dialect && req.sync_structure.unwrap_or(true) {
+    return Err("Cross-engine structure sync is not supported; select data only".into());
+  }
+  let target_tables = target.list_tables(&req.target_database).await?;
+  let mut signatures = Vec::new();
+  for table in &req.tables {
+    let source_schema = source.get_table_schema(&req.source_database, table).await?;
+    let target_schema = if target_tables.contains(table) {
+      Some(target.get_table_schema(&req.target_database, table).await?)
+    } else {
+      None
+    };
+    let skipped = target_schema.is_some()
+      && normalize_strategy(req.existing_table_strategy.as_deref()) == ExistingTableStrategy::Skip;
+    if !skipped {
+      if target_schema.is_none() && !req.sync_structure.unwrap_or(true) {
+        return Err(format!("Target table {table} does not exist"));
+      }
+      if req.sync_structure.unwrap_or(true)
+        && (source_schema.create_sql.trim().is_empty()
+          || source_schema.create_sql.contains("-- reconstructed"))
+      {
+        return Err(format!("Complete CREATE SQL is unavailable for {table}"));
+      }
+      if let Some(target_schema) = &target_schema {
+        if req.sync_data.unwrap_or(true)
+          && normalize_strategy(req.existing_table_strategy.as_deref())
+            != ExistingTableStrategy::DropAndRecreate
+        {
+          for column in &source_schema.columns {
+            if !target_schema
+              .columns
+              .iter()
+              .any(|target| target.name == column.name)
+            {
+              return Err(format!("Target {table} is missing column {}", column.name));
+            }
+          }
+        }
+      }
+      if req.sync_data.unwrap_or(true) {
+        let sql = read_rows_sql(
+          source_dialect,
+          &req.source_database,
+          table,
+          &source_schema.primary_key,
+          None,
+          None,
+          Some((0, 1)),
+        )?;
+        let mut rows = source.read_batches(&req.source_database, sql, 1).await?;
+        if let Some(batch) = rows.recv().await {
+          batch?;
+        }
+      }
+    }
+    signatures.push((
+      table.clone(),
+      source_schema.create_sql,
+      target_schema.map(|schema| schema.create_sql),
+    ));
+  }
+  signatures.sort_by(|a, b| a.0.cmp(&b.0));
+  serde_json::to_string(&signatures).map_err(|e| e.to_string())
 }
 
 pub async fn build_plan(
@@ -186,11 +300,9 @@ pub async fn build_plan(
   target: Arc<EngineDriver>,
   req: &SyncRequest,
 ) -> Result<SyncPlan, String> {
+  let schema_signature = preflight(&source, &target, req).await?;
   let dialect = TargetDialect::of(&target)?;
-  let edges = source
-    .list_foreign_key_edges(&req.source_database)
-    .await
-    .unwrap_or_default();
+  let edges = source.list_foreign_key_edges(&req.source_database).await?;
   let ordered = order_tables_by_foreign_keys(&req.tables, &edges);
   let sync_structure = req.sync_structure.unwrap_or(true);
   let sync_data = req.sync_data.unwrap_or(true);
@@ -229,10 +341,28 @@ pub async fn build_plan(
     let mut description_parts = actions.description_parts.clone();
 
     if sync_data {
-      let rows = source
-        .stream_rows_ordered(&req.source_database, &table, &schema.primary_key, 200)
+      let sql = read_rows_sql(
+        source.dialect()?,
+        &req.source_database,
+        &table,
+        &schema.primary_key,
+        None,
+        None,
+        Some((0, PREVIEW_ROW_LIMIT as u32)),
+      )?;
+      let mut batches = source
+        .read_batches(&req.source_database, sql, PREVIEW_ROW_LIMIT)
         .await?;
-      let columns: Vec<String> = schema.columns.iter().map(|c| c.name.clone()).collect();
+      let mut rows = Vec::new();
+      while let Some(batch) = batches.recv().await {
+        rows.extend(batch?);
+      }
+      let columns: Vec<String> = schema
+        .columns
+        .iter()
+        .filter(|c| !c.is_generated)
+        .map(|c| c.name.clone())
+        .collect();
       let preview = &rows[..rows.len().min(PREVIEW_ROW_LIMIT)];
       sqls.extend(build_insert_statements(
         &dialect.quote_table(&req.target_database, &table),
@@ -241,10 +371,10 @@ pub async fn build_plan(
         dialect,
         INSERT_BATCH_SIZE,
       ));
-      if rows.len() > PREVIEW_ROW_LIMIT {
-        sqls.push(format!("-- … {} more rows", rows.len() - PREVIEW_ROW_LIMIT));
+      if rows.len() == PREVIEW_ROW_LIMIT {
+        sqls.push("-- Preview limited to 50 rows; execution streams all rows".into());
       }
-      description_parts.push(format!("insert {} rows", rows.len()));
+      description_parts.push(format!("data preview: {} rows", rows.len()));
     }
 
     steps.push(SyncStep {
@@ -254,7 +384,24 @@ pub async fn build_plan(
     });
   }
 
-  Ok(SyncPlan { steps })
+  let id = uuid::Uuid::new_v4().to_string();
+  let mut previews = PREVIEWS.lock();
+  previews.retain(|_, value| value.created.elapsed() < std::time::Duration::from_secs(900));
+  if previews.len() >= 64 {
+    previews.clear();
+  }
+  previews.insert(
+    id.clone(),
+    PreviewRecord {
+      created: std::time::Instant::now(),
+      request: request_key(req)?,
+      schema: schema_signature,
+    },
+  );
+  Ok(SyncPlan {
+    plan_id: Some(id),
+    steps,
+  })
 }
 
 /// 目标库写入连接：整个执行阶段固定一个会话，
@@ -267,7 +414,11 @@ enum TargetConn {
 impl TargetConn {
   async fn acquire(target: &EngineDriver, database: &str) -> Result<Self, String> {
     match target {
-      EngineDriver::Mysql(d) => Ok(Self::Mysql(d.acquire(database).await?)),
+      EngineDriver::Mysql(d) => {
+        let mut conn = d.acquire(database).await?;
+        conn.close_on_drop();
+        Ok(Self::Mysql(conn))
+      }
       EngineDriver::Postgres(d) => Ok(Self::Postgres(d.acquire(database).await?)),
       EngineDriver::Redis(_) => Err("Sync target must be MySQL or PostgreSQL".into()),
     }
@@ -295,16 +446,43 @@ pub async fn execute(
   target: Arc<EngineDriver>,
   req: &SyncRequest,
 ) -> Result<(i64, i64), String> {
+  execute_with_progress(
+    &|event| {
+      let _ = app.emit("sync:progress", event);
+    },
+    source,
+    target,
+    req,
+  )
+  .await
+}
+
+pub async fn execute_with_progress(
+  progress: &(dyn Fn(SyncProgressEvent) + Sync),
+  source: Arc<EngineDriver>,
+  target: Arc<EngineDriver>,
+  req: &SyncRequest,
+) -> Result<(i64, i64), String> {
   if req.dry_run.unwrap_or(false) {
     let plan = build_plan(source, target, req).await?;
     return Ok((plan.steps.len() as i64, 0));
   }
 
+  let signature = preflight(&source, &target, req).await?;
+  if let Some(id) = &req.plan_id {
+    let preview = PREVIEWS
+      .lock()
+      .remove(id)
+      .ok_or("Sync preview has expired; build it again")?;
+    if preview.created.elapsed() >= std::time::Duration::from_secs(900)
+      || preview.request != request_key(req)?
+      || preview.schema != signature
+    {
+      return Err("Sync configuration or schema changed; build the preview again".into());
+    }
+  }
   let dialect = TargetDialect::of(&target)?;
-  let edges = source
-    .list_foreign_key_edges(&req.source_database)
-    .await
-    .unwrap_or_default();
+  let edges = source.list_foreign_key_edges(&req.source_database).await?;
   let ordered = order_tables_by_foreign_keys(&req.tables, &edges);
   let sync_structure = req.sync_structure.unwrap_or(true);
   let sync_data = req.sync_data.unwrap_or(true);
@@ -315,7 +493,7 @@ pub async fn execute(
 
   let mut tconn = TargetConn::acquire(&target, &req.target_database).await?;
   if dialect == TargetDialect::Mysql {
-    let _ = tconn.execute("SET FOREIGN_KEY_CHECKS=0").await;
+    tconn.execute("SET FOREIGN_KEY_CHECKS=0").await?;
   }
 
   let mut executed = 0i64;
@@ -324,7 +502,8 @@ pub async fn execute(
 
   for (idx, table) in ordered.iter().enumerate() {
     emit(
-      app,
+      progress,
+      req.task_id.as_deref(),
       table,
       "start",
       idx as i64,
@@ -336,7 +515,8 @@ pub async fn execute(
     if exists && strategy == ExistingTableStrategy::Skip {
       executed += 1;
       emit(
-        app,
+        progress,
+        req.task_id.as_deref(),
         table,
         "done",
         (idx + 1) as i64,
@@ -348,9 +528,7 @@ pub async fn execute(
     }
 
     let result = async {
-      let schema = source
-        .get_table_schema(&req.source_database, table)
-        .await?;
+      let schema = source.get_table_schema(&req.source_database, table).await?;
       let actions = plan_table_actions(
         dialect,
         &req.target_database,
@@ -365,26 +543,45 @@ pub async fn execute(
         tconn.execute(sql).await?;
       }
       if actions.insert_data {
-        let rows = source
-          .stream_rows_ordered(&req.source_database, table, &schema.primary_key, 200)
+        let sql = read_rows_sql(
+          source.dialect()?,
+          &req.source_database,
+          table,
+          &schema.primary_key,
+          None,
+          None,
+          None,
+        )?;
+        let mut batches = source
+          .read_batches(&req.source_database, sql, INSERT_BATCH_SIZE)
           .await?;
-        let columns: Vec<String> = schema.columns.iter().map(|c| c.name.clone()).collect();
-        let statements = build_insert_statements(
-          &dialect.quote_table(&req.target_database, table),
-          &columns,
-          &rows,
-          dialect,
-          INSERT_BATCH_SIZE,
-        );
-        for (n, statement) in statements.iter().enumerate() {
-          tconn.execute(statement).await?;
+        let columns: Vec<String> = schema
+          .columns
+          .iter()
+          .filter(|c| !c.is_generated)
+          .map(|c| c.name.clone())
+          .collect();
+        let mut copied = 0;
+        while let Some(rows) = batches.recv().await {
+          let rows = rows?;
+          for statement in build_insert_statements(
+            &dialect.quote_table(&req.target_database, table),
+            &columns,
+            &rows,
+            dialect,
+            INSERT_BATCH_SIZE,
+          ) {
+            tconn.execute(&statement).await?;
+          }
+          copied += rows.len() as i64;
           emit(
-            app,
+            progress,
+            req.task_id.as_deref(),
             table,
             "progress",
-            (((n + 1) * INSERT_BATCH_SIZE).min(rows.len())) as i64,
-            rows.len() as i64,
-            None,
+            copied,
+            0,
+            Some(format!("Copied {copied} rows")),
             "info",
           );
         }
@@ -396,12 +593,22 @@ pub async fn execute(
     match result {
       Ok(()) => {
         executed += 1;
-        emit(app, table, "done", (idx + 1) as i64, total, None, "info");
+        emit(
+          progress,
+          req.task_id.as_deref(),
+          table,
+          "done",
+          (idx + 1) as i64,
+          total,
+          None,
+          "info",
+        );
       }
       Err(e) => {
         errors += 1;
         emit(
-          app,
+          progress,
+          req.task_id.as_deref(),
           table,
           "error",
           (idx + 1) as i64,
@@ -414,14 +621,15 @@ pub async fn execute(
   }
 
   if dialect == TargetDialect::Mysql {
-    let _ = tconn.execute("SET FOREIGN_KEY_CHECKS=1").await;
+    tconn.execute("SET FOREIGN_KEY_CHECKS=1").await?;
   }
 
   Ok((executed, errors))
 }
 
 fn emit(
-  app: &AppHandle,
+  progress: &(dyn Fn(SyncProgressEvent) + Sync),
+  task_id: Option<&str>,
   table: &str,
   step: &str,
   done: i64,
@@ -429,17 +637,15 @@ fn emit(
   message: Option<String>,
   level: &str,
 ) {
-  let _ = app.emit(
-    "sync:progress",
-    SyncProgressEvent {
-      table: table.to_string(),
-      step: step.to_string(),
-      done,
-      total,
-      message,
-      level: level.to_string(),
-    },
-  );
+  progress(SyncProgressEvent {
+    task_id: task_id.map(str::to_string),
+    table: table.to_string(),
+    step: step.to_string(),
+    done,
+    total,
+    message,
+    level: level.to_string(),
+  });
 }
 
 #[cfg(test)]
@@ -465,7 +671,10 @@ mod tests {
       normalize_strategy(Some("truncate-and-import")),
       ExistingTableStrategy::TruncateAndImport
     );
-    assert_eq!(normalize_strategy(Some("skip")), ExistingTableStrategy::Skip);
+    assert_eq!(
+      normalize_strategy(Some("skip")),
+      ExistingTableStrategy::Skip
+    );
     assert_eq!(normalize_strategy(Some("wat")), ExistingTableStrategy::Skip);
     assert_eq!(normalize_strategy(None), ExistingTableStrategy::Skip);
   }
@@ -484,7 +693,10 @@ mod tests {
     );
     assert!(!actions.skip);
     assert!(actions.insert_data);
-    assert_eq!(actions.setup_sqls, vec!["CREATE TABLE `users` (`id` bigint)"]);
+    assert_eq!(
+      actions.setup_sqls,
+      vec!["CREATE TABLE `users` (`id` bigint)"]
+    );
     assert_eq!(join_description(&actions.description_parts), "create table");
   }
 
@@ -507,7 +719,10 @@ mod tests {
         "CREATE TABLE `users` (`id` bigint)"
       ]
     );
-    assert_eq!(join_description(&actions.description_parts), "drop and recreate");
+    assert_eq!(
+      join_description(&actions.description_parts),
+      "drop and recreate"
+    );
     assert!(actions.insert_data);
   }
 
@@ -540,7 +755,10 @@ mod tests {
       "CREATE TABLE `users` (`id` bigint)",
     );
     assert!(actions.setup_sqls.is_empty());
-    assert_eq!(join_description(&actions.description_parts), "keep target structure");
+    assert_eq!(
+      join_description(&actions.description_parts),
+      "keep target structure"
+    );
     assert!(actions.insert_data);
     assert!(!actions.skip);
   }
@@ -561,7 +779,10 @@ mod tests {
       actions.setup_sqls,
       vec!["TRUNCATE TABLE `db`.`users`".to_string()]
     );
-    assert_eq!(join_description(&actions.description_parts), "keep target structure, truncate");
+    assert_eq!(
+      join_description(&actions.description_parts),
+      "keep target structure, truncate"
+    );
   }
 
   #[test]
@@ -579,7 +800,10 @@ mod tests {
     assert!(actions.skip);
     assert!(actions.setup_sqls.is_empty());
     assert!(!actions.insert_data);
-    assert_eq!(join_description(&actions.description_parts), "skip existing table");
+    assert_eq!(
+      join_description(&actions.description_parts),
+      "skip existing table"
+    );
   }
 
   #[test]
@@ -605,20 +829,29 @@ mod tests {
   fn insert_statements_chunk_rows_and_render_literals() {
     let columns = vec!["id".to_string(), "name".to_string()];
     let rows = vec![
-      HashMap::from([("id".to_string(), json!(1)), ("name".to_string(), json!("a'b"))]),
-      HashMap::from([("id".to_string(), json!(2)), ("name".to_string(), Value::Null)]),
-      HashMap::from([("id".to_string(), json!(3)), ("name".to_string(), json!("c"))]),
+      HashMap::from([
+        ("id".to_string(), json!(1)),
+        ("name".to_string(), json!("a'b")),
+      ]),
+      HashMap::from([
+        ("id".to_string(), json!(2)),
+        ("name".to_string(), Value::Null),
+      ]),
+      HashMap::from([
+        ("id".to_string(), json!(3)),
+        ("name".to_string(), json!("c")),
+      ]),
     ];
     let statements =
       build_insert_statements("`db`.`users`", &columns, &rows, TargetDialect::Mysql, 2);
     assert_eq!(statements.len(), 2);
     assert_eq!(
       statements[0],
-      "INSERT INTO `db`.`users` (`id`, `name`) VALUES\n  (1, 'a''b'),\n  (2, NULL)"
+      "INSERT INTO `db`.`users` (`id`, `name`) VALUES\n  (1, CONVERT(X'612762' USING utf8mb4)),\n  (2, NULL)"
     );
     assert_eq!(
       statements[1],
-      "INSERT INTO `db`.`users` (`id`, `name`) VALUES\n  (3, 'c')"
+      "INSERT INTO `db`.`users` (`id`, `name`) VALUES\n  (3, CONVERT(X'63' USING utf8mb4))"
     );
   }
 

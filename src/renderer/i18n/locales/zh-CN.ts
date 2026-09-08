@@ -530,7 +530,7 @@ export const zhCN: Dictionary = {
       title: '同步',
       tablesToSync: '待同步表（{{selected}}/{{total}}）',
       crossEngineHint:
-        '检测到跨数据库引擎同步：将按目标数据库生成结构 SQL，并进行基础类型映射；执行前请先预览。',
+        '跨引擎同步仅支持数据；目标表必须已存在且字段兼容，暂不支持结构同步。',
       ifTableExists: '若目标端已存在该表',
       strategy: {
         skip: '跳过',
@@ -880,6 +880,12 @@ export const zhCN: Dictionary = {
     emptyString: '(空字符串)',
   },
   sql: {
+    truncatedShort: '结果已截断',
+    truncated: '结果最多显示 10,000 行或 16 MB。可缩小查询范围，或导出表获取全部数据。',
+    discardTitle: '丢弃 SQL 草稿？',
+    discardBody: '此草稿有未保存的修改，关闭标签页将丢弃这些内容。',
+    discardConfirm: '丢弃草稿',
+
     consoleTitle: 'SQL 控制台',
     reset: '重置',
     openFile: '打开文件',

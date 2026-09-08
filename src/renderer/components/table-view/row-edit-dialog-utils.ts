@@ -16,7 +16,7 @@ export function formatJsonForDisplay(value: unknown): string {
 
 export function formatInputValue(column: ColumnInfo, value: unknown): string {
   if (value === null || value === undefined) return ''
-  if (column.type === 'json') {
+  if ((column.type === 'json' || column.type === 'jsonb')) {
     if (typeof value === 'string') return value
     return formatJsonForDisplay(value)
   }
@@ -59,7 +59,7 @@ export function isRowEditValueEqual(
   current: unknown
 ): boolean {
   if (original === current) return true
-  if (column.type !== 'json') return false
+  if (column.type !== 'json' && column.type !== 'jsonb') return false
   return isJsonContentEqual(original, current)
 }
 
@@ -71,7 +71,7 @@ export function prepareRowEditValues(
   if (mode === 'edit' && row) {
     const values = { ...row }
     for (const column of columns) {
-      if (column.type === 'json' && values[column.name] != null) {
+      if ((column.type === 'json' || column.type === 'jsonb') && values[column.name] != null) {
         values[column.name] = formatJsonForDisplay(values[column.name])
       }
     }
@@ -80,7 +80,7 @@ export function prepareRowEditValues(
 
   const init: Record<string, unknown> = {}
   for (const column of columns) {
-    if (column.isAutoIncrement) continue
+    if (column.isAutoIncrement || column.isGenerated) continue
     init[column.name] = column.defaultValue ?? (column.nullable ? null : '')
   }
   return init

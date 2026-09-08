@@ -5,11 +5,13 @@
 // unchanged: the same per-side request de-duplication, the same shared
 // stable-order column, the same prefetch of the next tables with differences.
 import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
+import { api, unwrap } from '@renderer/lib/api'
+import { completeComparisonPage, sharedComparisonKey } from './table-compare-page'
 import type { QueryRowsResult } from '../../../shared/types'
 import { getUpcomingRowDiffTables } from './diff-panel-utils'
 import {
   fetchComparedTableData,
-  getCachedComparedTableData,
+  clearComparedTableCacheScope,
   prefetchComparedTables,
   type ComparedTableRowsQuery
 } from './table-compare-data-cache'
@@ -33,6 +35,7 @@ export interface TableCompareModelOptions {
   pageSize: number
   comparedTables: string[]
   diffTables: string[]
+  active?: boolean
 }
 
 export interface TableCompareModel {
@@ -66,7 +69,8 @@ export function useTableCompareModel({
   page,
   pageSize,
   comparedTables,
-  diffTables
+  diffTables,
+  active = true
 }: TableCompareModelOptions): TableCompareModel {
   const cacheScopeKeyRef = useRef<string | null>(null)
   if (cacheScopeKeyRef.current === null) {
@@ -88,31 +92,19 @@ export function useTableCompareModel({
     loading: false
   })
 
-  // Both sides must be paged by the *same* column or the rows do not line up.
-  const stableOrderColumn = useMemo(() => {
-    const sourcePrimaryKey = sourceState.data?.primaryKey ?? []
-    const targetPrimaryKey = new Set(targetState.data?.primaryKey ?? [])
-    return sourcePrimaryKey.find((column) => targetPrimaryKey.has(column)) ?? null
-  }, [sourceState.data, targetState.data])
-  const stableOrderBy = useMemo(
-    () => (stableOrderColumn ? { column: stableOrderColumn, dir: 'ASC' as const } : undefined),
-    [stableOrderColumn]
-  )
   const compareColumns = useMemo(
     () => buildCompareColumns(sourceState.data?.columns ?? [], targetState.data?.columns ?? []),
     [sourceState.data?.columns, targetState.data?.columns]
   )
-  const sharedKeyColumns = useMemo(() => {
-    const targetPrimaryKey = new Set(targetState.data?.primaryKey ?? [])
-    return (sourceState.data?.primaryKey ?? []).filter((column) => targetPrimaryKey.has(column))
-  }, [sourceState.data?.primaryKey, targetState.data?.primaryKey])
+  const sharedKeyColumns = useMemo(() => sourceState.data && targetState.data
+    ? sharedComparisonKey(sourceState.data, targetState.data) : [], [sourceState.data, targetState.data])
   const compareColumnNames = useMemo(
     () =>
       compareColumns.filter((column) => column.source && column.target).map((column) => column.name),
     [compareColumns]
   )
   const rowDiffLookup = useMemo(() => {
-    if (!sourceState.data || !targetState.data) return null
+    if (sourceState.loading || targetState.loading || !sourceState.data || !targetState.data) return null
 
     return buildRowDiffLookup(
       sourceState.data.rows,
@@ -120,12 +112,12 @@ export function useTableCompareModel({
       sharedKeyColumns,
       compareColumnNames
     )
-  }, [compareColumnNames, sharedKeyColumns, sourceState.data, targetState.data])
+  }, [compareColumnNames, sharedKeyColumns, sourceState.data, targetState.data, sourceState.loading, targetState.loading])
   const alignedRows = useMemo(() => {
-    if (!sourceState.data || !targetState.data) return null
+    if (sourceState.loading || targetState.loading || !sourceState.data || !targetState.data) return null
 
     return buildAlignedCompareRows(sourceState.data.rows, targetState.data.rows, sharedKeyColumns)
-  }, [sharedKeyColumns, sourceState.data, targetState.data])
+  }, [sharedKeyColumns, sourceState.data, targetState.data, sourceState.loading, targetState.loading])
 
   const sourceKeyColumns = sourceState.data?.primaryKey ?? []
   const targetKeyColumns = targetState.data?.primaryKey ?? []
@@ -142,29 +134,30 @@ export function useTableCompareModel({
     setTargetState({ data: null, error: null, loading: true })
   }, [sourceConnectionId, sourceDatabase, targetConnectionId, targetDatabase, table])
 
-  useComparedTableData({
-    cacheScopeKey,
-    connectionId: sourceConnectionId,
-    database: sourceDatabase,
-    table,
-    page,
-    pageSize,
-    reloadToken: sourceReloadToken,
-    orderBy: stableOrderBy,
-    onStateChange: setSourceState
-  })
+  useEffect(() => {
+    let disposed = false
+    const sourceQuery: ComparedTableRowsQuery = { cacheScopeKey, connectionId: sourceConnectionId, database: sourceDatabase, table, page, pageSize, reloadToken: sourceReloadToken }
+    const targetQuery: ComparedTableRowsQuery = { cacheScopeKey, connectionId: targetConnectionId, database: targetDatabase, table, page, pageSize, reloadToken: targetReloadToken }
+    setSourceState((current) => ({ ...current, loading: true, error: null }))
+    setTargetState((current) => ({ ...current, loading: true, error: null }))
+    void Promise.all([fetchComparedTableData(sourceQuery), fetchComparedTableData(targetQuery)])
+      .then(async ([source, target]) => {
+        if (disposed) return
+        const [completeSource, completeTarget] = await completeComparisonPage(source, target, sourceQuery, targetQuery, (request) => unwrap(api.db.queryRows(request)))
+        if (disposed) return
+        setSourceState({ data: completeSource, error: null, loading: false })
+        setTargetState({ data: completeTarget, error: null, loading: false })
+      })
+      .catch((error: unknown) => {
+        if (disposed) return
+        const state = { data: null, loading: false, error: error instanceof Error ? error.message : String(error) }
+        setSourceState(state)
+        setTargetState(state)
+      })
+    return () => { disposed = true }
+  }, [cacheScopeKey, sourceConnectionId, sourceDatabase, targetConnectionId, targetDatabase, table, page, pageSize, sourceReloadToken, targetReloadToken])
 
-  useComparedTableData({
-    cacheScopeKey,
-    connectionId: targetConnectionId,
-    database: targetDatabase,
-    table,
-    page,
-    pageSize,
-    reloadToken: targetReloadToken,
-    orderBy: stableOrderBy,
-    onStateChange: setTargetState
-  })
+  useEffect(() => () => clearComparedTableCacheScope(cacheScopeKey), [cacheScopeKey])
 
   const upcomingDiffTables = useMemo(
     () => getUpcomingRowDiffTables(comparedTables, diffTables, table, PREFETCH_TABLE_COUNT),
@@ -174,7 +167,7 @@ export function useTableCompareModel({
   // "Next table with differences" is one click away, so its rows are warmed
   // once the current table has settled on both sides.
   useEffect(() => {
-    if (upcomingDiffTables.length === 0) return
+    if (!active || upcomingDiffTables.length === 0) return
     if (sourceState.loading || targetState.loading) return
     if (!sourceState.data || !targetState.data) return
     if (sourceState.error || targetState.error) return
@@ -192,6 +185,7 @@ export function useTableCompareModel({
       pageSize
     }).catch(() => undefined)
   }, [
+    active,
     cacheScopeKey,
     pageSize,
     sourceConnectionId,
@@ -237,82 +231,4 @@ export function useTableCompareModel({
       reloadTarget()
     }
   }
-}
-
-function useComparedTableData({
-  cacheScopeKey,
-  connectionId,
-  database,
-  table,
-  page,
-  pageSize,
-  reloadToken,
-  orderBy,
-  onStateChange
-}: {
-  cacheScopeKey: string
-  connectionId: string
-  database: string
-  table: string
-  page: number
-  pageSize: number
-  reloadToken: number
-  orderBy?: { column: string; dir: 'ASC' | 'DESC' }
-  onStateChange: Dispatch<SetStateAction<ComparedTableDataState>>
-}): void {
-  const requestIdRef = useRef(0)
-
-  useEffect(() => {
-    const requestId = requestIdRef.current + 1
-    requestIdRef.current = requestId
-
-    const query: ComparedTableRowsQuery = {
-      cacheScopeKey,
-      connectionId,
-      database,
-      table,
-      page,
-      pageSize,
-      reloadToken,
-      orderBy
-    }
-
-    const cached = getCachedComparedTableData(query)
-    if (cached) {
-      onStateChange({
-        data: cached,
-        error: null,
-        loading: false
-      })
-      return
-    }
-
-    onStateChange((current) => ({
-      ...current,
-      loading: true,
-      error: null
-    }))
-
-    void (async () => {
-      try {
-        const data = await fetchComparedTableData(query)
-
-        if (requestIdRef.current !== requestId) return
-
-        onStateChange({
-          data,
-          error: null,
-          loading: false
-        })
-      } catch (err) {
-        if (requestIdRef.current !== requestId) return
-
-        onStateChange({
-          data: null,
-          error: (err as Error).message,
-          loading: false
-        })
-      }
-    })()
-  }, [cacheScopeKey, connectionId, database, onStateChange, orderBy, page, pageSize, reloadToken, table])
 }

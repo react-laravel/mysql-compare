@@ -9,7 +9,7 @@ use parking_lot::Mutex;
 use ssh2::Session;
 use tauri::AppHandle;
 
-use crate::ssh::host_verify::verify_host_key;
+use crate::ssh::host_verify::{fingerprint_sha256, verify_host_key};
 use crate::ssh::ssh_auth_ok;
 use crate::store::host_keys::HostKeyStore;
 use crate::types::{ConnectionConfig, DbEngine};
@@ -52,17 +52,29 @@ impl TunnelManager {
   }
 }
 
-// TODO: 更大的隧道重构（每条隧道复用同一条已认证 SSH 会话、对 forward 连接做 host-key 校验）暂缓。
 fn spawn_tunnel(
   app: &AppHandle,
   host_keys: &HostKeyStore,
   conn: &ConnectionConfig,
 ) -> Result<TunnelHandle, String> {
-  let mut probe_session = connect_session(conn, host_keys, app)?;
-  probe_remote_database(&mut probe_session, conn)?;
+  let probe_session = connect_session(conn, host_keys, app)?;
+  spawn_tunnel_with_session(conn, probe_session)
+}
 
-  let ssh_host = conn.ssh_host.clone().unwrap();
-  let ssh_port = conn.ssh_port.unwrap_or(22);
+fn spawn_tunnel_with_session(
+  conn: &ConnectionConfig,
+  mut probe_session: Session,
+) -> Result<TunnelHandle, String> {
+  probe_remote_database(&mut probe_session, conn)?;
+  // Pin the verified key for this tunnel. Every independent forwarding session
+  // must prove the same host identity before receiving any credentials.
+  let verified_host_key = Arc::new(
+    probe_session
+      .host_key()
+      .ok_or("missing SSH host key")?
+      .0
+      .to_vec(),
+  );
   let remote_host = conn.host.clone();
   let remote_port = conn.port;
   let conn = conn.clone();
@@ -90,23 +102,17 @@ fn spawn_tunnel(
         continue;
       }
       let _ = client.set_nodelay(true);
-      let ssh_host = ssh_host.clone();
+      let verified_host_key = verified_host_key.clone();
       let conn = conn.clone();
       let remote_host = remote_host.clone();
       thread::spawn(move || {
-        let Ok(tcp) = TcpStream::connect(format!("{ssh_host}:{ssh_port}")) else {
-          return;
+        let sess = match connect_forward_session(&conn, &verified_host_key) {
+          Ok(sess) => sess,
+          Err(error) => {
+            log::warn!("SSH forwarding connection rejected: {error}");
+            return;
+          }
         };
-        let Ok(mut sess) = Session::new() else {
-          return;
-        };
-        sess.set_tcp_stream(tcp);
-        if sess.handshake().is_err() {
-          return;
-        }
-        if authenticate(&mut sess, &conn).is_err() {
-          return;
-        }
         let Ok(mut channel) = sess.channel_direct_tcpip(&remote_host, remote_port, None) else {
           return;
         };
@@ -282,6 +288,31 @@ pub fn connect_session(
   host_keys: &HostKeyStore,
   app: &AppHandle,
 ) -> Result<Session, String> {
+  connect_session_with_verifier(conn, |host, port, key| {
+    verify_host_key(app, host_keys, host, port, key)
+  })
+}
+
+fn connect_forward_session(
+  conn: &ConnectionConfig,
+  verified_host_key: &[u8],
+) -> Result<Session, String> {
+  connect_session_with_verifier(conn, |host, port, key| {
+    if key != verified_host_key {
+      return Err(format!(
+        "SSH host key mismatch for {host}:{port}. Expected {}, got {}",
+        fingerprint_sha256(verified_host_key),
+        fingerprint_sha256(key)
+      ));
+    }
+    Ok(())
+  })
+}
+
+fn connect_session_with_verifier(
+  conn: &ConnectionConfig,
+  verify: impl FnOnce(&str, u16, &[u8]) -> Result<(), String>,
+) -> Result<Session, String> {
   ssh_auth_ok(conn)?;
   let ssh_host = conn.ssh_host.clone().ok_or("sshHost required")?;
   let ssh_port = conn.ssh_port.unwrap_or(22);
@@ -291,10 +322,14 @@ pub fn connect_session(
   sess.set_tcp_stream(tcp);
   sess.handshake().map_err(|e| e.to_string())?;
   let host_key = sess.host_key().ok_or("missing SSH host key")?;
-  verify_host_key(app, host_keys, &ssh_host, ssh_port, host_key.0)?;
+  verify(&ssh_host, ssh_port, host_key.0)?;
   authenticate(&mut sess, conn)?;
   Ok(sess)
 }
+
+#[cfg(all(test, unix))]
+#[path = "tunnel_host_key_tests.rs"]
+mod host_key_tests;
 
 #[cfg(test)]
 mod tests {

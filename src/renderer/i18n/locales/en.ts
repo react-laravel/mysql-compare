@@ -538,7 +538,7 @@ export const en = {
       title: 'Sync',
       tablesToSync: 'Tables to sync ({{selected}}/{{total}})',
       crossEngineHint:
-        'Cross-engine sync detected: structure SQL will be generated for the target engine with basic type mapping. Preview before executing.',
+        'Cross-engine sync supports data only. The target table must already exist with compatible columns; structure sync is unavailable.',
       ifTableExists: 'If table exists in target',
       strategy: {
         skip: 'Skip',
@@ -899,6 +899,12 @@ export const en = {
     emptyString: '(empty string)',
   },
   sql: {
+    truncatedShort: 'Results truncated',
+    truncated: 'Results limited to 10,000 rows or 16 MB. Refine the query or export the table for all rows.',
+    discardTitle: 'Discard SQL draft?',
+    discardBody: 'This draft has unsaved changes. Closing the tab will discard them.',
+    discardConfirm: 'Discard draft',
+
     consoleTitle: 'SQL Console',
     reset: 'Reset',
     openFile: 'Open File',

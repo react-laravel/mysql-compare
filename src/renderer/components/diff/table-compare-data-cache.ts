@@ -5,6 +5,22 @@ const comparedTableDataCache = new Map<string, QueryRowsResult>()
 const pendingComparedTableRequests = new Map<string, Promise<QueryRowsResult>>()
 
 const MAX_CACHED_RESULTS = 96
+const MAX_CACHED_BYTES = 32 * 1024 * 1024
+const cacheSizes = new Map<string, number>()
+const scopeVersions = new Map<string, number>()
+let cachedBytes = 0
+
+export function clearComparedTableCacheScope(scope: string): void {
+  scopeVersions.set(scope, (scopeVersions.get(scope) ?? 0) + 1)
+  for (const key of comparedTableDataCache.keys()) {
+    if ((JSON.parse(key) as unknown[])[0] === scope) {
+      cachedBytes -= cacheSizes.get(key) ?? 0
+      cacheSizes.delete(key)
+      comparedTableDataCache.delete(key)
+    }
+  }
+}
+
 
 export interface ComparedTableRowsQuery {
   cacheScopeKey: string
@@ -31,17 +47,21 @@ interface PrefetchComparedTablesOptions {
 }
 
 export function getCachedComparedTableData(query: ComparedTableRowsQuery): QueryRowsResult | undefined {
-  return comparedTableDataCache.get(buildComparedTableQueryKey(query))
+  const key = buildComparedTableQueryKey(query)
+  const cached = comparedTableDataCache.get(key)
+  if (cached) { comparedTableDataCache.delete(key); comparedTableDataCache.set(key, cached) }
+  return cached
 }
 
 export async function fetchComparedTableData(query: ComparedTableRowsQuery): Promise<QueryRowsResult> {
   const cacheKey = buildComparedTableQueryKey(query)
-  const cached = comparedTableDataCache.get(cacheKey)
+  const cached = getCachedComparedTableData(query)
   if (cached) return cached
 
   const pending = pendingComparedTableRequests.get(cacheKey)
   if (pending) return pending
 
+  const version = scopeVersions.get(query.cacheScopeKey) ?? 0
   const request = unwrap<QueryRowsResult>(
     api.db.queryRows({
       connectionId: query.connectionId,
@@ -53,8 +73,15 @@ export async function fetchComparedTableData(query: ComparedTableRowsQuery): Pro
     })
   )
     .then((data) => {
-      comparedTableDataCache.set(cacheKey, data)
-      trimComparedTableDataCache()
+      if (version === (scopeVersions.get(query.cacheScopeKey) ?? 0)) {
+        const bytes = JSON.stringify(data).length * 2
+        if (bytes <= MAX_CACHED_BYTES) {
+          comparedTableDataCache.set(cacheKey, data)
+          cacheSizes.set(cacheKey, bytes)
+          cachedBytes += bytes
+          trimComparedTableDataCache()
+        }
+      }
       return data
     })
     .finally(() => {
@@ -86,18 +113,12 @@ export async function prefetchComparedTables(options: PrefetchComparedTablesOpti
       reloadToken: options.targetReloadToken
     }
 
-    const [sourceData, targetData] = await Promise.all([
+    await Promise.all([
       fetchComparedTableData(sourceQuery),
       fetchComparedTableData(targetQuery)
     ])
 
-    const sharedOrderBy = resolveSharedStableOrderBy(sourceData, targetData)
-    if (!sharedOrderBy) continue
 
-    await Promise.all([
-      fetchComparedTableData({ ...sourceQuery, orderBy: sharedOrderBy }),
-      fetchComparedTableData({ ...targetQuery, orderBy: sharedOrderBy })
-    ])
   }
 }
 
@@ -115,19 +136,12 @@ function buildComparedTableQueryKey(query: ComparedTableRowsQuery): string {
   ])
 }
 
-function resolveSharedStableOrderBy(
-  sourceData: QueryRowsResult,
-  targetData: QueryRowsResult
-): { column: string; dir: 'ASC' } | undefined {
-  const targetPrimaryKey = new Set(targetData.primaryKey)
-  const sharedPrimaryKey = sourceData.primaryKey.find((column) => targetPrimaryKey.has(column))
-  return sharedPrimaryKey ? { column: sharedPrimaryKey, dir: 'ASC' } : undefined
-}
-
 function trimComparedTableDataCache(): void {
-  while (comparedTableDataCache.size > MAX_CACHED_RESULTS) {
+  while (comparedTableDataCache.size > MAX_CACHED_RESULTS || cachedBytes > MAX_CACHED_BYTES) {
     const oldestKey = comparedTableDataCache.keys().next().value
     if (!oldestKey) return
+    cachedBytes -= cacheSizes.get(oldestKey) ?? 0
+    cacheSizes.delete(oldestKey)
     comparedTableDataCache.delete(oldestKey)
   }
 }

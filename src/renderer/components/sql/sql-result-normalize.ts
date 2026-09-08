@@ -8,7 +8,7 @@ import type { Translator } from '@renderer/i18n'
 import type { ExplainSQLResult } from '../../../shared/types'
 
 export type SQLExecutionResult =
-  | { kind: 'rows'; columns: string[]; rows: Record<string, unknown>[] }
+  | { kind: 'rows'; columns: string[]; rows: Record<string, unknown>[]; truncated?: boolean }
   | { kind: 'mutation'; affectedRows: number; insertId?: number | string; warningStatus?: number }
   | { kind: 'batch'; statements: number; affectedRows: number; details: string[] }
   | { kind: 'explain'; result: ExplainSQLResult }
@@ -53,10 +53,14 @@ export function normalizeResult(raw: unknown, t: Translator): SQLExecutionResult
 
   if (raw && typeof raw === 'object') {
     const payload = raw as Record<string, unknown>
+    if (Array.isArray(payload.results)) {
+      const rowResult = payload.results.find((result) => result && typeof result === 'object' && Array.isArray((result as Record<string, unknown>).rows))
+      return normalizeResult(rowResult ?? payload.results, t)
+    }
     if (Array.isArray(payload.rows)) {
       const rows = payload.rows as Record<string, unknown>[]
       return rows.length > 0
-        ? { kind: 'rows', columns: collectColumns(rows), rows }
+        ? { kind: 'rows', columns: collectColumns(rows), rows, ...(payload.truncated ? { truncated: true } : {}) }
         : { kind: 'empty', message: t('sql.statementSuccess') }
     }
     if (typeof payload.affectedRows === 'number') {

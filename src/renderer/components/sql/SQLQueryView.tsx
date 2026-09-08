@@ -8,6 +8,7 @@
 //
 // Result rendering lives in `SQLResultPanel` / `SQLExplainPanel`, and the
 // driver-shape normalisation in `sql-result-normalize.ts`.
+import { ConfirmDialog } from '@renderer/components/ui/confirm-dialog'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { editor as MonacoEditor } from 'monaco-editor'
 import {
@@ -125,6 +126,16 @@ export function SQLQueryView({
   const { t } = useI18n()
   const { theme } = useTheme()
   const [sql, setSQL] = useState(() => t('sql.placeholder'))
+  const initialSQL = useRef(sql)
+  const [discardOpen, setDiscardOpen] = useState(false)
+  const discardConfirmed = useRef(false)
+  const tabId = `sql:${connectionId}:${database}`
+  const registerTabCloseGuard = useUIStore((state) => state.registerTabCloseGuard)
+  useEffect(() => registerTabCloseGuard(tabId, (reason) => {
+    if (discardConfirmed.current || sql === initialSQL.current) return true
+    if (reason === 'close') setDiscardOpen(true)
+    return false
+  }), [registerTabCloseGuard, sql, tabId])
   const [selectedSQL, setSelectedSQL] = useState('')
   const [running, setRunning] = useState(false)
   const [result, setResult] = useState<SQLExecutionResult | null>(null)
@@ -136,6 +147,7 @@ export function SQLQueryView({
     readSQLHistory(connectionId, database)
   )
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const runningRef = useRef(false)
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null)
   const runSQLRef = useRef<(statementOverride?: string) => Promise<void>>(async () => undefined)
   const runSelectionRef = useRef<() => void>(() => undefined)
@@ -175,12 +187,14 @@ export function SQLQueryView({
   }
 
   const runSQL = async (statementOverride?: string) => {
+    if (runningRef.current) return
     const source = statementOverride ?? (selectedSQL || sql)
     const statement = source.trim()
     if (!statement) {
       showToast(t('sql.empty'), 'error')
       return
     }
+    runningRef.current = true
     setRunning(true)
     setError(null)
     // A run always has something to say — never leave the results folded away.
@@ -189,6 +203,7 @@ export function SQLQueryView({
       const raw = await unwrap(api.db.executeSQL(connectionId, statement, database))
       const normalized = normalizeResult(raw, t)
       setResult(normalized)
+      if (normalized.kind === 'rows' && normalized.truncated) showToast(t('sql.truncated'), 'info')
       rememberStatement(statement)
       showToast(t('sql.executed'), 'success')
     } catch (err) {
@@ -196,6 +211,7 @@ export function SQLQueryView({
       setError(message)
       showToast(message, 'error')
     } finally {
+      runningRef.current = false
       setRunning(false)
     }
   }
@@ -226,11 +242,13 @@ export function SQLQueryView({
   }
 
   const runExplain = async () => {
+    if (runningRef.current) return
     const statement = (selectedSQL || sql).trim()
     if (!statement) {
       showToast(t('sql.empty'), 'error')
       return
     }
+    runningRef.current = true
     setRunning(true)
     setError(null)
     setResultsCollapsed(false)
@@ -244,6 +262,7 @@ export function SQLQueryView({
       setError(message)
       showToast(message, 'error')
     } finally {
+      runningRef.current = false
       setRunning(false)
     }
   }
@@ -545,6 +564,20 @@ export function SQLQueryView({
           </div>
         </Dialog>
       ) : null}
+      <ConfirmDialog
+        open={discardOpen}
+        onOpenChange={setDiscardOpen}
+        tone="danger"
+        title={t('sql.discardTitle')}
+        body={t('sql.discardBody')}
+        subject={endpoint}
+        confirmLabel={t('sql.discardConfirm')}
+        cancelLabel={t('common.cancel')}
+        onConfirm={() => {
+          discardConfirmed.current = true
+          useUIStore.getState().closeTab(tabId)
+        }}
+      />
     </div>
   )
 }

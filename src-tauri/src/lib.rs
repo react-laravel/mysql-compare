@@ -9,6 +9,8 @@ mod state;
 mod store;
 mod sync;
 mod types;
+#[cfg(test)]
+mod data_contract_tests;
 
 use state::AppState;
 use tauri::Manager;

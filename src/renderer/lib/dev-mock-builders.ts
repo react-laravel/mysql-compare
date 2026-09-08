@@ -53,6 +53,19 @@ function sqlRows(req: QueryRowsRequest): QueryRowsResult {
   const pageSize = Math.max(1, req.pageSize)
   const page = Math.max(1, req.page)
 
+  if (req.keyRows) {
+    const rows: Record<string, unknown>[] = []
+    const first = def.makeRow(0)
+    for (const key of req.keyRows) {
+      const column = def.primaryKey[0]
+      const offset = column ? Number(key[column]) - Number(first[column]) : NaN
+      if (!Number.isInteger(offset) || offset < 0 || offset >= def.rowCount) continue
+      const row = def.makeRow(offset)
+      if (def.primaryKey.every((column) => JSON.stringify(row[column]) === JSON.stringify(key[column]))) rows.push(row)
+    }
+    return { rows, total: rows.length, hasPrimaryKey: def.primaryKey.length > 0, primaryKey: def.primaryKey, columns: def.columns }
+  }
+
   // A WHERE fragment cannot be evaluated without a real engine; the mock
   // narrows the result set deterministically so pagination + the "filtered"
   // count still behave believably.

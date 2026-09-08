@@ -7,6 +7,7 @@ export interface CompareColumn {
 }
 
 export interface BuildOverwriteTargetSyncRequestOptions {
+  taskId?: string
   sourceConnectionId: string
   sourceDatabase: string
   targetConnectionId: string
@@ -46,7 +47,7 @@ export function buildRowKey(
   row: Record<string, unknown>,
   keyColumns: string[]
 ): string | null {
-  if (keyColumns.length === 0) return null
+  if (keyColumns.length === 0 || keyColumns.some((column) => row[column] == null)) return null
 
   return JSON.stringify(
     keyColumns.map((column) => ({
@@ -61,7 +62,7 @@ export function buildCopyValues(
   targetColumns: ColumnInfo[]
 ): Record<string, unknown> {
   return targetColumns.reduce<Record<string, unknown>>((values, column) => {
-    if (!(column.name in row)) return values
+    if (column.isGenerated || !(column.name in row)) return values
     return {
       ...values,
       [column.name]: row[column.name]
@@ -73,6 +74,7 @@ export function buildOverwriteTargetSyncRequest(
   options: BuildOverwriteTargetSyncRequestOptions
 ): SyncRequest & { dryRun: false } {
   return {
+    ...(options.taskId ? { taskId: options.taskId } : {}),
     sourceConnectionId: options.sourceConnectionId,
     sourceDatabase: options.sourceDatabase,
     targetConnectionId: options.targetConnectionId,

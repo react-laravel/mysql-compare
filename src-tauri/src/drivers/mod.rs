@@ -17,17 +17,113 @@ pub enum EngineDriver {
 }
 
 impl EngineDriver {
-  pub async fn open(conn: ConnectionConfig, local_port: Option<u16>) -> Result<Self, String> {
-    match conn.engine {
-      crate::types::DbEngine::Mysql => Ok(Self::Mysql(mysql::MysqlDriver::open(conn, local_port).await?)),
-      crate::types::DbEngine::Postgres => {
-        Ok(Self::Postgres(pg::PgDriver::open(conn, local_port).await?))
-      }
-      crate::types::DbEngine::Redis => Ok(Self::Redis(redis::RedisDriver::open(conn, local_port).await?)),
+  pub fn same_database(&self, other: &Self, source_database: &str, target_database: &str) -> bool {
+    if source_database != target_database {
+      return false;
+    }
+    let (a, b) = match (self, other) {
+      (Self::Mysql(a), Self::Mysql(b)) => (&a.connection, &b.connection),
+      (Self::Postgres(a), Self::Postgres(b)) => (&a.connection, &b.connection),
+      _ => return false,
+    };
+    a.host.eq_ignore_ascii_case(&b.host)
+      && a.port == b.port
+      && a.use_ssh == b.use_ssh
+      && (!a.use_ssh
+        || (a.ssh_host == b.ssh_host && a.ssh_port.unwrap_or(22) == b.ssh_port.unwrap_or(22)))
+  }
+  pub fn dialect(&self) -> Result<dialect::SqlDialect, String> {
+    match self {
+      Self::Mysql(_) => Ok(dialect::SqlDialect::Mysql),
+      Self::Postgres(_) => Ok(dialect::SqlDialect::Postgres),
+      Self::Redis(_) => Err("This operation requires MySQL or PostgreSQL".into()),
     }
   }
 
-  pub async fn test_connection(conn: &ConnectionConfig, local_port: Option<u16>) -> Result<String, String> {
+  /// Backpressure bounds buffered rows; dropping the receiver stops the read.
+  pub async fn read_batches(
+    &self,
+    database: &str,
+    sql: String,
+    batch_size: usize,
+  ) -> Result<
+    tokio::sync::mpsc::Receiver<
+      Result<Vec<std::collections::HashMap<String, serde_json::Value>>, String>,
+    >,
+    String,
+  > {
+    use futures::StreamExt;
+    let (sender, receiver) = tokio::sync::mpsc::channel(2);
+    let batch_size = batch_size.clamp(1, 1000);
+    macro_rules! start_reader {
+      ($driver:expr, $decode:path) => {{
+        let mut connection = $driver.acquire(database).await?;
+        tokio::spawn(async move {
+          let mut stream = sqlx::query(&sql).fetch(&mut *connection);
+          let mut batch = Vec::with_capacity(batch_size);
+          let mut bytes = 0;
+          loop {
+            let next = tokio::select! {
+              _ = sender.closed() => return,
+              next = stream.next() => next,
+            };
+            match next {
+              Some(row) => {
+                let row = row.map_err(|e| e.to_string()).and_then(|row| $decode(&row));
+                match row {
+                  Ok(row) => {
+                    bytes += serde_json::to_vec(&row).map(|v| v.len()).unwrap_or(0);
+                    batch.push(row);
+                    if batch.len() >= batch_size || bytes >= 4 * 1024 * 1024 {
+                      if sender.send(Ok(std::mem::take(&mut batch))).await.is_err() {
+                        return;
+                      }
+                      bytes = 0;
+                    }
+                  }
+                  Err(error) => {
+                    let _ = sender.send(Err(error)).await;
+                    return;
+                  }
+                }
+              }
+              None => {
+                if !batch.is_empty() {
+                  let _ = sender.send(Ok(batch)).await;
+                }
+                return;
+              }
+            }
+          }
+        });
+      }};
+    }
+    match self {
+      Self::Mysql(driver) => start_reader!(driver, util::json_from_mysql_row),
+      Self::Postgres(driver) => start_reader!(driver, util::json_from_pg_row),
+      Self::Redis(_) => return Err("Redis does not support SQL row streaming".into()),
+    }
+    Ok(receiver)
+  }
+
+  pub async fn open(conn: ConnectionConfig, local_port: Option<u16>) -> Result<Self, String> {
+    match conn.engine {
+      crate::types::DbEngine::Mysql => Ok(Self::Mysql(
+        mysql::MysqlDriver::open(conn, local_port).await?,
+      )),
+      crate::types::DbEngine::Postgres => {
+        Ok(Self::Postgres(pg::PgDriver::open(conn, local_port).await?))
+      }
+      crate::types::DbEngine::Redis => Ok(Self::Redis(
+        redis::RedisDriver::open(conn, local_port).await?,
+      )),
+    }
+  }
+
+  pub async fn test_connection(
+    conn: &ConnectionConfig,
+    local_port: Option<u16>,
+  ) -> Result<String, String> {
     let driver = Self::open(conn.clone(), local_port).await?;
     let msg = match &driver {
       Self::Mysql(d) => d.test().await?,
@@ -110,7 +206,11 @@ impl EngineDriver {
     }
   }
 
-  pub async fn execute_sql(&self, sql: &str, database: Option<&str>) -> Result<(), String> {
+  pub async fn execute_sql(
+    &self,
+    sql: &str,
+    database: Option<&str>,
+  ) -> Result<serde_json::Value, String> {
     match self {
       Self::Mysql(d) => d.execute_sql(sql, database).await,
       Self::Postgres(d) => d.execute_sql(sql, database).await,
@@ -178,20 +278,6 @@ impl EngineDriver {
       Self::Mysql(d) => d.list_foreign_key_edges(database).await,
       Self::Postgres(d) => d.list_foreign_key_edges(database).await,
       Self::Redis(_) => Ok(vec![]),
-    }
-  }
-
-  pub async fn stream_rows_ordered(
-    &self,
-    database: &str,
-    table: &str,
-    key_columns: &[String],
-    batch: usize,
-  ) -> Result<Vec<std::collections::HashMap<String, serde_json::Value>>, String> {
-    match self {
-      Self::Mysql(d) => d.stream_all_rows(database, table, key_columns, batch).await,
-      Self::Postgres(d) => d.stream_all_rows(database, table, key_columns, batch).await,
-      Self::Redis(_) => Err("Redis does not support stream rows for sync".into()),
     }
   }
 }

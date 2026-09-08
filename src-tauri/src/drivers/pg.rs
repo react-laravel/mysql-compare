@@ -11,17 +11,18 @@ use crate::drivers::dialect::{
 use crate::drivers::util::{json_from_pg_row, urlencoding};
 use crate::types::{
   ColumnInfo, ConnectionConfig, CopyTableRequest, DatabaseInfo, DeleteRowsRequest,
-  DropDatabaseRequest, DropTableRequest, ExplainPlanMetric, ExplainSQLResult, InsertRowRequest,
-  QueryRowsRequest, QueryRowsResult, RenameTableRequest, TableSchema, TruncateTableRequest,
-  UpdateRowRequest,
+  DropDatabaseRequest, DropTableRequest, ExplainPlanMetric, ExplainSQLResult, IndexInfo,
+  InsertRowRequest, QueryRowsRequest, QueryRowsResult, RenameTableRequest, TableSchema,
+  TruncateTableRequest, UpdateRowRequest,
 };
 
 const DEFAULT_SCHEMA: &str = "public";
 
 pub struct PgDriver {
-  connection: ConnectionConfig,
+  pub(super) connection: ConnectionConfig,
   local_port: Option<u16>,
   pools: Mutex<HashMap<String, PgPool>>,
+  schemas: Mutex<HashMap<(String, String), (std::time::Instant, TableSchema)>>,
 }
 
 impl PgDriver {
@@ -30,6 +31,7 @@ impl PgDriver {
       connection,
       local_port,
       pools: Mutex::new(HashMap::new()),
+      schemas: Mutex::new(HashMap::new()),
     })
   }
 
@@ -106,7 +108,10 @@ impl PgDriver {
       .fetch_one(&pool)
       .await
       .map_err(|e| e.to_string())?;
-    Ok(format!("OK · {}", row.0.split(',').next().unwrap_or("PostgreSQL")))
+    Ok(format!(
+      "OK · {}",
+      row.0.split(',').next().unwrap_or("PostgreSQL")
+    ))
   }
 
   pub async fn list_databases(&self) -> Result<Vec<String>, String> {
@@ -206,11 +211,16 @@ impl PgDriver {
     assert_ident(table, "table")?;
     let pool = self.pool(database).await?;
     let col_rows = sqlx::query(
-      "SELECT column_name, data_type, is_nullable, column_default,
-              udt_name
-       FROM information_schema.columns
-       WHERE table_schema = $1 AND table_name = $2
-       ORDER BY ordinal_position",
+      "SELECT a.attname AS column_name, format_type(a.atttypid, a.atttypmod) AS data_type,
+              CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END AS is_nullable,
+              pg_get_expr(d.adbin, d.adrelid) AS column_default, t.typname AS udt_name,
+              a.attidentity::text AS identity_kind, a.attgenerated::text AS generated_kind,
+              col_description(c.oid, a.attnum) AS comment
+       FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid
+       JOIN pg_namespace n ON n.oid = c.relnamespace JOIN pg_type t ON t.oid = a.atttypid
+       LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+       WHERE n.nspname = $1 AND c.relname = $2 AND a.attnum > 0 AND NOT a.attisdropped
+       ORDER BY a.attnum",
     )
     .bind(DEFAULT_SCHEMA)
     .bind(table)
@@ -239,6 +249,100 @@ impl PgDriver {
       .collect();
     let pk_set: HashSet<_> = primary_key.iter().cloned().collect();
 
+    if col_rows.is_empty() {
+      return Err(format!("Table {table} has no readable columns"));
+    }
+    let mut definitions = Vec::new();
+    for row in &col_rows {
+      let name: String = row.try_get("column_name").map_err(|e| e.to_string())?;
+      let mut col_type: String = row.try_get("data_type").map_err(|e| e.to_string())?;
+      let default: Option<String> = row.try_get("column_default").map_err(|e| e.to_string())?;
+      let identity: String = row.try_get("identity_kind").map_err(|e| e.to_string())?;
+      let generated: String = row.try_get("generated_kind").map_err(|e| e.to_string())?;
+      let mut suffix = String::new();
+      if !generated.is_empty() {
+        suffix = format!(
+          " GENERATED ALWAYS AS ({}) STORED",
+          default.as_deref().ok_or("Missing generated expression")?
+        );
+      } else if !identity.is_empty() {
+        suffix = format!(
+          " GENERATED {} AS IDENTITY",
+          if identity == "a" {
+            "ALWAYS"
+          } else {
+            "BY DEFAULT"
+          }
+        );
+      } else if let Some(default) = &default {
+        if default.starts_with("nextval(")
+          && matches!(col_type.as_str(), "smallint" | "integer" | "bigint")
+        {
+          col_type = match col_type.as_str() {
+            "smallint" => "smallserial",
+            "integer" => "serial",
+            _ => "bigserial",
+          }
+          .into();
+        } else {
+          suffix = format!(" DEFAULT {default}");
+        }
+      }
+      if row
+        .try_get::<String, _>("is_nullable")
+        .map_err(|e| e.to_string())?
+        == "NO"
+      {
+        suffix.push_str(" NOT NULL");
+      }
+      definitions.push(format!("  {} {col_type}{suffix}", quote_pg_ident(&name)));
+    }
+    let constraints = sqlx::query("SELECT con.conname, pg_get_constraintdef(con.oid, true) AS definition
+      FROM pg_constraint con JOIN pg_class c ON c.oid = con.conrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = $1 AND c.relname = $2 AND con.contype IN ('p','u','f','c','x') ORDER BY con.conname")
+      .bind(DEFAULT_SCHEMA).bind(table).fetch_all(&pool).await.map_err(|e| e.to_string())?;
+    for row in constraints {
+      let name: String = row.try_get("conname").map_err(|e| e.to_string())?;
+      let definition: String = row.try_get("definition").map_err(|e| e.to_string())?;
+      definitions.push(format!(
+        "  CONSTRAINT {} {definition}",
+        quote_pg_ident(&name)
+      ));
+    }
+    let index_rows = sqlx::query("SELECT ci.relname AS name, i.indisunique AS unique_index, am.amname AS index_type,
+       ARRAY(SELECT pg_get_indexdef(i.indexrelid, k, true) FROM generate_series(1, i.indnkeyatts) k ORDER BY k) AS columns,
+       pg_get_indexdef(i.indexrelid) AS definition,
+       EXISTS(SELECT 1 FROM pg_constraint con WHERE con.conindid = i.indexrelid AND con.contype IN ('p','u','x')) AS owned
+       FROM pg_index i JOIN pg_class c ON c.oid = i.indrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+       JOIN pg_class ci ON ci.oid = i.indexrelid JOIN pg_am am ON am.oid = ci.relam
+       WHERE n.nspname = $1 AND c.relname = $2 ORDER BY ci.relname")
+      .bind(DEFAULT_SCHEMA).bind(table).fetch_all(&pool).await.map_err(|e| e.to_string())?;
+    let mut indexes = Vec::new();
+    let mut index_sql = Vec::new();
+    for row in index_rows {
+      indexes.push(IndexInfo {
+        name: row.try_get("name").map_err(|e| e.to_string())?,
+        columns: row.try_get("columns").map_err(|e| e.to_string())?,
+        unique: row.try_get("unique_index").map_err(|e| e.to_string())?,
+        index_type: row.try_get("index_type").map_err(|e| e.to_string())?,
+      });
+      if !row.try_get::<bool, _>("owned").map_err(|e| e.to_string())? {
+        index_sql.push(
+          row
+            .try_get::<String, _>("definition")
+            .map_err(|e| e.to_string())?,
+        );
+      }
+    }
+    let mut create_sql = format!(
+      "CREATE TABLE {} (\n{}\n)",
+      quote_pg_table(DEFAULT_SCHEMA, table),
+      definitions.join(",\n")
+    );
+    for index in index_sql {
+      create_sql.push_str(&format!(";\n{index}"));
+    }
+
     let columns: Vec<ColumnInfo> = col_rows
       .into_iter()
       .map(|r| {
@@ -246,14 +350,19 @@ impl PgDriver {
         let default_value: Option<String> = r.try_get("column_default").ok();
         let is_ai = default_value
           .as_deref()
-          .map(|d| d.contains("nextval") || d.to_lowercase().contains("identity"))
-          .unwrap_or(false);
+          .map(|d| d.contains("nextval"))
+          .unwrap_or(false)
+          || r
+            .try_get::<String, _>("identity_kind")
+            .map(|v| !v.is_empty())
+            .unwrap_or(false);
         ColumnInfo {
+          is_generated: r
+            .try_get::<String, _>("generated_kind")
+            .map(|value| !value.is_empty())
+            .unwrap_or(false),
           name: name.clone(),
-          col_type: r
-            .try_get::<String, _>("udt_name")
-            .or_else(|_| r.try_get("data_type"))
-            .unwrap_or_default(),
+          col_type: r.try_get::<String, _>("data_type").unwrap_or_default(),
           nullable: r
             .try_get::<String, _>("is_nullable")
             .map(|v| v == "YES")
@@ -261,7 +370,7 @@ impl PgDriver {
           default_value,
           is_primary_key: pk_set.contains(&name),
           is_auto_increment: is_ai,
-          comment: String::new(),
+          comment: r.try_get::<String, _>("comment").unwrap_or_default(),
           column_key: if pk_set.contains(&name) {
             "PRI".into()
           } else {
@@ -271,15 +380,10 @@ impl PgDriver {
       })
       .collect();
 
-    let create_sql = format!(
-      "-- reconstructed\nCREATE TABLE {} (...);",
-      quote_pg_table(DEFAULT_SCHEMA, table)
-    );
-
     Ok(TableSchema {
       name: table.to_string(),
       columns,
-      indexes: vec![],
+      indexes,
       primary_key,
       create_sql,
       row_estimate: None,
@@ -296,22 +400,52 @@ impl PgDriver {
     })
   }
 
+  async fn query_schema(&self, database: &str, table: &str) -> Result<TableSchema, String> {
+    let key = (database.to_string(), table.to_string());
+    if let Some((at, schema)) = self.schemas.lock().get(&key) {
+      if at.elapsed() < std::time::Duration::from_secs(15) {
+        return Ok(schema.clone());
+      }
+    }
+    let schema = self.get_table_schema(database, table).await?;
+    let mut cache = self.schemas.lock();
+    if cache.len() >= 128 {
+      cache.clear();
+    }
+    cache.insert(key, (std::time::Instant::now(), schema.clone()));
+    Ok(schema)
+  }
+
   pub async fn query_rows(&self, req: &QueryRowsRequest) -> Result<QueryRowsResult, String> {
     assert_ident(&req.table, "table")?;
     assert_safe_where(req.where_fragment())?;
-    let schema = self.get_table_schema(&req.database, &req.table).await?;
+    let schema = self.query_schema(&req.database, &req.table).await?;
     let pool = self.pool(&req.database).await?;
     let table = quote_pg_table(DEFAULT_SCHEMA, &req.table);
-    let where_clause = req
-      .where_fragment()
-      .map(|w| format!("WHERE {w}"))
-      .unwrap_or_default();
+    let where_clause = if let Some(keys) = &req.key_rows {
+      format!(
+        "WHERE {}",
+        crate::drivers::dialect::key_rows_filter(
+          keys,
+          &schema.primary_key,
+          crate::drivers::dialect::SqlDialect::Postgres
+        )?
+      )
+    } else {
+      req
+        .where_fragment()
+        .map(|w| format!("WHERE {w}"))
+        .unwrap_or_default()
+    };
     let order_clause = build_order(&schema, req.order_by.as_ref());
     let limit = clamp_page_size(req.page_size);
-    let offset = req.page.saturating_sub(1) * limit;
-    let sql = format!(
-      "SELECT * FROM {table} {where_clause} {order_clause} LIMIT {limit} OFFSET {offset}"
-    );
+    let offset = if req.key_rows.is_some() {
+      0
+    } else {
+      u64::from(req.page.saturating_sub(1)) * u64::from(limit)
+    };
+    let sql =
+      format!("SELECT * FROM {table} {where_clause} {order_clause} LIMIT {limit} OFFSET {offset}");
     let rows = sqlx::query(&sql)
       .fetch_all(&pool)
       .await
@@ -320,6 +454,15 @@ impl PgDriver {
       .iter()
       .map(json_from_pg_row)
       .collect::<Result<Vec<_>, _>>()?;
+    if req.key_rows.is_some() {
+      return Ok(QueryRowsResult {
+        total: mapped.len() as i64,
+        rows: mapped,
+        has_primary_key: !schema.primary_key.is_empty(),
+        primary_key: schema.primary_key,
+        columns: schema.columns,
+      });
+    }
     let count_sql = format!("SELECT COUNT(*)::bigint AS c FROM {table} {where_clause}");
     let count_row = sqlx::query(&count_sql)
       .fetch_one(&pool)
@@ -335,107 +478,141 @@ impl PgDriver {
   }
 
   pub async fn insert_row(&self, req: &InsertRowRequest) -> Result<(), String> {
+    self.schemas.lock().clear();
     if req.values.is_empty() {
       return Err("No values to insert".into());
     }
+    let dialect = crate::drivers::dialect::SqlDialect::Postgres;
     let pool = self.pool(&req.database).await?;
-    let cols: Vec<_> = req.values.keys().cloned().collect();
-    let placeholders = (1..=cols.len())
-      .map(|i| format!("${i}"))
+    let mut columns: Vec<_> = req.values.keys().collect();
+    columns.sort();
+    let names = columns
+      .iter()
+      .map(|c| dialect.quote_ident(c))
       .collect::<Vec<_>>()
       .join(", ");
-    let col_sql = cols
+    let values = columns
       .iter()
-      .map(|c| quote_pg_ident(c))
+      .map(|c| dialect.literal(req.values.get(*c)))
       .collect::<Vec<_>>()
       .join(", ");
     let sql = format!(
-      "INSERT INTO {} ({col_sql}) VALUES ({placeholders})",
+      "INSERT INTO {} ({names}) VALUES ({values})",
       quote_pg_table(DEFAULT_SCHEMA, &req.table)
     );
-    let mut query = sqlx::query(&sql);
-    for c in &cols {
-      query = bind_json(query, req.values.get(c).unwrap_or(&Value::Null));
-    }
-    query.execute(&pool).await.map_err(|e| e.to_string())?;
+    sqlx::query(&sql)
+      .execute(&pool)
+      .await
+      .map_err(|e| e.to_string())?;
     Ok(())
   }
 
   pub async fn update_row(&self, req: &UpdateRowRequest) -> Result<(), String> {
-    if req.pk_values.is_empty() {
-      return Err("Refusing to UPDATE without primary key".into());
-    }
+    self.schemas.lock().clear();
     if req.changes.is_empty() {
       return Ok(());
     }
+    let dialect = crate::drivers::dialect::SqlDialect::Postgres;
+    let schema = self.get_table_schema(&req.database, &req.table).await?;
+    let predicate = crate::drivers::dialect::key_rows_filter(
+      std::slice::from_ref(&req.pk_values),
+      &schema.primary_key,
+      dialect,
+    )?;
+    let assignments = req
+      .changes
+      .iter()
+      .map(|(name, value)| {
+        format!(
+          "{} = {}",
+          dialect.quote_ident(name),
+          dialect.literal(Some(value))
+        )
+      })
+      .collect::<Vec<_>>()
+      .join(", ");
     let pool = self.pool(&req.database).await?;
-    let set_cols: Vec<_> = req.changes.keys().cloned().collect();
-    let pk_cols: Vec<_> = req.pk_values.keys().cloned().collect();
-    let mut idx = 1;
-    let mut set_parts = Vec::new();
-    for c in &set_cols {
-      set_parts.push(format!("{} = ${idx}", quote_pg_ident(c)));
-      idx += 1;
-    }
-    let mut where_parts = Vec::new();
-    for c in &pk_cols {
-      where_parts.push(format!("{} = ${idx}", quote_pg_ident(c)));
-      idx += 1;
-    }
-    let sql = format!(
-      "UPDATE {} SET {} WHERE {}",
-      quote_pg_table(DEFAULT_SCHEMA, &req.table),
-      set_parts.join(", "),
-      where_parts.join(" AND ")
-    );
-    let mut query = sqlx::query(&sql);
-    for c in &set_cols {
-      query = bind_json(query, req.changes.get(c).unwrap_or(&Value::Null));
-    }
-    for c in &pk_cols {
-      query = bind_json(query, req.pk_values.get(c).unwrap_or(&Value::Null));
-    }
-    query.execute(&pool).await.map_err(|e| e.to_string())?;
+    sqlx::query(&format!(
+      "UPDATE {} SET {assignments} WHERE {predicate}",
+      quote_pg_table(DEFAULT_SCHEMA, &req.table)
+    ))
+    .execute(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
     Ok(())
   }
 
   pub async fn delete_rows(&self, req: &DeleteRowsRequest) -> Result<(), String> {
+    self.schemas.lock().clear();
     if req.pk_rows.is_empty() {
       return Ok(());
     }
+    let dialect = crate::drivers::dialect::SqlDialect::Postgres;
+    let schema = self.get_table_schema(&req.database, &req.table).await?;
+    // Validate all requested keys before starting any deletion.
+    for keys in req.pk_rows.chunks(1000) {
+      crate::drivers::dialect::key_rows_filter(keys, &schema.primary_key, dialect)?;
+    }
     let pool = self.pool(&req.database).await?;
     let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
-    let table = quote_pg_table(DEFAULT_SCHEMA, &req.table);
-    for row in &req.pk_rows {
-      if row.is_empty() {
-        return Err("Refusing to DELETE without primary key".into());
-      }
-      let cols: Vec<_> = row.keys().cloned().collect();
-      let where_clause = cols
-        .iter()
-        .enumerate()
-        .map(|(i, c)| format!("{} = ${}", quote_pg_ident(c), i + 1))
-        .collect::<Vec<_>>()
-        .join(" AND ");
-      let sql = format!("DELETE FROM {table} WHERE {where_clause}");
-      let mut query = sqlx::query(&sql);
-      for c in &cols {
-        query = bind_json(query, row.get(c).unwrap_or(&Value::Null));
-      }
-      query.execute(&mut *tx).await.map_err(|e| e.to_string())?;
+    for keys in req.pk_rows.chunks(1000) {
+      let predicate = crate::drivers::dialect::key_rows_filter(keys, &schema.primary_key, dialect)?;
+      sqlx::query(&format!(
+        "DELETE FROM {} WHERE {predicate}",
+        quote_pg_table(DEFAULT_SCHEMA, &req.table)
+      ))
+      .execute(&mut *tx)
+      .await
+      .map_err(|e| e.to_string())?;
     }
     tx.commit().await.map_err(|e| e.to_string())?;
     Ok(())
   }
 
-  pub async fn execute_sql(&self, sql: &str, database: Option<&str>) -> Result<(), String> {
-    let db = database
+  pub async fn execute_sql(&self, sql: &str, database: Option<&str>) -> Result<Value, String> {
+    use futures::StreamExt;
+    self.schemas.lock().clear();
+    let database = database
       .map(str::to_string)
       .or_else(|| self.connection.database.clone())
       .unwrap_or_else(|| "postgres".into());
-    let pool = self.pool(&db).await?;
-    pool.execute(sql).await.map_err(|e| e.to_string())?;
-    Ok(())
+    let pool = self.pool(&database).await?;
+    let mut results = pool.fetch_many(sql);
+    let mut rows = Vec::new();
+    let mut statements = Vec::new();
+    let mut row_count = 0usize;
+    let mut bytes = 0usize;
+    let mut truncated = false;
+    while let Some(result) = results.next().await {
+      match result.map_err(|e| e.to_string())? {
+        sqlx::Either::Left(done) => {
+          if row_count > 0 {
+            statements.push(serde_json::json!({"rows": rows, "truncated": truncated}));
+          } else {
+            statements.push(serde_json::json!({"affectedRows": done.rows_affected()}));
+          }
+          rows = Vec::new();
+          row_count = 0;
+        }
+        sqlx::Either::Right(row) => {
+          row_count += 1;
+          if !truncated {
+            let row = json_from_pg_row(&row)?;
+            bytes += serde_json::to_vec(&row).map_err(|e| e.to_string())?.len();
+            if row_count <= 10000 && bytes <= 16 * 1024 * 1024 {
+              rows.push(row);
+            } else {
+              truncated = true;
+            }
+          }
+        }
+      }
+    }
+    if statements.len() == 1 {
+      Ok(statements.remove(0))
+    } else {
+      Ok(serde_json::json!({"results": statements}))
+    }
   }
 
   pub async fn explain_sql(
@@ -469,6 +646,7 @@ impl PgDriver {
   }
 
   pub async fn rename_table(&self, req: &RenameTableRequest) -> Result<String, String> {
+    self.schemas.lock().clear();
     let pool = self.pool(&req.database).await?;
     let sql = format!(
       "ALTER TABLE {} RENAME TO {}",
@@ -483,6 +661,7 @@ impl PgDriver {
   }
 
   pub async fn copy_table(&self, req: &CopyTableRequest) -> Result<String, String> {
+    self.schemas.lock().clear();
     let pool = self.pool(&req.database).await?;
     let sql = format!(
       "CREATE TABLE {} (LIKE {} INCLUDING ALL); INSERT INTO {} SELECT * FROM {}",
@@ -491,13 +670,15 @@ impl PgDriver {
       quote_pg_table(DEFAULT_SCHEMA, &req.target_table),
       quote_pg_table(DEFAULT_SCHEMA, &req.table)
     );
-    pool.execute(sql.as_str())
+    pool
+      .execute(sql.as_str())
       .await
       .map_err(|e| e.to_string())?;
     Ok(req.target_table.clone())
   }
 
   pub async fn drop_database(&self, req: &DropDatabaseRequest) -> Result<(), String> {
+    self.schemas.lock().clear();
     let maybe_pool = {
       let mut guard = self.pools.lock();
       guard.remove(&req.database)
@@ -515,11 +696,9 @@ impl PgDriver {
   }
 
   pub async fn drop_table(&self, req: &DropTableRequest) -> Result<(), String> {
+    self.schemas.lock().clear();
     let pool = self.pool(&req.database).await?;
-    let sql = format!(
-      "DROP TABLE {}",
-      quote_pg_table(DEFAULT_SCHEMA, &req.table)
-    );
+    let sql = format!("DROP TABLE {}", quote_pg_table(DEFAULT_SCHEMA, &req.table));
     sqlx::query(&sql)
       .execute(&pool)
       .await
@@ -528,6 +707,7 @@ impl PgDriver {
   }
 
   pub async fn truncate_table(&self, req: &TruncateTableRequest) -> Result<(), String> {
+    self.schemas.lock().clear();
     let pool = self.pool(&req.database).await?;
     let table = quote_pg_table(DEFAULT_SCHEMA, &req.table);
     let sql = if req.reset_identity.unwrap_or(true) {
@@ -540,37 +720,6 @@ impl PgDriver {
       .await
       .map_err(|e| e.to_string())?;
     Ok(())
-  }
-
-  pub async fn stream_all_rows(
-    &self,
-    database: &str,
-    table: &str,
-    key_columns: &[String],
-    _batch: usize,
-  ) -> Result<Vec<HashMap<String, Value>>, String> {
-    let pool = self.pool(database).await?;
-    let order = if key_columns.is_empty() {
-      String::new()
-    } else {
-      format!(
-        "ORDER BY {}",
-        key_columns
-          .iter()
-          .map(|c| quote_pg_ident(c))
-          .collect::<Vec<_>>()
-          .join(", ")
-      )
-    };
-    let sql = format!(
-      "SELECT * FROM {} {order}",
-      quote_pg_table(DEFAULT_SCHEMA, table)
-    );
-    let rows = sqlx::query(&sql)
-      .fetch_all(&pool)
-      .await
-      .map_err(|e| e.to_string())?;
-    rows.iter().map(json_from_pg_row).collect()
   }
 }
 
@@ -599,25 +748,3 @@ fn build_order(schema: &TableSchema, order_by: Option<&crate::types::OrderBy>) -
     format!("ORDER BY {}", parts.join(", "))
   }
 }
-
-fn bind_json<'q>(
-  query: sqlx::query::Query<'q, Postgres, sqlx::postgres::PgArguments>,
-  value: &'q Value,
-) -> sqlx::query::Query<'q, Postgres, sqlx::postgres::PgArguments> {
-  match value {
-    Value::Null => query.bind(Option::<String>::None),
-    Value::Bool(b) => query.bind(*b),
-    Value::Number(n) => {
-      if let Some(i) = n.as_i64() {
-        query.bind(i)
-      } else if let Some(f) = n.as_f64() {
-        query.bind(f)
-      } else {
-        query.bind(n.to_string())
-      }
-    }
-    Value::String(s) => query.bind(s.as_str()),
-    other => query.bind(other.to_string()),
-  }
-}
-

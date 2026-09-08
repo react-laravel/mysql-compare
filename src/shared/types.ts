@@ -56,6 +56,7 @@ export type SafeConnection = Omit<
 
 // ---------- 表 / 字段 ----------
 export interface ColumnInfo {
+  isGenerated?: boolean
   name: string
   type: string                // 原始 column type, e.g. varchar(255) / integer
   nullable: boolean
@@ -119,6 +120,8 @@ export interface QueryRowsRequest {
   /** API 层注入，用于无主键排序时的稳定默认顺序 */
   primaryKey?: string[]
   columnNames?: string[]
+  /** Exact lookup by complete primary keys; independent of the current page. */
+  keyRows?: Record<string, unknown>[]
 }
 
 export interface QueryRowsResult {
@@ -504,6 +507,8 @@ export interface TableComparisonResult {
 export type ExistingTableStrategy = 'skip' | 'overwrite-structure' | 'append-data' | 'truncate-and-import'
 
 export interface SyncRequest {
+  taskId?: string
+  planId?: string
   sourceConnectionId: string
   sourceDatabase: string
   targetConnectionId: string
@@ -519,6 +524,7 @@ export interface SyncRequest {
 }
 
 export interface SyncPlan {
+  planId?: string
   /** 顺序执行的 SQL 列表，按表分组 */
   steps: SyncStep[]
 }
@@ -530,6 +536,7 @@ export interface SyncStep {
 }
 
 export interface SyncProgressEvent {
+  taskId?: string
   table: string
   step: string
   done: number

@@ -19,9 +19,10 @@ use crate::types::{
 const SYSTEM_DATABASES: &[&str] = &["information_schema", "performance_schema", "mysql", "sys"];
 
 pub struct MysqlDriver {
-  connection: ConnectionConfig,
+  pub(super) connection: ConnectionConfig,
   local_port: Option<u16>,
   pools: Mutex<HashMap<String, MySqlPool>>,
+  schemas: Mutex<HashMap<(String, String), (std::time::Instant, TableSchema)>>,
 }
 
 impl MysqlDriver {
@@ -30,6 +31,7 @@ impl MysqlDriver {
       connection,
       local_port,
       pools: Mutex::new(HashMap::new()),
+      schemas: Mutex::new(HashMap::new()),
     })
   }
 
@@ -71,10 +73,7 @@ impl MysqlDriver {
   }
 
   /// 从连接池取出一个独占连接（用于需要会话级状态的批量写入，如 FOREIGN_KEY_CHECKS）。
-  pub async fn acquire(
-    &self,
-    database: &str,
-  ) -> Result<sqlx::pool::PoolConnection<MySql>, String> {
+  pub async fn acquire(&self, database: &str) -> Result<sqlx::pool::PoolConnection<MySql>, String> {
     let pool = self.pool(database).await?;
     pool.acquire().await.map_err(|e| e.to_string())
   }
@@ -227,6 +226,7 @@ impl MysqlDriver {
         let key: String = r.try_get("COLUMN_KEY").unwrap_or_default();
         let extra: String = r.try_get("EXTRA").unwrap_or_default();
         ColumnInfo {
+          is_generated: extra.to_uppercase().contains("GENERATED"),
           name: r.try_get("COLUMN_NAME").unwrap_or_default(),
           col_type: r.try_get("COLUMN_TYPE").unwrap_or_default(),
           nullable: r
@@ -285,19 +285,6 @@ impl MysqlDriver {
       read_mysql_text(&row, 1, "SHOW CREATE TABLE result")?
     };
 
-    let row_count = {
-      let sql = format!(
-        "SELECT CAST(COUNT(*) AS SIGNED) AS ROW_COUNT FROM {}",
-        quote_mysql_table(database, table)
-      );
-      let row = sqlx::query(&sql)
-        .fetch_one(&pool)
-        .await
-        .map_err(|e| e.to_string())?;
-      row.try_get::<i64, _>("ROW_COUNT")
-        .map_err(|e| format!("read exact row count: {e}"))?
-    };
-
     let stats = sqlx::query(
       "SELECT CAST(TABLE_ROWS AS SIGNED) AS TABLE_ROWS,
               ENGINE, TABLE_COLLATION, TABLE_COMMENT,
@@ -323,15 +310,23 @@ impl MysqlDriver {
       indexes,
       primary_key,
       create_sql,
-      row_estimate: Some(row_count),
+      row_estimate: stats
+        .as_ref()
+        .and_then(|row| row.try_get("TABLE_ROWS").ok()),
       engine: stats.as_ref().and_then(|s| s.try_get("ENGINE").ok()),
-      charset: stats.as_ref().and_then(|s| s.try_get("TABLE_COLLATION").ok()),
+      charset: stats
+        .as_ref()
+        .and_then(|s| s.try_get("TABLE_COLLATION").ok()),
       table_comment: stats.as_ref().and_then(|s| s.try_get("TABLE_COMMENT").ok()),
       data_length: stats.as_ref().and_then(|s| s.try_get("DATA_LENGTH").ok()),
       index_length: stats.as_ref().and_then(|s| s.try_get("INDEX_LENGTH").ok()),
       data_free: stats.as_ref().and_then(|s| s.try_get("DATA_FREE").ok()),
-      avg_row_length: stats.as_ref().and_then(|s| s.try_get("AVG_ROW_LENGTH").ok()),
-      auto_increment: stats.as_ref().and_then(|s| s.try_get("AUTO_INCREMENT").ok()),
+      avg_row_length: stats
+        .as_ref()
+        .and_then(|s| s.try_get("AVG_ROW_LENGTH").ok()),
+      auto_increment: stats
+        .as_ref()
+        .and_then(|s| s.try_get("AUTO_INCREMENT").ok()),
       created_at: stats
         .as_ref()
         .and_then(|s| s.try_get::<String, _>("CREATE_TIME").ok()),
@@ -341,22 +336,52 @@ impl MysqlDriver {
     })
   }
 
+  async fn query_schema(&self, database: &str, table: &str) -> Result<TableSchema, String> {
+    let key = (database.to_string(), table.to_string());
+    if let Some((at, schema)) = self.schemas.lock().get(&key) {
+      if at.elapsed() < std::time::Duration::from_secs(15) {
+        return Ok(schema.clone());
+      }
+    }
+    let schema = self.get_table_schema(database, table).await?;
+    let mut cache = self.schemas.lock();
+    if cache.len() >= 128 {
+      cache.clear();
+    }
+    cache.insert(key, (std::time::Instant::now(), schema.clone()));
+    Ok(schema)
+  }
+
   pub async fn query_rows(&self, req: &QueryRowsRequest) -> Result<QueryRowsResult, String> {
     assert_ident(&req.table, "table")?;
     assert_safe_where(req.where_fragment())?;
-    let schema = self.get_table_schema(&req.database, &req.table).await?;
+    let schema = self.query_schema(&req.database, &req.table).await?;
     let pool = self.pool(&req.database).await?;
     let table = quote_mysql_table(&req.database, &req.table);
-    let where_clause = req
-      .where_fragment()
-      .map(|w| format!("WHERE {w}"))
-      .unwrap_or_default();
+    let where_clause = if let Some(keys) = &req.key_rows {
+      format!(
+        "WHERE {}",
+        crate::drivers::dialect::key_rows_filter(
+          keys,
+          &schema.primary_key,
+          crate::drivers::dialect::SqlDialect::Mysql
+        )?
+      )
+    } else {
+      req
+        .where_fragment()
+        .map(|w| format!("WHERE {w}"))
+        .unwrap_or_default()
+    };
     let order_clause = build_order_clause(&schema, req.order_by.as_ref());
     let limit = clamp_page_size(req.page_size);
-    let offset = req.page.saturating_sub(1) * limit;
-    let sql = format!(
-      "SELECT * FROM {table} {where_clause} {order_clause} LIMIT {limit} OFFSET {offset}"
-    );
+    let offset = if req.key_rows.is_some() {
+      0
+    } else {
+      u64::from(req.page.saturating_sub(1)) * u64::from(limit)
+    };
+    let sql =
+      format!("SELECT * FROM {table} {where_clause} {order_clause} LIMIT {limit} OFFSET {offset}");
     let rows = sqlx::query(&sql)
       .fetch_all(&pool)
       .await
@@ -365,6 +390,15 @@ impl MysqlDriver {
       .iter()
       .map(json_from_mysql_row)
       .collect::<Result<Vec<_>, _>>()?;
+    if req.key_rows.is_some() {
+      return Ok(QueryRowsResult {
+        total: mapped.len() as i64,
+        rows: mapped,
+        has_primary_key: !schema.primary_key.is_empty(),
+        primary_key: schema.primary_key,
+        columns: schema.columns,
+      });
+    }
     let count_sql = format!("SELECT COUNT(*) AS c FROM {table} {where_clause}");
     let count_row = sqlx::query(&count_sql)
       .fetch_one(&pool)
@@ -381,97 +415,138 @@ impl MysqlDriver {
   }
 
   pub async fn insert_row(&self, req: &InsertRowRequest) -> Result<(), String> {
+    self.schemas.lock().clear();
     if req.values.is_empty() {
       return Err("No values to insert".into());
     }
+    let dialect = crate::drivers::dialect::SqlDialect::Mysql;
     let pool = self.pool(&req.database).await?;
-    let cols: Vec<_> = req.values.keys().cloned().collect();
-    let placeholders = cols.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
-    let col_sql = cols
+    let mut columns: Vec<_> = req.values.keys().collect();
+    columns.sort();
+    let names = columns
       .iter()
-      .map(|c| quote_mysql_ident(c))
+      .map(|c| dialect.quote_ident(c))
+      .collect::<Vec<_>>()
+      .join(", ");
+    let values = columns
+      .iter()
+      .map(|c| dialect.literal(req.values.get(*c)))
       .collect::<Vec<_>>()
       .join(", ");
     let sql = format!(
-      "INSERT INTO {} ({col_sql}) VALUES ({placeholders})",
+      "INSERT INTO {} ({names}) VALUES ({values})",
       quote_mysql_table(&req.database, &req.table)
     );
-    let mut query = sqlx::query(&sql);
-    for c in &cols {
-      query = bind_json(query, req.values.get(c).unwrap_or(&Value::Null));
-    }
-    query.execute(&pool).await.map_err(|e| e.to_string())?;
+    sqlx::query(&sql)
+      .execute(&pool)
+      .await
+      .map_err(|e| e.to_string())?;
     Ok(())
   }
 
   pub async fn update_row(&self, req: &UpdateRowRequest) -> Result<(), String> {
-    if req.pk_values.is_empty() {
-      return Err("Refusing to UPDATE without primary key".into());
-    }
+    self.schemas.lock().clear();
     if req.changes.is_empty() {
       return Ok(());
     }
-    let pool = self.pool(&req.database).await?;
-    let set_cols: Vec<_> = req.changes.keys().cloned().collect();
-    let pk_cols: Vec<_> = req.pk_values.keys().cloned().collect();
-    let set_clause = set_cols
+    let dialect = crate::drivers::dialect::SqlDialect::Mysql;
+    let schema = self.get_table_schema(&req.database, &req.table).await?;
+    let predicate = crate::drivers::dialect::key_rows_filter(
+      std::slice::from_ref(&req.pk_values),
+      &schema.primary_key,
+      dialect,
+    )?;
+    let assignments = req
+      .changes
       .iter()
-      .map(|c| format!("{} = ?", quote_mysql_ident(c)))
+      .map(|(name, value)| {
+        format!(
+          "{} = {}",
+          dialect.quote_ident(name),
+          dialect.literal(Some(value))
+        )
+      })
       .collect::<Vec<_>>()
       .join(", ");
-    let where_clause = pk_cols
-      .iter()
-      .map(|c| format!("{} = ?", quote_mysql_ident(c)))
-      .collect::<Vec<_>>()
-      .join(" AND ");
-    let sql = format!(
-      "UPDATE {} SET {set_clause} WHERE {where_clause} LIMIT 1",
+    let pool = self.pool(&req.database).await?;
+    sqlx::query(&format!(
+      "UPDATE {} SET {assignments} WHERE {predicate}",
       quote_mysql_table(&req.database, &req.table)
-    );
-    let mut query = sqlx::query(&sql);
-    for c in &set_cols {
-      query = bind_json(query, req.changes.get(c).unwrap_or(&Value::Null));
-    }
-    for c in &pk_cols {
-      query = bind_json(query, req.pk_values.get(c).unwrap_or(&Value::Null));
-    }
-    query.execute(&pool).await.map_err(|e| e.to_string())?;
+    ))
+    .execute(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
     Ok(())
   }
 
   pub async fn delete_rows(&self, req: &DeleteRowsRequest) -> Result<(), String> {
+    self.schemas.lock().clear();
     if req.pk_rows.is_empty() {
       return Ok(());
     }
+    let dialect = crate::drivers::dialect::SqlDialect::Mysql;
+    let schema = self.get_table_schema(&req.database, &req.table).await?;
+    // Validate all requested keys before starting any deletion.
+    for keys in req.pk_rows.chunks(1000) {
+      crate::drivers::dialect::key_rows_filter(keys, &schema.primary_key, dialect)?;
+    }
     let pool = self.pool(&req.database).await?;
     let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
-    let table = quote_mysql_table(&req.database, &req.table);
-    for row in &req.pk_rows {
-      if row.is_empty() {
-        return Err("Refusing to DELETE without primary key".into());
-      }
-      let cols: Vec<_> = row.keys().cloned().collect();
-      let where_clause = cols
-        .iter()
-        .map(|c| format!("{} = ?", quote_mysql_ident(c)))
-        .collect::<Vec<_>>()
-        .join(" AND ");
-      let sql = format!("DELETE FROM {table} WHERE {where_clause} LIMIT 1");
-      let mut query = sqlx::query(&sql);
-      for c in &cols {
-        query = bind_json(query, row.get(c).unwrap_or(&Value::Null));
-      }
-      query.execute(&mut *tx).await.map_err(|e| e.to_string())?;
+    for keys in req.pk_rows.chunks(1000) {
+      let predicate = crate::drivers::dialect::key_rows_filter(keys, &schema.primary_key, dialect)?;
+      sqlx::query(&format!(
+        "DELETE FROM {} WHERE {predicate}",
+        quote_mysql_table(&req.database, &req.table)
+      ))
+      .execute(&mut *tx)
+      .await
+      .map_err(|e| e.to_string())?;
     }
     tx.commit().await.map_err(|e| e.to_string())?;
     Ok(())
   }
 
-  pub async fn execute_sql(&self, sql: &str, database: Option<&str>) -> Result<(), String> {
-    let db = database.unwrap_or("");
-    let pool = self.pool(db).await?;
-    pool.execute(sql).await.map_err(|e| e.to_string())?;
-    Ok(())
+  pub async fn execute_sql(&self, sql: &str, database: Option<&str>) -> Result<Value, String> {
+    use futures::StreamExt;
+    self.schemas.lock().clear();
+    let database = database.unwrap_or("").to_string();
+    let pool = self.pool(&database).await?;
+    let mut results = pool.fetch_many(sql);
+    let mut rows = Vec::new();
+    let mut statements = Vec::new();
+    let mut row_count = 0usize;
+    let mut bytes = 0usize;
+    let mut truncated = false;
+    while let Some(result) = results.next().await {
+      match result.map_err(|e| e.to_string())? {
+        sqlx::Either::Left(done) => {
+          if row_count > 0 {
+            statements.push(serde_json::json!({"rows": rows, "truncated": truncated}));
+          } else {
+            statements.push(serde_json::json!({"affectedRows": done.rows_affected()}));
+          }
+          rows = Vec::new();
+          row_count = 0;
+        }
+        sqlx::Either::Right(row) => {
+          row_count += 1;
+          if !truncated {
+            let row = json_from_mysql_row(&row)?;
+            bytes += serde_json::to_vec(&row).map_err(|e| e.to_string())?.len();
+            if row_count <= 10000 && bytes <= 16 * 1024 * 1024 {
+              rows.push(row);
+            } else {
+              truncated = true;
+            }
+          }
+        }
+      }
+    }
+    if statements.len() == 1 {
+      Ok(statements.remove(0))
+    } else {
+      Ok(serde_json::json!({"results": statements}))
+    }
   }
 
   pub async fn explain_sql(
@@ -509,6 +584,7 @@ impl MysqlDriver {
   }
 
   pub async fn rename_table(&self, req: &RenameTableRequest) -> Result<String, String> {
+    self.schemas.lock().clear();
     assert_ident(&req.new_table, "newTable")?;
     let pool = self.pool(&req.database).await?;
     let sql = format!(
@@ -524,6 +600,7 @@ impl MysqlDriver {
   }
 
   pub async fn copy_table(&self, req: &CopyTableRequest) -> Result<String, String> {
+    self.schemas.lock().clear();
     assert_ident(&req.target_table, "targetTable")?;
     let pool = self.pool(&req.database).await?;
     let src = quote_mysql_table(&req.database, &req.table);
@@ -540,6 +617,7 @@ impl MysqlDriver {
   }
 
   pub async fn drop_database(&self, req: &DropDatabaseRequest) -> Result<(), String> {
+    self.schemas.lock().clear();
     if SYSTEM_DATABASES.contains(&req.database.as_str()) {
       return Err("Refusing to drop system database".into());
     }
@@ -553,6 +631,7 @@ impl MysqlDriver {
   }
 
   pub async fn drop_table(&self, req: &DropTableRequest) -> Result<(), String> {
+    self.schemas.lock().clear();
     let pool = self.pool(&req.database).await?;
     let sql = format!(
       "DROP TABLE {}",
@@ -566,6 +645,7 @@ impl MysqlDriver {
   }
 
   pub async fn truncate_table(&self, req: &TruncateTableRequest) -> Result<(), String> {
+    self.schemas.lock().clear();
     let pool = self.pool(&req.database).await?;
     let table = quote_mysql_table(&req.database, &req.table);
     let sql = if req.reset_identity.unwrap_or(true) {
@@ -578,37 +658,6 @@ impl MysqlDriver {
       .await
       .map_err(|e| e.to_string())?;
     Ok(())
-  }
-
-  pub async fn stream_all_rows(
-    &self,
-    database: &str,
-    table: &str,
-    key_columns: &[String],
-    _batch: usize,
-  ) -> Result<Vec<HashMap<String, Value>>, String> {
-    let pool = self.pool(database).await?;
-    let order = if key_columns.is_empty() {
-      String::new()
-    } else {
-      format!(
-        "ORDER BY {}",
-        key_columns
-          .iter()
-          .map(|c| quote_mysql_ident(c))
-          .collect::<Vec<_>>()
-          .join(", ")
-      )
-    };
-    let sql = format!(
-      "SELECT * FROM {} {order}",
-      quote_mysql_table(database, table)
-    );
-    let rows = sqlx::query(&sql)
-      .fetch_all(&pool)
-      .await
-      .map_err(|e| e.to_string())?;
-    rows.iter().map(json_from_mysql_row).collect()
   }
 }
 
@@ -638,27 +687,6 @@ fn build_order_clause(schema: &TableSchema, order_by: Option<&crate::types::Orde
   }
 }
 
-fn bind_json<'q>(
-  query: sqlx::query::Query<'q, MySql, sqlx::mysql::MySqlArguments>,
-  value: &'q Value,
-) -> sqlx::query::Query<'q, MySql, sqlx::mysql::MySqlArguments> {
-  match value {
-    Value::Null => query.bind(Option::<String>::None),
-    Value::Bool(b) => query.bind(*b),
-    Value::Number(n) => {
-      if let Some(i) = n.as_i64() {
-        query.bind(i)
-      } else if let Some(f) = n.as_f64() {
-        query.bind(f)
-      } else {
-        query.bind(n.to_string())
-      }
-    }
-    Value::String(s) => query.bind(s.as_str()),
-    other => query.bind(other.to_string()),
-  }
-}
-
 #[allow(dead_code)]
 fn _row_type(_: &MySqlRow) {}
 
@@ -667,9 +695,7 @@ fn read_mysql_text(row: &MySqlRow, index: usize, field: &str) -> Result<String, 
     Ok(value) => Ok(value),
     Err(string_error) => {
       let bytes = row.try_get::<Vec<u8>, _>(index).map_err(|bytes_error| {
-        format!(
-          "read {field}: {string_error}; binary text fallback failed: {bytes_error}"
-        )
+        format!("read {field}: {string_error}; binary text fallback failed: {bytes_error}")
       })?;
       String::from_utf8(bytes).map_err(|error| format!("decode {field} as UTF-8: {error}"))
     }

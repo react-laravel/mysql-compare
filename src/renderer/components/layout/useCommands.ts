@@ -259,7 +259,7 @@ export function useCommands(): Command[] {
       ...workspaceTabs.map<Command>((tab) => ({
         id: `open.tab.${tab.id}`,
         group: 'open',
-        title: getTabDisplayTitle(tab.view, t),
+        title: getTabDisplayTitle(tab.view, t, connections),
         keywords: `${tab.id} tab 标签`,
         icon: getTabIcon(tab.view),
         hint: tab.id === activeTabId ? t('workspace.activeTab') : t('palette.openTab'),

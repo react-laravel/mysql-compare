@@ -145,6 +145,7 @@ impl RedisDriver {
       name: table.to_string(),
       columns: vec![
         ColumnInfo {
+          is_generated: false,
           name: "key".into(),
           col_type: "string".into(),
           nullable: false,
@@ -155,6 +156,7 @@ impl RedisDriver {
           column_key: "PRI".into(),
         },
         ColumnInfo {
+          is_generated: false,
           name: "value".into(),
           col_type: "string".into(),
           nullable: true,
@@ -366,6 +368,7 @@ impl RedisDriver {
 
 fn col(name: &str, pk: bool) -> ColumnInfo {
   ColumnInfo {
+          is_generated: false,
     name: name.into(),
     col_type: "string".into(),
     nullable: !pk,

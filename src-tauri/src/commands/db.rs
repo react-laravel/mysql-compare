@@ -126,7 +126,7 @@ pub async fn db_execute_sql(
 ) -> Result<IpcResult<serde_json::Value>, String> {
   match state.get_driver(&app, &connection_id).await {
     Ok(d) => match d.execute_sql(&sql, database.as_deref()).await {
-      Ok(()) => Ok(IpcResult::ok(serde_json::json!({ "ok": true }))),
+      Ok(result) => Ok(IpcResult::ok(result)),
       Err(e) => Ok(IpcResult::err(e)),
     },
     Err(e) => Ok(IpcResult::err(e)),

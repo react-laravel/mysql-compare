@@ -89,7 +89,8 @@ export function TableCompareView({
     page,
     pageSize,
     comparedTables,
-    diffTables
+    diffTables,
+    active
   })
   const {
     sourceState,
@@ -329,10 +330,15 @@ export function TableCompareView({
       tabId: `table-compare:${compareSessionId}`
     })
 
+    const unsubscribe = api.sync.onProgress?.((event) => {
+      if (event.taskId !== jobId) return
+      jobs.update(jobId, { detail: `${event.table} · ${event.message ?? event.step}`, ...(event.total > 0 ? { count: { done: event.done, total: event.total } } : {}) })
+    })
     try {
       const result = await unwrap(
         api.sync.execute(
           buildOverwriteTargetSyncRequest({
+            taskId: jobId,
             sourceConnectionId,
             sourceDatabase,
             targetConnectionId,
@@ -357,6 +363,7 @@ export function TableCompareView({
       jobs.finish(jobId, { status: 'error', detail: (err as Error).message })
       showToast((err as Error).message, 'error')
     } finally {
+      unsubscribe?.()
       setOverwriting(false)
     }
   }

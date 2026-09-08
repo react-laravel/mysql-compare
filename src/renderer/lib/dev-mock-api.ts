@@ -152,18 +152,18 @@ export function createMockApi(mode: MockMode = readMockMode()): AppAPI {
     for (const cb of syncProgressSubscribers) cb(event)
   }
 
-  async function runSyncProgress(tables: string[]): Promise<{ executed: number; errors: number }> {
+  async function runSyncProgress(tables: string[], taskId?: string): Promise<{ executed: number; errors: number }> {
     const total = Math.max(1, tables.length)
     let executed = 0
     let errors = 0
     for (let i = 0; i < tables.length; i += 1) {
       const table = tables[i] ?? 'unknown'
-      emitSyncProgress({ table, step: 'structure', done: i, total, level: 'info', message: `Creating ${table}` })
+      emitSyncProgress({ taskId, table, step: 'structure', done: i, total, level: 'info', message: `Creating ${table}` })
       await pause(1.4)
       const failsHere = mode === 'error' && i === Math.floor(tables.length / 2)
       if (failsHere) {
         errors += 1
-        emitSyncProgress({
+        emitSyncProgress({ taskId,
           table,
           step: 'data',
           done: i + 1,
@@ -173,7 +173,7 @@ export function createMockApi(mode: MockMode = readMockMode()): AppAPI {
         })
         continue
       }
-      emitSyncProgress({
+      emitSyncProgress({ taskId,
         table,
         step: 'data',
         done: i + 1,
@@ -187,7 +187,7 @@ export function createMockApi(mode: MockMode = readMockMode()): AppAPI {
       executed += 1
       await pause(0.6)
     }
-    emitSyncProgress({
+    emitSyncProgress({ taskId,
       table: '',
       step: 'done',
       done: total,
@@ -583,7 +583,7 @@ export function createMockApi(mode: MockMode = readMockMode()): AppAPI {
     sync: {
       buildPlan: (req) => respond(buildSyncPlan(req.tables, req.syncStructure, req.syncData), 3),
       execute: async (req) => {
-        const result = await runSyncProgress(req.tables)
+        const result = await runSyncProgress(req.tables, req.taskId)
         if (mode === 'error' && result.errors === 0) return refuse()
         return { ok: true, data: result }
       },

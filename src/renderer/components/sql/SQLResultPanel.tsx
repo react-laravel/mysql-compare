@@ -69,7 +69,7 @@ export function SQLResultPanel({
   }
 
   if (result.kind === 'rows') {
-    return <SQLRowsPanel columns={result.columns} rows={result.rows} onCopyRows={onCopyRows} />
+    return <SQLRowsPanel columns={result.columns} rows={result.rows} truncated={result.truncated} onCopyRows={onCopyRows} />
   }
 
   if (result.kind === 'empty') {
@@ -116,10 +116,12 @@ export function SQLResultPanel({
 function SQLRowsPanel({
   columns,
   rows,
+  truncated,
   onCopyRows
 }: {
   columns: string[]
   rows: ResultRow[]
+  truncated?: boolean
   onCopyRows: (format: CopyFormat) => void
 }) {
   const { t } = useI18n()
@@ -141,6 +143,7 @@ function SQLRowsPanel({
     <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-md border border-border bg-surface">
       <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-3 py-1.5">
         <Badge tone="accent">{t('sql.rowCount', { count: rows.length.toLocaleString() })}</Badge>
+        {truncated ? <Badge tone="warning">{t('sql.truncatedShort')}</Badge> : null}
         <div className="flex items-center gap-1">
           <Button size="sm" variant="ghost" icon={ClipboardCopy} onClick={() => onCopyRows('tsv')}>
             {t('sql.copyTsv')}

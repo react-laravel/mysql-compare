@@ -1,3 +1,4 @@
+mod partitioned;
 // 数据库结构 / 数据对比：表 / 列 / 索引定义 + 主键配对的行级 data diff。
 // 输出契约与 src/shared/types.ts 对齐；行为参照 electron 分支的 diff-service。
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -11,7 +12,6 @@ use crate::types::{
   TableDataDiff, TableDataDiffSample, TableDiff, TableRowComparison, TableSchema,
 };
 
-const DATA_DIFF_BATCH_SIZE: usize = 200;
 const DATA_DIFF_SAMPLE_LIMIT: usize = 5;
 const SAMPLE_PREVIEW_MAX_CHARS: usize = 80;
 
@@ -108,7 +108,12 @@ async fn compare_shared_table(
     None
   };
 
-  Ok(build_table_comparison(table, column_diffs, index_diffs, data_diff))
+  Ok(build_table_comparison(
+    table,
+    column_diffs,
+    index_diffs,
+    data_diff,
+  ))
 }
 
 /// 计算需要对比的表集合：有 filter 时用 filter，否则取两侧并集；去重并排序。
@@ -180,8 +185,11 @@ fn has_meaningful_data_diff(data_diff: Option<&TableDataDiff>) -> bool {
 
 /// 只输出有差异的列（identical 条目省略），先按源表列顺序、再补 target 独有列。
 fn diff_columns(source: &TableSchema, target: &TableSchema) -> Vec<ColumnDiff> {
-  let target_map: HashMap<&str, &ColumnInfo> =
-    target.columns.iter().map(|c| (c.name.as_str(), c)).collect();
+  let target_map: HashMap<&str, &ColumnInfo> = target
+    .columns
+    .iter()
+    .map(|c| (c.name.as_str(), c))
+    .collect();
   let source_names: HashSet<&str> = source.columns.iter().map(|c| c.name.as_str()).collect();
 
   let mut diffs = Vec::new();
@@ -225,8 +233,11 @@ fn same_column(a: &ColumnInfo, b: &ColumnInfo) -> bool {
 
 /// 只输出有差异的索引（identical 条目省略）。
 fn diff_indexes(source: &TableSchema, target: &TableSchema) -> Vec<IndexDiff> {
-  let target_map: HashMap<&str, &IndexInfo> =
-    target.indexes.iter().map(|i| (i.name.as_str(), i)).collect();
+  let target_map: HashMap<&str, &IndexInfo> = target
+    .indexes
+    .iter()
+    .map(|i| (i.name.as_str(), i))
+    .collect();
   let source_names: HashSet<&str> = source.indexes.iter().map(|i| i.name.as_str()).collect();
 
   let mut diffs = Vec::new();
@@ -290,20 +301,20 @@ async fn diff_table_data(
     Err(reason) => return Ok(not_comparable(&reason, compare_columns)),
   };
 
-  let source_rows = source
-    .stream_rows_ordered(source_db, table, &key_columns, DATA_DIFF_BATCH_SIZE)
-    .await?;
-  let target_rows = target
-    .stream_rows_ordered(target_db, table, &key_columns, DATA_DIFF_BATCH_SIZE)
-    .await?;
-
-  Ok(diff_rows(
-    &source_rows,
-    &target_rows,
+  let mut result = partitioned::compare(
+    source,
+    source_db,
+    target,
+    target_db,
+    table,
     key_columns,
     compare_columns,
-    reason,
-  ))
+  )
+  .await?;
+  if result.reason.is_none() {
+    result.reason = reason;
+  }
+  Ok(result)
 }
 
 /// 两侧共有的列，按源表列顺序。
@@ -325,31 +336,13 @@ fn resolve_key_columns(
   compare_columns: &[String],
 ) -> Result<(Vec<String>, Option<String>), String> {
   let compare_set: HashSet<&str> = compare_columns.iter().map(String::as_str).collect();
-  let source_pk: Vec<String> = source_primary_key
-    .iter()
-    .filter(|c| compare_set.contains(c.as_str()))
-    .cloned()
-    .collect();
-  let target_pk: Vec<String> = target_primary_key
-    .iter()
-    .filter(|c| compare_set.contains(c.as_str()))
-    .cloned()
-    .collect();
-
-  if !source_pk.is_empty() && same_column_set(&source_pk, &target_pk) {
-    return Ok((source_pk, None));
-  }
-  if !source_pk.is_empty() {
-    return Ok((
-      source_pk,
-      Some("Target primary key differs, matched rows by source primary key columns".into()),
-    ));
-  }
-  if !target_pk.is_empty() {
-    return Ok((
-      target_pk,
-      Some("Source primary key differs, matched rows by target primary key columns".into()),
-    ));
+  if !source_primary_key.is_empty()
+    && same_column_set(source_primary_key, target_primary_key)
+    && source_primary_key
+      .iter()
+      .all(|column| compare_set.contains(column.as_str()))
+  {
+    return Ok((source_primary_key.to_vec(), None));
   }
   Err("No shared primary key available for row comparison".into())
 }
@@ -394,6 +387,24 @@ fn diff_rows(
   compare_columns: Vec<String>,
   reason: Option<String>,
 ) -> TableDataDiff {
+  for rows in [source_rows, target_rows] {
+    let mut seen = HashSet::new();
+    for row in rows {
+      if key_columns
+        .iter()
+        .any(|column| row.get(column).map_or(true, Value::is_null))
+        || !seen.insert(comparable_row(row, &key_columns, &key_columns).key)
+      {
+        let mut result = not_comparable(
+          "Comparison requires unique, complete primary keys",
+          compare_columns,
+        );
+        result.source_row_count = source_rows.len() as i64;
+        result.target_row_count = target_rows.len() as i64;
+        return result;
+      }
+    }
+  }
   let source_cmp: Vec<ComparableRow> = source_rows
     .iter()
     .map(|row| comparable_row(row, &key_columns, &compare_columns))
@@ -503,8 +514,8 @@ fn comparable_row(
   let key = key_columns
     .iter()
     .map(|column| canonical_key_part(values.get(column).unwrap_or(&Value::Null)))
-    .collect::<Vec<_>>()
-    .join("\u{1}");
+    .collect::<Vec<_>>();
+  let key = serde_json::to_string(&key).expect("string vector serialization");
   let key_label = key_columns
     .iter()
     .map(|column| {
@@ -569,6 +580,7 @@ mod tests {
     is_auto_increment: bool,
   ) -> ColumnInfo {
     ColumnInfo {
+      is_generated: false,
       name: name.into(),
       col_type: col_type.into(),
       nullable,
@@ -576,7 +588,11 @@ mod tests {
       is_primary_key,
       is_auto_increment,
       comment: String::new(),
-      column_key: if is_primary_key { "PRI".into() } else { String::new() },
+      column_key: if is_primary_key {
+        "PRI".into()
+      } else {
+        String::new()
+      },
     }
   }
 
@@ -622,12 +638,11 @@ mod tests {
   // 移植自 diff-service.schema-cases.ts: 'returns source-only and target-only tables ...'
   #[test]
   fn source_only_and_target_only_tables_become_table_diff_entries() {
-    let tables = collect_diff_tables(
-      &["only_source".into()],
-      &["only_target".into()],
-      None,
+    let tables = collect_diff_tables(&["only_source".into()], &["only_target".into()], None);
+    assert_eq!(
+      tables,
+      vec!["only_source".to_string(), "only_target".to_string()]
     );
-    assert_eq!(tables, vec!["only_source".to_string(), "only_target".to_string()]);
 
     let source_only = only_table_diff("only_source", DiffKind::OnlyInSource);
     let target_only = only_table_diff("only_target", DiffKind::OnlyInTarget);
@@ -649,7 +664,10 @@ mod tests {
         column("id", "int", false, true, true),
         column("name", "varchar(64)", false, false, false),
       ],
-      vec![index("PRIMARY", &["id"], true), index("idx_name", &["name"], false)],
+      vec![
+        index("PRIMARY", &["id"], true),
+        index("idx_name", &["name"], false),
+      ],
     );
     let target = schema(
       "shared",
@@ -685,7 +703,10 @@ mod tests {
           column("id", "int", false, true, true),
           column("title", "varchar(255)", false, false, false),
         ],
-        vec![index("PRIMARY", &["id"], true), index("idx_title", &["title"], false)],
+        vec![
+          index("PRIMARY", &["id"], true),
+          index("idx_title", &["title"], false),
+        ],
       )
     };
     let source = make();
@@ -768,7 +789,10 @@ mod tests {
     let table_diff = result.table_diff.expect("table diff");
     assert_eq!(table_diff.kind, DiffKind::Modified);
     assert!(table_diff.data_diff.is_some());
-    assert_eq!(result.row_comparison.expect("row comparison").table, "shared");
+    assert_eq!(
+      result.row_comparison.expect("row comparison").table,
+      "shared"
+    );
   }
 
   // 移植自 diff-service.data-cases.ts: 'returns row comparison results even when rows are identical'
@@ -800,7 +824,10 @@ mod tests {
     );
 
     let result = build_table_comparison("shared", Vec::new(), Vec::new(), Some(diff));
-    assert!(result.table_diff.is_none(), "identical rows must not emit a tableDiff");
+    assert!(
+      result.table_diff.is_none(),
+      "identical rows must not emit a tableDiff"
+    );
     let row_comparison = result.row_comparison.expect("row comparison");
     assert_eq!(row_comparison.table, "shared");
     assert_eq!(row_comparison.data_diff.identical, 1);
@@ -862,19 +889,10 @@ mod tests {
     assert_eq!(keys, vec!["id".to_string()]);
     assert!(reason.is_none());
 
-    let (keys, reason) =
-      resolve_key_columns(&["id".into()], &["name".into()], &compare).expect("source pk");
-    assert_eq!(keys, vec!["id".to_string()]);
-    assert_eq!(
-      reason.as_deref(),
-      Some("Target primary key differs, matched rows by source primary key columns")
-    );
-
-    let (keys, reason) = resolve_key_columns(&[], &["name".into()], &compare).expect("target pk");
-    assert_eq!(keys, vec!["name".to_string()]);
-    assert_eq!(
-      reason.as_deref(),
-      Some("Source primary key differs, matched rows by target primary key columns")
+    assert!(resolve_key_columns(&["id".into()], &["name".into()], &compare).is_err());
+    assert!(resolve_key_columns(&[], &["name".into()], &compare).is_err());
+    assert!(
+      resolve_key_columns(&["id".into(), "missing".into()], &["id".into()], &compare).is_err()
     );
   }
 

@@ -5,6 +5,7 @@
 // the `h-9` Data/Structure/Info row is gone: those tabs are rendered *inside*
 // each table view's `Toolbar`, so they cost zero vertical pixels.
 import { useMemo } from 'react'
+import { RetainedView } from '@renderer/components/layout/RetainedView'
 import { GitCompareArrows, Plus } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { EmptyState } from '@renderer/components/ui/empty-state'
@@ -72,11 +73,11 @@ export function Workspace() {
     () =>
       workspaceTabs.map((tab) => ({
         id: tab.id,
-        title: getTabDisplayTitle(tab.view, t),
+        title: getTabDisplayTitle(tab.view, t, connections),
         icon: getTabIcon(tab.view),
         status: tabStatus.get(tab.id) ?? null
       })),
-    [t, tabStatus, workspaceTabs]
+    [t, tabStatus, workspaceTabs, connections]
   )
 
   const tabMenu = (tabId: string): MenuItem[] => {
@@ -189,6 +190,7 @@ export function Workspace() {
               key={tab.id}
               className={cn('h-full min-h-0 flex-col overflow-hidden', active ? 'flex' : 'hidden')}
             >
+              <RetainedView active={active || tab.view.kind === 'database-export'}>
               {tab.view.kind === 'diff' ? (
                 <DiffPanel active={active} />
               ) : tab.view.kind === 'table-compare' ? (
@@ -244,7 +246,9 @@ export function Workspace() {
                   readOnly={tab.view.engine === 'redis'}
                   active={active}
                 />
-              ) : currentTableTab === 'data' ? (
+              ) : (
+                <>
+                <RetainedView active={active && currentTableTab === 'data'}>
                 <TableDataView
                   connectionId={tab.view.connectionId}
                   database={tab.view.database}
@@ -255,27 +259,32 @@ export function Workspace() {
                   sortable={!isRedisTable}
                   exportEnabled={!isRedisTable}
                   tabs={tableTabs}
-                  active={active}
+                  active={active && currentTableTab === 'data'}
                 />
-              ) : currentTableTab === 'info' ? (
+                </RetainedView>
+                <RetainedView active={active && currentTableTab === 'info'}>
                 <TableInfoView
                   connectionId={tab.view.connectionId}
                   database={tab.view.database}
                   table={tab.view.table}
                   readOnly={isRedisTable}
                   tabs={tableTabs}
-                  active={active}
+                  active={active && currentTableTab === 'info'}
                 />
-              ) : (
+                </RetainedView>
+                <RetainedView active={active && currentTableTab === 'structure'}>
                 <TableStructureView
                   connectionId={tab.view.connectionId}
                   database={tab.view.database}
                   table={tab.view.table}
                   engine={tab.view.engine}
                   tabs={tableTabs}
-                  active={active}
+                  active={active && currentTableTab === 'structure'}
                 />
+                </RetainedView>
+                </>
               )}
+              </RetainedView>
             </div>
           )
         })}

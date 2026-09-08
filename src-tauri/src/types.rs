@@ -89,6 +89,8 @@ pub struct SafeConnection {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ColumnInfo {
+  #[serde(default, skip_serializing_if = "is_false")]
+  pub is_generated: bool,
   pub name: String,
   #[serde(rename = "type")]
   pub col_type: String,
@@ -192,6 +194,8 @@ pub struct OrderBy {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryRowsRequest {
+  #[serde(default)]
+  pub key_rows: Option<Vec<HashMap<String, Value>>>,
   pub connection_id: String,
   pub database: String,
   pub table: String,
@@ -528,6 +532,10 @@ pub struct TableComparisonResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncRequest {
+  #[serde(default)]
+  pub plan_id: Option<String>,
+  #[serde(default)]
+  pub task_id: Option<String>,
   pub source_connection_id: String,
   pub source_database: String,
   pub target_connection_id: String,
@@ -551,12 +559,15 @@ pub struct SyncStep {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncPlan {
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub plan_id: Option<String>,
   pub steps: Vec<SyncStep>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncProgressEvent {
+  pub task_id: Option<String>,
   pub table: String,
   pub step: String,
   pub done: i64,
@@ -672,3 +683,5 @@ pub struct SSHTerminalExitEvent {
   pub session_id: String,
   pub message: Option<String>,
 }
+
+fn is_false(value: &bool) -> bool { !*value }

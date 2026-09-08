@@ -44,13 +44,13 @@ export function RowEditDialog({ mode, columns, primaryKey, row, onClose, onSubmi
   const hasChanges = useMemo(() => {
     if (mode === 'insert') {
       return columns.some((column) => {
-        if (column.isAutoIncrement) return false
+        if (column.isGenerated || column.isAutoIncrement) return false
         return values[column.name] !== createInitialValue(column)
       })
     }
     if (!row) return false
     return columns.some((column) =>
-      !isRowEditValueEqual(column, row[column.name], values[column.name])
+      !column.isGenerated && !isRowEditValueEqual(column, row[column.name], values[column.name])
     )
   }, [columns, mode, row, values])
 
@@ -61,7 +61,7 @@ export function RowEditDialog({ mode, columns, primaryKey, row, onClose, onSubmi
     try {
       const changes: Record<string, unknown> = {}
       if (mode === 'insert') {
-        for (const column of columns) {
+        for (const column of columns.filter((column) => !column.isGenerated)) {
           const normalized = normalizeColumnValue(column, values[column.name], mode, t)
           if (column.isAutoIncrement && normalized == null) continue
           validateColumnValue(column, normalized, mode, t)
@@ -69,7 +69,7 @@ export function RowEditDialog({ mode, columns, primaryKey, row, onClose, onSubmi
         }
         await onSubmit(changes)
       } else {
-        for (const column of columns) {
+        for (const column of columns.filter((column) => !column.isGenerated)) {
           const normalized = normalizeColumnValue(column, values[column.name], mode, t)
           validateColumnValue(column, normalized, mode, t)
           if (row && !isRowEditValueEqual(column, row[column.name], normalized)) {
@@ -106,7 +106,7 @@ export function RowEditDialog({ mode, columns, primaryKey, row, onClose, onSubmi
       }
     >
       <div className="grid max-h-[70vh] grid-cols-1 gap-3 overflow-y-auto pr-1 md:grid-cols-2">
-        {columns.map((column) => (
+        {columns.filter((column) => !column.isGenerated).map((column) => (
           <div key={column.name}>
             <Label className="mb-1 block">
               <div className="flex flex-wrap items-center gap-1.5">
@@ -152,7 +152,7 @@ function createInitialValue(column: ColumnInfo): unknown {
   return column.defaultValue ?? (column.nullable ? null : '')
 }
 
-function normalizeColumnValue(
+export function normalizeColumnValue(
   column: ColumnInfo,
   value: unknown,
   mode: 'insert' | 'edit',
@@ -168,19 +168,17 @@ function normalizeColumnValue(
 
   if (typeof value === 'string') {
     const trimmed = value.trim()
-    if (trimmed === '') {
-      return column.nullable || column.isAutoIncrement ? null : ''
-    }
-
     if (isNumericColumn(column)) {
-      const numericValue = Number(trimmed)
-      if (!Number.isFinite(numericValue)) {
-        throw new Error(t('rowEdit.validNumber', { name: column.name }))
-      }
-      return numericValue
+      if (trimmed === '' && (column.nullable || column.isAutoIncrement)) return null
+      const integer = /^(?:tinyint|smallint|mediumint|int|integer|bigint)\b/i.test(column.type)
+      const valid = integer ? /^[+-]?\d+$/.test(trimmed) : /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/.test(trimmed)
+      if (!valid) throw new Error(t('rowEdit.validNumber', { name: column.name }))
+      // Decimal and large integer strings must reach the driver unchanged.
+      const number = Number(trimmed)
+      return integer && Number.isSafeInteger(number) ? number : trimmed
     }
 
-    if (column.type === 'json') {
+    if (column.type === 'json' || column.type === 'jsonb') {
       try {
         JSON.parse(trimmed)
       } catch {
@@ -188,7 +186,7 @@ function normalizeColumnValue(
       }
     }
 
-    return trimmed
+    return value
   }
 
   return value
@@ -201,21 +199,13 @@ function validateColumnValue(
   t: Translator
 ): void {
   if (column.isAutoIncrement && mode === 'insert' && value == null) return
-  if (!column.nullable && (value === null || value === undefined || value === '')) {
+  if (!column.nullable && (value === null || value === undefined)) {
     throw new Error(t('rowEdit.requiredField', { name: column.name }))
   }
 }
 
 function isNumericColumn(column: ColumnInfo): boolean {
-  return (
-    column.type.startsWith('int') ||
-    column.type.startsWith('bigint') ||
-    column.type.startsWith('tinyint') ||
-    column.type.startsWith('smallint') ||
-    column.type.startsWith('decimal') ||
-    column.type.startsWith('float') ||
-    column.type.startsWith('double')
-  )
+  return /^(?:tinyint|smallint|mediumint|int|integer|bigint|decimal|numeric|float|double|real)\b/i.test(column.type)
 }
 
 function renderInput(
@@ -248,7 +238,7 @@ function renderInput(
       />
     )
   }
-  if (c.type === 'json') {
+  if (c.type === 'json' || c.type === 'jsonb') {
     return (
       <div className="flex min-w-0 items-start gap-1.5">
         <Textarea

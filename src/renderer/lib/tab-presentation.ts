@@ -16,9 +16,9 @@ import {
 } from 'lucide-react'
 import type { Translator } from '@renderer/i18n'
 import type { RightView, WorkspaceView } from '@renderer/store/ui-store'
-import type { DbEngine } from '../../shared/types'
+import type { DbEngine, SafeConnection } from '../../shared/types'
 
-export function getTabDisplayTitle(view: WorkspaceView, t: Translator): string {
+export function getTabDisplayTitle(view: WorkspaceView, t: Translator, connections: Pick<SafeConnection, 'id' | 'name'>[] = []): string {
   if (view.kind === 'diff') return t('app.diffSync')
   if (view.kind === 'database') {
     const prefix = t('workspace.tabTitle.databasePrefix')
@@ -39,7 +39,9 @@ export function getTabDisplayTitle(view: WorkspaceView, t: Translator): string {
       : `${prefix} · ${view.request.database}`
   }
   if (view.kind === 'table-compare') {
-    return `${t('workspace.tabTitle.comparePrefix')} · ${view.table}`
+    const source = connections.find((connection) => connection.id === view.sourceConnectionId)?.name ?? view.sourceDatabase
+    const target = connections.find((connection) => connection.id === view.targetConnectionId)?.name ?? view.targetDatabase
+    return `${t('workspace.tabTitle.comparePrefix')} · ${view.table} · ${source} → ${target}`
   }
   if (view.kind === 'ssh-files') {
     return `${t('workspace.tabTitle.sshFilesPrefix')} · ${view.connectionName}`
@@ -51,7 +53,8 @@ export function getTabDisplayTitle(view: WorkspaceView, t: Translator): string {
     const leaf = view.path.split('/').filter(Boolean).pop() ?? view.path
     return `${t('workspace.tabTitle.sshEditorPrefix')} · ${leaf}`
   }
-  return `${view.database} / ${view.table}`
+  const connection = connections.find((connection) => connection.id === view.connectionId)?.name
+  return `${view.database} / ${view.table}${connection ? ` @ ${connection}` : ''}`
 }
 
 export function getTabIcon(view: WorkspaceView): LucideIcon {
