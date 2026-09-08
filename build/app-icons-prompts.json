@@ -1,0 +1,20 @@
+[
+  {
+    "key": "mysql-compare",
+    "prompt": "Use case: logo-brand. Asset type: production macOS desktop app icon, one single 1024x1024 PNG. Create a polished coherent developer-tools icon family: one large softly rounded-square tile occupying about 88% of the square canvas, centered, genuinely transparent alpha outside the tile. Premium restrained soft 3D relief, precise bold geometry, subtle beveled edges, soft light from upper left, very legible at 32px. One unmistakable centered symbol with generous breathing room, clean smooth materials, no tiny details. No lettering, no words, no app name, no watermark, no checkerboard, no scene or mockup, no multiple icon alternatives. Export only this single finished icon. App: MySQL Compare, a database comparison and synchronization tool. Main symbol: two compact cylindrical database stacks side by side, each made of three thick discs, connected by a small clear pair of opposing horizontal arrows. Deep azure rounded tile, luminous cyan and pale blue database stacks, bright crisp accents. Confident simple silhouette, visually centered, functional and elegant. Avoid interlocking rings or the Tauri logo.",
+    "source": "build/icon-source.png",
+    "generator": "built-in image_gen"
+  },
+  {
+    "key": "simple-diff",
+    "prompt": "Use case: logo-brand. Asset type: production macOS desktop app icon, one single 1024x1024 PNG. Create a polished coherent developer-tools icon family: one large softly rounded-square tile occupying about 88% of the square canvas, centered, genuinely transparent alpha outside the tile. Premium restrained soft 3D relief, precise bold geometry, subtle beveled edges, soft light from upper left, very legible at 32px. One unmistakable centered symbol with generous breathing room, clean smooth materials, no tiny details. No lettering, no words, no app name, no watermark, no checkerboard, no scene or mockup, no multiple icon alternatives. Export only this single finished icon. App: Simple Diff, a file and folder comparison tool. Main symbol: two upright document panels side by side separated by a clean vertical gap, with three broad aligned horizontal strokes on each page; one contrasting stroke on each side makes the difference immediately recognizable. Rich violet rounded tile, luminous lilac and near-white document panels with a single warm accent for changed lines. Distinct from a database icon, simple confident silhouette. Avoid interlocking rings or the Tauri logo.",
+    "source": "build/icon-source.png",
+    "generator": "built-in image_gen"
+  },
+  {
+    "key": "code-line-analysis",
+    "prompt": "Use case: logo-brand. Asset type: production macOS desktop app icon, one single 1024x1024 PNG. Create a polished coherent developer-tools icon family: one large softly rounded-square tile occupying about 88% of the square canvas, centered, genuinely transparent alpha outside the tile. Premium restrained soft 3D relief, precise bold geometry, subtle beveled edges, soft light from upper left, very legible at 32px. One unmistakable centered symbol with generous breathing room, clean smooth materials, no tiny details. No lettering, no words, no app name, no watermark, no checkerboard, no scene or mockup, no multiple icon alternatives. Export only this single finished icon. App: Code Line Analysis, a source-code statistics tool. Main symbol: bold code angle brackets framing a compact three-column ascending histogram, combining code and measurement in one clear silhouette. Rich emerald rounded tile, near-white brackets and mint to warm yellow histogram bars. At most three bars, bold and simple, visually centered, balanced negative space. Distinct from database or document icons. Avoid interlocking rings or the Tauri logo.",
+    "source": "build/icon-source.png",
+    "generator": "built-in image_gen"
+  }
+]

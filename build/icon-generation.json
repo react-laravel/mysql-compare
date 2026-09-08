@@ -1,0 +1,6 @@
+{
+  "tool": "built-in image_gen",
+  "source": "icon-source.png",
+  "prompt": "Use case: logo-brand. Asset type: production macOS desktop app icon, one single 1024x1024 PNG. Create a polished coherent developer-tools icon family: one large softly rounded-square tile occupying about 88% of the square canvas, centered, genuinely transparent alpha outside the tile. Premium restrained soft 3D relief, precise bold geometry, subtle beveled edges, soft light from upper left, very legible at 32px. One unmistakable centered symbol with generous breathing room, clean smooth materials, no tiny details. No lettering, no words, no app name, no watermark, no checkerboard, no scene or mockup, no multiple icon alternatives. Export only this single finished icon. App: MySQL Compare, a database comparison and synchronization tool. Main symbol: two compact cylindrical database stacks side by side, each made of three thick discs, connected by a small clear pair of opposing horizontal arrows. Deep azure rounded tile, luminous cyan and pale blue database stacks, bright crisp accents. Confident simple silhouette, visually centered, functional and elegant. Avoid interlocking rings or the Tauri logo.",
+  "rebuild": "npm exec tauri icon build/icon-source.png"
+}
