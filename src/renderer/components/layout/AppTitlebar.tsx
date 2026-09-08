@@ -7,6 +7,7 @@
 // a labeled button with a shortcut.
 import * as React from 'react'
 import {
+  ChevronDown,
   Command as CommandIcon,
   GitCompareArrows,
   Info,
@@ -25,6 +26,7 @@ import { SplitButton } from '@renderer/components/ui/split-button'
 import { Tooltip } from '@renderer/components/ui/tooltip'
 import { useI18n } from '@renderer/i18n'
 import { api } from '@renderer/lib/api'
+import { isTauriRuntime } from '@renderer/lib/tauri-api'
 import { getViewContext } from '@renderer/lib/tab-presentation'
 import { useConnectionStore } from '@renderer/store/connection-store'
 import { useSidebarStore } from '@renderer/store/sidebar-store'
@@ -42,6 +44,9 @@ export function AppTitlebar() {
   const setCreateRedisKeyDialog = useSidebarStore((state) => state.setCreateRedisKeyDialog)
   const connections = useConnectionStore((state) => state.connections)
   const [aboutOpen, setAboutOpen] = React.useState(false)
+  // macOS overlays its native traffic lights on this same 36px row. The
+  // native window title is hidden; this menu is the only visible app name.
+  const nativeTitlebar = isTauriRuntime() && /Mac/i.test(navigator.platform)
 
   const context = getViewContext(rightView)
   const canOpenSQLConsole = Boolean(context) && rightView.kind !== 'table-compare'
@@ -131,7 +136,8 @@ export function AppTitlebar() {
   return (
     <header
       data-tauri-drag-region
-      className="flex h-titlebar shrink-0 items-center gap-1.5 border-b border-border bg-surface px-2"
+      data-native-titlebar={nativeTitlebar || undefined}
+      className="flex h-titlebar shrink-0 items-center gap-1.5 border-b border-border bg-surface px-2 data-[native-titlebar=true]:pl-20"
     >
       <DropdownMenu
         items={appMenuItems}
@@ -139,19 +145,19 @@ export function AppTitlebar() {
         align="start"
         aria-label={t('titlebar.appMenu')}
         trigger={
-          <IconButton
-            icon={CommandIcon}
-            label={t('titlebar.appMenu')}
+          <Button
+            aria-label={t('titlebar.appMenu')}
             size="sm"
             variant="ghost"
-          />
+            className="min-w-0 gap-1 px-1.5 font-semibold"
+          >
+            <span className="truncate">{t('app.title')}</span>
+            <ChevronDown aria-hidden className="size-3 shrink-0 text-fg-muted" />
+          </Button>
         }
       />
-      <span data-tauri-drag-region className="text-sm font-semibold text-fg">
-        {t('app.title')}
-      </span>
 
-      <div data-tauri-drag-region className="flex-1" />
+      <div data-tauri-drag-region className="h-full min-w-4 flex-1" />
 
       <Tooltip
         content={
