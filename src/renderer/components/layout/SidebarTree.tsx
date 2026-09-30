@@ -398,7 +398,14 @@ export function SidebarTree() {
 
     switch (row.type) {
       case 'add-database':
-        return <div key={row.key} className="px-2 py-1"><Button size="xs" variant="ghost" icon={Plus} onClick={() => actions.openAddDatabase(row.connection)}>{t('sidebar.browsing.addDatabase')}</Button></div>
+        // Include the chevron gutter so the button's icon and label line up with database rows.
+        return (
+          <div key={row.key} className="py-1 pr-2" style={{ paddingLeft: row.depth * 12 + 24 }}>
+            <Button size="xs" variant="ghost" icon={Plus} onClick={() => actions.openAddDatabase(row.connection)}>
+              {t('sidebar.browsing.addDatabase')}
+            </Button>
+          </div>
+        )
 
       case 'schema-picker':
         return <label key={row.key} className="flex min-w-0 items-center gap-2 py-1 pr-1" style={{ paddingLeft: row.depth * 12 + 8 }}>

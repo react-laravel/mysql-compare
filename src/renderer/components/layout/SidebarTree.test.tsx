@@ -219,6 +219,24 @@ describe('SidebarTree', () => {
     expect(screen.getByRole('button', { name: 'Actions for users' })).toBeTruthy()
   })
 
+  it.each(['mysql', 'postgres'] as const)('aligns the add-database action with %s database content', (engine) => {
+    const target = { ...connection, engine }
+    seed(target, 'app_db', [])
+    useSidebarStore.setState(({ nodes }) => ({ nodes: {
+      ...nodes, [target.id]: { ...nodes[target.id]!, expandedDbs: new Set() }
+    }, addDatabaseConnection: null }))
+    render(<SidebarTree />)
+
+    const databaseRow = screen.getByText('app_db').closest('[role="treeitem"]') as HTMLElement
+    const button = screen.getByRole('button', { name: 'Add database' })
+    // TreeRow's border + chevron + gap, less the xs button's own horizontal padding.
+    expect(button.parentElement?.style.paddingLeft).toBe(`${parseFloat(databaseRow.style.paddingLeft) + 16}px`)
+    fireEvent.click(button)
+    expect(useSidebarStore.getState().addDatabaseConnection).toEqual(target)
+    expect(useSidebarStore.getState().nodes[target.id]?.expanded).toBe(true)
+    useSidebarStore.getState().setAddDatabaseConnection(null)
+  })
+
   it('renames a table inline with F2', async () => {
     seed(connection, 'app_db', ['users'])
     render(<SidebarTree />)
