@@ -25,6 +25,11 @@ async fn contracts(engine: &str, port_var: &str) {
     "CREATE TABLE items (id BIGINT PRIMARY KEY, amount NUMERIC(30,10), label TEXT, happened TIMESTAMP(6), data BYTEA, payload JSONB); CREATE INDEX amount_idx ON items(amount)"
   };
   driver.execute_sql(ddl, Some("contracts")).await.unwrap();
+  assert!(driver
+    .list_tables("contracts")
+    .await
+    .unwrap()
+    .contains(&"items".to_string()));
   for id in [1, 2, 3, 9_007_199_254_740_993i64] {
     driver.insert_row(&serde_json::from_value(json!({
       "connectionId": engine, "database": "contracts", "table": "items",
@@ -153,6 +158,10 @@ async fn contracts(engine: &str, port_var: &str) {
     .execute_sql(&schema.create_sql, Some("contracts_target"))
     .await
     .unwrap();
+  assert_eq!(
+    driver.list_tables("contracts_target").await.unwrap(),
+    vec!["items".to_string()]
+  );
   for row in &first.rows {
     let mut values = row.clone();
     if values["id"] == 2 {

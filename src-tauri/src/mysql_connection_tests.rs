@@ -3,6 +3,59 @@ use serde_json::json;
 
 #[tokio::test]
 #[ignore = "requires disposable MySQL; run scripts/test-data-contracts.py"]
+async fn metadata_discovery_preserves_table_names_and_foreign_keys() {
+  let port: u16 = std::env::var("MYSQL_COMPARE_MYSQL_TEST_PORT")
+    .unwrap()
+    .parse()
+    .unwrap();
+  let config: ConnectionConfig = serde_json::from_value(json!({
+    "id": "mysql-metadata-admin", "engine": "mysql", "name": "disposable",
+    "host": "127.0.0.1", "port": port, "username": "root",
+    "database": "contracts", "createdAt": 0, "updatedAt": 0
+  }))
+  .unwrap();
+  let driver = EngineDriver::open(config, None).await.unwrap();
+  driver
+    .execute_sql(
+      "CREATE DATABASE mysql_metadata_scope; \
+       CREATE DATABASE mysql_metadata_other; \
+       CREATE TABLE mysql_metadata_scope.`z_parents_é` (id INT, part INT, PRIMARY KEY (id, part)); \
+       CREATE TABLE mysql_metadata_scope.`a_children_é` (id INT PRIMARY KEY, parent_id INT, parent_part INT, \
+         FOREIGN KEY (parent_id, parent_part) REFERENCES mysql_metadata_scope.`z_parents_é` (id, part)); \
+       CREATE VIEW mysql_metadata_scope.metadata_view AS SELECT id FROM mysql_metadata_scope.`z_parents_é`; \
+       CREATE TABLE mysql_metadata_other.unrelated (id INT PRIMARY KEY); \
+       CREATE TABLE mysql_metadata_scope.external_reference (id INT PRIMARY KEY, \
+         FOREIGN KEY (id) REFERENCES mysql_metadata_other.unrelated (id))",
+      None,
+    )
+    .await
+    .unwrap();
+
+  let databases = driver.discover_databases().await.unwrap();
+  assert!(databases.contains(&"mysql_metadata_scope".to_string()));
+  assert!(databases.contains(&"mysql_metadata_other".to_string()));
+  for system in ["information_schema", "performance_schema", "mysql", "sys"] {
+    assert!(!databases.iter().any(|name| name == system));
+  }
+  // Binary-flagged metadata on case-sensitive MySQL must not disappear. Keep
+  // Unicode names intact, exclude views and other databases, and deduplicate
+  // composite foreign keys without including cross-database dependencies.
+  let mut tables = driver.list_tables("mysql_metadata_scope").await.unwrap();
+  tables.sort();
+  assert_eq!(tables, vec!["a_children_é", "external_reference", "z_parents_é"]);
+  assert_eq!(
+    driver.list_tables("mysql_metadata_other").await.unwrap(),
+    vec!["unrelated"]
+  );
+  assert_eq!(
+    driver.list_foreign_key_edges("mysql_metadata_scope").await.unwrap(),
+    vec![("a_children_é".to_string(), "z_parents_é".to_string())]
+  );
+  driver.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL; run scripts/test-data-contracts.py"]
 async fn server_probe_and_database_credentials_have_separate_scopes() {
   let port: u16 = std::env::var("MYSQL_COMPARE_MYSQL_TEST_PORT")
     .unwrap()
@@ -59,6 +112,10 @@ async fn server_probe_and_database_credentials_have_separate_scopes() {
   let info = scoped.get_database_info("mysql_probe_scope").await.unwrap();
   assert_eq!(info.name, "mysql_probe_scope");
   assert_eq!(info.table_count, 1);
+  assert_eq!(
+    scoped.list_tables("mysql_probe_scope").await.unwrap(),
+    vec!["visible"]
+  );
   let user = scoped
     .execute_sql(
       "SELECT CURRENT_USER() AS username",

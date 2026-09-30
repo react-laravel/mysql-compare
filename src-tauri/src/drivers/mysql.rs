@@ -122,10 +122,13 @@ impl MysqlDriver {
       .await
       .map_err(|e| e.to_string())?;
     let system: HashSet<&str> = SYSTEM_DATABASES.iter().copied().collect();
+    let names = rows
+      .iter()
+      .map(|row| read_mysql_text(row, 0, "SHOW DATABASES name"))
+      .collect::<Result<Vec<_>, _>>()?;
     Ok(
-      rows
+      names
         .into_iter()
-        .filter_map(|row| row.try_get::<String, _>(0).ok())
         .filter(|name| !system.contains(name.as_str()))
         .collect(),
     )
@@ -187,12 +190,10 @@ impl MysqlDriver {
     .fetch_all(&pool)
     .await
     .map_err(|e| e.to_string())?;
-    Ok(
-      rows
-        .into_iter()
-        .filter_map(|r| r.try_get::<String, _>("TABLE_NAME").ok())
-        .collect(),
-    )
+    rows
+      .iter()
+      .map(|row| read_mysql_text(row, 0, "TABLE_NAME"))
+      .collect()
   }
 
   pub async fn list_foreign_key_edges(
@@ -213,17 +214,15 @@ impl MysqlDriver {
     .fetch_all(&pool)
     .await
     .map_err(|e| e.to_string())?;
-    Ok(
-      rows
-        .into_iter()
-        .filter_map(|r| {
-          Some((
-            r.try_get::<String, _>("from_table").ok()?,
-            r.try_get::<String, _>("to_table").ok()?,
-          ))
-        })
-        .collect(),
-    )
+    rows
+      .iter()
+      .map(|row| {
+        Ok((
+          read_mysql_text(row, 0, "foreign key TABLE_NAME")?,
+          read_mysql_text(row, 1, "foreign key REFERENCED_TABLE_NAME")?,
+        ))
+      })
+      .collect()
   }
 
   pub async fn get_table_schema(&self, database: &str, table: &str) -> Result<TableSchema, String> {
@@ -713,6 +712,10 @@ fn build_order_clause(schema: &TableSchema, order_by: Option<&crate::types::Orde
 fn _row_type(_: &MySqlRow) {}
 
 fn read_mysql_text(row: &MySqlRow, index: usize, field: &str) -> Result<String, String> {
+  // MySQL can mark UTF-8 metadata as BINARY (notably filesystem names when
+  // lower_case_table_names=0). sqlx then rejects String even though the bytes
+  // are text. Decode them strictly, and propagate errors instead of silently
+  // dropping databases, tables, or foreign-key dependencies from discovery.
   match row.try_get::<String, _>(index) {
     Ok(value) => Ok(value),
     Err(string_error) => {
