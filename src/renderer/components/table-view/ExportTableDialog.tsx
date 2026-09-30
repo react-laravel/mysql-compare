@@ -1,3 +1,4 @@
+import { tableDisplayName } from '../../../shared/table-reference'
 import { useEffect, useMemo, useState } from 'react'
 import { Dialog } from '@renderer/components/ui/dialog'
 import { Button } from '@renderer/components/ui/button'
@@ -133,7 +134,7 @@ export function ExportTableDialog({
       open={open}
       onOpenChange={onOpenChange}
       title={t('exportDialog.title')}
-      description={`${database}.${table}`}
+      description={`${database}.${tableDisplayName(table)}`}
       footer={
         <>
           <Button variant="secondary" onClick={() => onOpenChange(false)} disabled={busy}>

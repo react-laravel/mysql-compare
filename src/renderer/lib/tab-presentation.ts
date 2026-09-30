@@ -1,3 +1,4 @@
+import { tableDisplayName } from '../../shared/table-reference'
 // How a workspace tab presents itself: title + glyph.
 //
 // Both were duplicated inside `Workspace.tsx` (the tab strip's icon switch and
@@ -41,7 +42,7 @@ export function getTabDisplayTitle(view: WorkspaceView, t: Translator, connectio
   if (view.kind === 'table-compare') {
     const source = connections.find((connection) => connection.id === view.sourceConnectionId)?.name ?? view.sourceDatabase
     const target = connections.find((connection) => connection.id === view.targetConnectionId)?.name ?? view.targetDatabase
-    return `${t('workspace.tabTitle.comparePrefix')} · ${view.table} · ${source} → ${target}`
+    return `${t('workspace.tabTitle.comparePrefix')} · ${tableDisplayName(view.table)} · ${source} → ${target}`
   }
   if (view.kind === 'ssh-files') {
     return `${t('workspace.tabTitle.sshFilesPrefix')} · ${view.connectionName}`
@@ -54,7 +55,7 @@ export function getTabDisplayTitle(view: WorkspaceView, t: Translator, connectio
     return `${t('workspace.tabTitle.sshEditorPrefix')} · ${leaf}`
   }
   const connection = connections.find((connection) => connection.id === view.connectionId)?.name
-  return `${view.database} / ${view.table}${connection ? ` @ ${connection}` : ''}`
+  return `${view.database} / ${tableDisplayName(view.table)}${connection ? ` @ ${connection}` : ''}`
 }
 
 export function getTabIcon(view: WorkspaceView): LucideIcon {

@@ -1,3 +1,4 @@
+import { tableDisplayName } from '../../../shared/table-reference'
 // One side of the table compare (blueprint §3.6).
 //
 // What changed in chunk 10:
@@ -110,7 +111,7 @@ export function TableComparePane({
           <span className="shrink-0 text-xs font-normal text-fg-muted">{title}</span>
           <span className="shrink-0">{connectionName}</span>
           <span className="min-w-0 truncate font-mono text-xs font-normal text-fg-muted">
-            {database} / {table}
+            {database} / {tableDisplayName(table)}
           </span>
           {loading ? <Spinner size="xs" label={t('diff.pane.loadingRows')} /> : null}
         </span>

@@ -1,3 +1,4 @@
+import { configuredDatabases, showsAllDatabases } from '../components/connection/database-browsing'
 /**
  * Dev-only, in-browser mock of {@link AppAPI}.
  *
@@ -247,6 +248,37 @@ export function createMockApi(mode: MockMode = readMockMode()): AppAPI {
     connection: {
       // Always succeeds so `?mock=error` still has a navigable tree.
       list: () => respondAlways([...state.connections]),
+      updateDatabaseBrowsing: async (id, options) => {
+        if (failing()) return refuse()
+        const index = state.connections.findIndex((connection) => connection.id === id)
+        const current = state.connections[index]
+        if (!current) return { ok: false, error: 'Connection not found' }
+        const next = { ...current, databases: [...(current.databases ?? [])], databaseCredentials: { ...current.databaseCredentials } }
+        if (options.database) {
+          if (!next.databases.includes(options.database)) next.databases.push(options.database)
+          if (options.credential) {
+            if (options.credential.username) next.databaseCredentials[options.database] = { username: options.credential.username, hasPassword: Boolean(options.credential.password) }
+            else delete next.databaseCredentials[options.database]
+          }
+        }
+        if (options.showAll !== undefined) next.showAllDatabases = options.showAll
+        state.connections[index] = next
+        return respond(next)
+      },
+      organize: async (items) => {
+        if (failing()) return refuse()
+        const remaining = new Map(state.connections.map((connection) => [connection.id, connection]))
+        if (items.length !== remaining.size) return { ok: false, error: 'CONNECTION_LIST_CHANGED' }
+        const next: SafeConnection[] = []
+        for (const item of items) {
+          const connection = remaining.get(item.id)
+          if (!connection) return { ok: false, error: 'CONNECTION_LIST_CHANGED' }
+          remaining.delete(item.id)
+          next.push({ ...connection, group: item.group?.trim() || undefined })
+        }
+        state.connections = next
+        return respond([...next])
+      },
       upsert: async (conn) => {
         if (failing()) return refuse()
         const previous = state.connections.find((c) => c.id === conn.id)
@@ -259,6 +291,8 @@ export function createMockApi(mode: MockMode = readMockMode()): AppAPI {
           port: conn.port,
           username: conn.username,
           database: conn.database,
+          databases: conn.databases ?? previous?.databases,
+          showAllDatabases: conn.showAllDatabases ?? previous?.showAllDatabases,
           useSSH: conn.useSSH,
           sshHost: conn.sshHost,
           sshPort: conn.sshPort,
@@ -305,7 +339,12 @@ export function createMockApi(mode: MockMode = readMockMode()): AppAPI {
     },
 
     db: {
-      listDatabases: (connectionId) => respond(Object.keys(databasesOf(connectionId))),
+      listDatabases: (connectionId) => {
+        const connection = state.connections.find((item) => item.id === connectionId)
+        return respond(connection && !showsAllDatabases(connection) ? configuredDatabases(connection) : Object.keys(databasesOf(connectionId)))
+      },
+      discoverDatabases: (connectionId) => respond(Object.keys(databasesOf(connectionId))),
+      listSchemas: () => respond(['public']),
       getDatabaseInfo: (connectionId, database) =>
         respond(
           databaseInfo({

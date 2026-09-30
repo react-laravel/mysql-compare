@@ -10,6 +10,8 @@
 - **Backend**: Rust（sqlx MySQL/PG、redis、ssh2）
 - **Frontend**: React 19 + Zustand + Tailwind CSS 4 + Monaco
 - **桥接**: `src/renderer/lib/tauri-api.ts` → `invoke` / `listen`
+- 新增应用命令时同时更新 `src-tauri/src/lib.rs` 注册和
+  `src-tauri/permissions/allow-commands.toml` 放行列表，桌面 IPC 权限测试会校验二者。
 
 ## 目录
 
@@ -61,7 +63,9 @@ query 开关（仅 dev）：
   `z-[var(--ds-z-popover)]` 这种形式，Tailwind 4 没有 `--z-*` 命名空间，
   `z-popover` 之类的类名不会编译。
 - Esc **只关最上面一层**：`useDismiss` 自己维护浮层栈（DOM 包含关系优先，
-  其次挂载顺序），一次按键只消费一层。所以对话框里开的菜单按 Esc 只关菜单。
+  包括通过触发按钮关联的 portal 子菜单，其次挂载顺序），一次按键只消费一层。
+  子菜单内部的鼠标按下也属于父菜单内部，不能在 click 执行前关闭父菜单。
+  所以对话框里开的菜单按 Esc 只关菜单。
   自己写的键盘处理如果消费了 Esc（例如清空搜索框），要 `stopPropagation()`，
   否则它外面的浮层也会一起关掉。
 - 图标按钮一律用 `IconButton`（`label` 必填 → `aria-label` + `Tooltip`）。
@@ -134,12 +138,24 @@ AppStatusBar  24px  后台任务（点开是任务列表 + 每项 Cancel）· �
   `getState()`，对象是稳定的）。新增树操作写在这里，不要写回组件。
 - 菜单只有一份：`layout/sidebar-menus.ts` 每种对象一个 builder，行上常驻的 `⋯`
   和右键菜单渲染同一个数组。**新增菜单项只改这里。**
+- “排序与分组”从侧栏菜单、连接菜单或命令面板打开 `ConnectionOrganizationDialog`。
+  连接顺序与 `group` 一并由 `connection_organize` 原子保存；只更新组织信息，不用
+  `connection_upsert` 重建连接。按主机分组时用 SSH 服务器区分远端 loopback。
 - 破坏性操作一律 `sidebar-store.pendingConfirm` → `SidebarConfirmDialog`
   （复制表 / 清空 / 删表 / 删库 / 删连接）。删库要求输入库名。
 - 树的行模型是扁平的：`layout/sidebar-tree-rows.ts` 把连接/库/表/Redis Key 摊平成
   一维数组并算好 `focusIndex` / `parentIndex`，方向键和首字母跳转都依赖它。
   Redis 的 `:` 分组构建在 `layout/redis-key-tree.ts`（纯函数）。
 - 重命名对两种引擎都是行内编辑（`TreeRow.editing`，`F2` 触发），没有重命名对话框。
+- PostgreSQL 默认显示默认库和显式追加的库；`显示所有数据库` 才发现其他库。
+  `AddDatabaseDialog` 支持手动输入、按需发现及独立账号。浏览设置保存在连接中，
+  更新后使 driver 缓存失效；独立账号按数据库解析，不能回退到连接级密码。
+- PostgreSQL 展开库时按需加载可访问 schema，列表区分 loading / error / 空表。
+  请求序号在树与浮层之间共享，切换 schema 或账号后旧结果不得覆盖新状态。
+- `table-reference.ts` / `drivers/dialect.rs` 用保留的 NUL 前缀编码非 public 表的
+  `(schema, name)`；旧 public 表名不变。API、缓存、标签页始终传完整 key，显示时
+  使用 `tableDisplayName`，SQL 只通过分别引用 schema / name 的 helper 生成。
+  不要按点拆分表名，不要把显示名或当前侧栏选择反推成已打开表的来源。
 
 ### 表标签页（`pages/Workspace.tsx` + `components/table-view/`）
 
@@ -148,11 +164,13 @@ AppStatusBar  24px  后台任务（点开是任务列表 + 每项 Cancel）· �
 - Data / Structure / Info 不再是独立的一行：`Workspace` 造好
   `<Tabs variant="pill" size="sm">` 后作为 `tabs` 传给三个视图，各自放进自己的
   `Toolbar center`。改子 tab 仍然只能用 `setTableTab(tabId, kind)`。
-- 三个表视图 + `DatabaseInfoView` 都是 `Toolbar`（title=表名 mono ·
-  subtitle=`连接 / 库 · 引擎` · center=子 tab · 最多 4 个 action · 一个 `⋯` ·
-  底边 2px 进度线）+ 可选 filters 行。无主键警告是 subtitle 里的
+- 三个表视图统一使用 `TableViewToolbar`：表名 → 子 tab → `连接 / 库 · 引擎`。
+  子 tab 固定在表名后，不随端点说明、警告或右侧动作的宽度移动。
+  `DatabaseInfoView` 仍使用普通 `Toolbar`。工具栏最多 4 个 action · 一个 `⋯` ·
+  底边 2px 进度线 + 可选 filters 行。无主键警告是 subtitleSlot 里的
   `Badge tone="warning"`，**不要再加横幅**。
-- 数据工具栏常驻只有：⟳ / + Insert / 🗑 Delete n。Export、Columns、Wrap、
+- 数据工具栏常驻只有：⟳ / + Insert；选中行后显示 🗑 Delete n 和清除选择。
+  筛选条件明确区分“尚未应用 / 已筛选”，分页显示当前行范围。Export、Columns、Wrap、
   Density、Rows per page、复制选中行、清空选中、以及表对象自身的动作
   （重命名 / 复制 / CREATE / 导入 / 清空 / 删表）全在 `⋯` 里；表对象那一段直接
   复用 `layout/sidebar-menus.ts` 的 `buildTableMenuItems`，**不要另写一份**。

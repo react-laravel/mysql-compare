@@ -20,6 +20,26 @@ vi.mock('@renderer/lib/api', () => ({
 
 afterEach(cleanup)
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
+function queryArgs() {
+  return {
+    connectionId: 'conn-1',
+    database: 'db_main',
+    table: 'users',
+    tableReloadToken: 0,
+    showToast: vi.fn()
+  }
+}
+
 describe('useTableDataQuery', () => {
   beforeEach(() => {
     queryRowsMock.mockReset()
@@ -137,6 +157,121 @@ describe('useTableDataQuery', () => {
       )
     )
     expect(result.current.appliedWhere).toBe("name = '小火球'")
+    expect(result.current.where).toBe("name = '小火球'")
+    expect(result.current.hasPendingWhere).toBe(false)
+  })
+
+  it('keeps the last successful rows when refreshing the same query fails and can recover', async () => {
+    const rows = createQueryRowsResult()
+    const refresh = deferred<typeof rows>()
+    queryRowsMock.mockResolvedValueOnce(rows).mockReturnValueOnce(refresh.promise)
+    const args = queryArgs()
+    const { result } = renderHook(() => useTableDataQuery(args))
+    await waitFor(() => expect(result.current.data).toBe(rows))
+
+    act(() => result.current.refresh())
+    expect(result.current.loading).toBe(true)
+    expect(result.current.data).toBe(rows)
+    await act(async () => refresh.reject('refresh unavailable'))
+
+    expect(result.current.data).toBe(rows)
+    expect(result.current.error?.message).toBe('refresh unavailable')
+    expect(result.current.loading).toBe(false)
+    expect(args.showToast).toHaveBeenCalledWith('refresh unavailable', 'error')
+
+    const recovered = createQueryRowsResult({ rows: [{ id: 4, name: 'Dora', active: 1 }] })
+    queryRowsMock.mockResolvedValueOnce(recovered)
+    act(() => result.current.refresh())
+    await waitFor(() => expect(result.current.data).toBe(recovered))
+    expect(result.current.error).toBeNull()
+  })
+
+  it.each(['page', 'filter', 'sort', 'pageSize', 'table', 'database', 'connection'] as const)(
+    'does not present old rows as a new %s query while loading or after failure',
+    async (change) => {
+      const rows = createQueryRowsResult({ total: 600 })
+      const nextQuery = deferred<typeof rows>()
+      queryRowsMock.mockResolvedValueOnce(rows).mockReturnValueOnce(nextQuery.promise)
+      const args = queryArgs()
+      const { result, rerender } = renderHook((props) => useTableDataQuery(props), { initialProps: args })
+      await waitFor(() => expect(result.current.data).toBe(rows))
+
+      if (change === 'filter') act(() => result.current.setWhere('id > 10'))
+      act(() => {
+        if (change === 'page') result.current.goToPage(2)
+        if (change === 'filter') result.current.applyWhere()
+        if (change === 'sort') result.current.onSort('name')
+        if (change === 'pageSize') result.current.onPageSizeChange(50)
+        if (change === 'table') rerender({ ...args, table: 'sessions' })
+        if (change === 'database') rerender({ ...args, database: 'db_other' })
+        if (change === 'connection') rerender({ ...args, connectionId: 'conn-2' })
+      })
+      expect(result.current.data).toBeNull()
+      expect(result.current.loading).toBe(true)
+      await act(async () => nextQuery.reject(new Error('new query failed')))
+
+      expect(result.current.data).toBeNull()
+      expect(result.current.error?.message).toBe('new query failed')
+      expect(result.current.loading).toBe(false)
+      if (change === 'page') expect(result.current.page).toBe(2)
+      expect(queryRowsMock).toHaveBeenCalledTimes(2)
+    }
+  )
+
+  it.each(['success', 'failure'] as const)('ignores a stale %s after a newer request finishes', async (outcome) => {
+    const stale = deferred<ReturnType<typeof createQueryRowsResult>>()
+    const latest = deferred<ReturnType<typeof createQueryRowsResult>>()
+    queryRowsMock.mockReturnValueOnce(stale.promise).mockReturnValueOnce(latest.promise)
+    const args = queryArgs()
+    const { result } = renderHook(() => useTableDataQuery(args))
+    act(() => result.current.refresh())
+
+    const rows = createQueryRowsResult({ rows: [{ id: 4, name: 'Dora', active: 1 }] })
+    await act(async () => latest.resolve(rows))
+    await act(async () => {
+      if (outcome === 'success') stale.resolve(createQueryRowsResult())
+      else stale.reject(new Error('stale failure'))
+    })
+
+    expect(result.current.data).toBe(rows)
+    expect(result.current.error).toBeNull()
+    expect(result.current.loading).toBe(false)
+    expect(args.showToast).not.toHaveBeenCalled()
+  })
+
+  it('does not report an in-flight query failure after unmount', async () => {
+    const pending = deferred<ReturnType<typeof createQueryRowsResult>>()
+    queryRowsMock.mockReturnValueOnce(pending.promise)
+    const args = queryArgs()
+    const { unmount } = renderHook(() => useTableDataQuery(args))
+
+    unmount()
+    await act(async () => pending.reject(new Error('closed table request failed')))
+    expect(args.showToast).not.toHaveBeenCalled()
+  })
+
+  it('clamps integer page drafts and restores invalid drafts even when the page does not change', async () => {
+    queryRowsMock.mockResolvedValue(createQueryRowsResult({ total: 200 }))
+    const args = queryArgs()
+    const { result } = renderHook(() => useTableDataQuery(args))
+    await waitFor(() => expect(result.current.data).not.toBeNull())
+
+    for (const [draft, expected] of [['0', 1], ['-3', 1], ['999', 2], ['999', 2], [' 01 ', 1]] as const) {
+      act(() => result.current.setPageDraft(draft))
+      act(() => result.current.submitPageDraft())
+      await waitFor(() => expect(result.current.loading).toBe(false))
+      expect(result.current.page).toBe(expected)
+      expect(result.current.pageDraft).toBe(String(expected))
+    }
+
+    const calls = queryRowsMock.mock.calls.length
+    for (const draft of ['', '2junk', '1.5', '1e2', 'Infinity', '9007199254740992']) {
+      act(() => result.current.setPageDraft(draft))
+      act(() => result.current.submitPageDraft())
+      expect(result.current.page).toBe(1)
+      expect(result.current.pageDraft).toBe('1')
+    }
+    expect(queryRowsMock).toHaveBeenCalledTimes(calls)
   })
 
   it('cycles sort order and updates the page size', async () => {

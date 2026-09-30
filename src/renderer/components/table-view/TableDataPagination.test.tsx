@@ -61,4 +61,24 @@ describe('TableDataPagination', () => {
     expect((prevButton as HTMLButtonElement).disabled).toBe(true)
     expect((nextButton as HTMLButtonElement).disabled).toBe(true)
   })
+
+  it('cancels a focused page draft without submitting it on blur', () => {
+    const props = createProps({ pageDraft: '4' })
+    render(<TableDataPagination {...props} />)
+    const input = screen.getByLabelText('Page number')
+    input.focus()
+    fireEvent.keyDown(input, { key: 'Escape' })
+    expect(props.onResetPageDraft).toHaveBeenCalledOnce()
+    expect(props.onSubmitPageDraft).not.toHaveBeenCalled()
+    expect(document.activeElement).not.toBe(input)
+
+    input.focus()
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(props.onSubmitPageDraft).toHaveBeenCalledOnce()
+  })
+
+  it('shows the range of rows on the current page', () => {
+    render(<TableDataPagination {...createProps({ pageSize: 100, page: 4, pageDraft: '4' })} />)
+    expect(screen.getByText('301–320 of 320 rows')).toBeTruthy()
+  })
 })

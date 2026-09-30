@@ -41,6 +41,8 @@ export function createInitialForm(
     username: connection?.username || DEFAULT_USERNAME[engine],
     password: '',
     database: connection?.database || '',
+    databases: connection?.databases,
+    showAllDatabases: connection?.showAllDatabases,
     useSSH: connection?.useSSH || sshSource?.useSSH || false,
     sshHost: connection?.sshHost || sshSource?.sshHost || '',
     sshPort: connection?.sshPort || sshSource?.sshPort || 22,

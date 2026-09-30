@@ -57,7 +57,7 @@ impl TargetDialect {
   fn quote_table(&self, database: &str, table: &str) -> String {
     match self {
       Self::Mysql => quote_mysql_table(database, table),
-      // PgDriver 连接到目标库本身，表操作固定走 public schema。
+      // Scoped table keys carry their schema; legacy names use public.
       Self::Postgres => quote_pg_table("public", table),
     }
   }
@@ -104,6 +104,7 @@ fn plan_table_actions(
   sync_data: bool,
   strategy: ExistingTableStrategy,
   create_sql: &str,
+  existing_schemas: &HashSet<String>,
 ) -> TableActions {
   if exists_in_target && strategy == ExistingTableStrategy::Skip {
     return TableActions {
@@ -134,6 +135,15 @@ fn plan_table_actions(
       }
     } else {
       if !create_sql.trim().is_empty() {
+        if dialect == TargetDialect::Postgres {
+          if let Some((schema, _)) = crate::drivers::dialect::scoped_pg_table(table) {
+            // Even IF NOT EXISTS requires database CREATE permission in PostgreSQL.
+            // Existing accessible schemas only need their own CREATE permission.
+            if !existing_schemas.contains(&schema) {
+              setup_sqls.push(format!("CREATE SCHEMA IF NOT EXISTS {}", quote_pg_ident(&schema)));
+            }
+          }
+        }
         setup_sqls.push(create_sql.trim().to_string());
       }
       description_parts.push("create table".into());
@@ -235,6 +245,7 @@ async fn preflight(
   let target_tables = target.list_tables(&req.target_database).await?;
   let mut signatures = Vec::new();
   for table in &req.tables {
+    let display_table = crate::drivers::dialect::pg_table_display_name(table);
     let source_schema = source.get_table_schema(&req.source_database, table).await?;
     let target_schema = if target_tables.contains(table) {
       Some(target.get_table_schema(&req.target_database, table).await?)
@@ -245,13 +256,13 @@ async fn preflight(
       && normalize_strategy(req.existing_table_strategy.as_deref()) == ExistingTableStrategy::Skip;
     if !skipped {
       if target_schema.is_none() && !req.sync_structure.unwrap_or(true) {
-        return Err(format!("Target table {table} does not exist"));
+        return Err(format!("Target table {display_table} does not exist"));
       }
       if req.sync_structure.unwrap_or(true)
         && (source_schema.create_sql.trim().is_empty()
           || source_schema.create_sql.contains("-- reconstructed"))
       {
-        return Err(format!("Complete CREATE SQL is unavailable for {table}"));
+        return Err(format!("Complete CREATE SQL is unavailable for {display_table}"));
       }
       if let Some(target_schema) = &target_schema {
         if req.sync_data.unwrap_or(true)
@@ -264,7 +275,7 @@ async fn preflight(
               .iter()
               .any(|target| target.name == column.name)
             {
-              return Err(format!("Target {table} is missing column {}", column.name));
+              return Err(format!("Target {display_table} is missing column {}", column.name));
             }
           }
         }
@@ -310,6 +321,9 @@ pub async fn build_plan(
 
   let target_tables = target.list_tables(&req.target_database).await?;
   let target_set: HashSet<_> = target_tables.into_iter().collect();
+  let existing_schemas = if dialect == TargetDialect::Postgres && sync_structure {
+    target.list_schemas(&req.target_database).await?.into_iter().collect()
+  } else { HashSet::new() };
 
   let mut steps = Vec::new();
 
@@ -336,6 +350,7 @@ pub async fn build_plan(
       sync_data,
       strategy,
       &schema.create_sql,
+      &existing_schemas,
     );
     let mut sqls = actions.setup_sqls.clone();
     let mut description_parts = actions.description_parts.clone();
@@ -490,6 +505,9 @@ pub async fn execute_with_progress(
 
   let target_tables = target.list_tables(&req.target_database).await?;
   let target_set: HashSet<_> = target_tables.into_iter().collect();
+  let existing_schemas = if dialect == TargetDialect::Postgres && sync_structure {
+    target.list_schemas(&req.target_database).await?.into_iter().collect()
+  } else { HashSet::new() };
 
   let mut tconn = TargetConn::acquire(&target, &req.target_database).await?;
   if dialect == TargetDialect::Mysql {
@@ -508,7 +526,7 @@ pub async fn execute_with_progress(
       "start",
       idx as i64,
       total,
-      Some(format!("Syncing {table}")),
+      Some(format!("Syncing {}", crate::drivers::dialect::pg_table_display_name(table))),
       "info",
     );
     let exists = target_set.contains(table);
@@ -538,6 +556,7 @@ pub async fn execute_with_progress(
         sync_data,
         strategy,
         &schema.create_sql,
+        &existing_schemas,
       );
       for sql in &actions.setup_sqls {
         tconn.execute(sql).await?;
@@ -690,6 +709,7 @@ mod tests {
       true,
       ExistingTableStrategy::Skip,
       "CREATE TABLE `users` (`id` bigint)",
+      &HashSet::new(),
     );
     assert!(!actions.skip);
     assert!(actions.insert_data);
@@ -711,6 +731,7 @@ mod tests {
       true,
       normalize_strategy(Some("overwrite-structure")),
       "CREATE TABLE `users` (`id` bigint)",
+      &HashSet::new(),
     );
     assert_eq!(
       actions.setup_sqls,
@@ -737,6 +758,7 @@ mod tests {
       true,
       ExistingTableStrategy::DropAndRecreate,
       "CREATE TABLE `users` (`id` bigint)",
+      &HashSet::new(),
     );
     assert!(actions.setup_sqls.is_empty());
     assert!(actions.insert_data);
@@ -753,6 +775,7 @@ mod tests {
       true,
       normalize_strategy(Some("append-data")),
       "CREATE TABLE `users` (`id` bigint)",
+      &HashSet::new(),
     );
     assert!(actions.setup_sqls.is_empty());
     assert_eq!(
@@ -774,6 +797,7 @@ mod tests {
       true,
       ExistingTableStrategy::TruncateAndImport,
       "CREATE TABLE `users` (`id` bigint)",
+      &HashSet::new(),
     );
     assert_eq!(
       actions.setup_sqls,
@@ -796,6 +820,7 @@ mod tests {
       true,
       ExistingTableStrategy::Skip,
       "CREATE TABLE `users` (`id` bigint)",
+      &HashSet::new(),
     );
     assert!(actions.skip);
     assert!(actions.setup_sqls.is_empty());
@@ -817,6 +842,7 @@ mod tests {
       false,
       ExistingTableStrategy::DropAndRecreate,
       "CREATE TABLE users (id bigint)",
+      &HashSet::new(),
     );
     assert_eq!(
       actions.setup_sqls[0],

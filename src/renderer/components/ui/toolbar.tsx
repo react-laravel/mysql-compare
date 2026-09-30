@@ -22,8 +22,10 @@ export interface ToolbarProps {
   /** everything else, behind a single trailing ⋯ */
   overflow?: MenuItem[]
   overflowLabel?: string
-  /** rendered between the subtitle and the actions — e.g. pill Tabs */
+  /** navigation such as pill Tabs, positioned by `centerPosition` */
   center?: React.ReactNode
+  /** Keep navigation anchored to the title when contextual text varies. */
+  centerPosition?: 'after-subtitle' | 'after-title'
   /** optional second row (30px) for filters / chips / breadcrumbs */
   filters?: React.ReactNode
   /** a 2px line pinned to the bottom edge — zero layout cost */
@@ -45,11 +47,27 @@ export function Toolbar({
   overflow,
   overflowLabel = 'More actions',
   center,
+  centerPosition = 'after-subtitle',
   filters,
   progress,
   sticky = true,
   className
 }: ToolbarProps) {
+  const context = (
+    <>
+      {subtitle ? (
+        <span className="truncate text-xs text-fg-muted" title={typeof subtitle === 'string' ? subtitle : undefined}>
+          {subtitle}
+        </span>
+      ) : null}
+      {subtitleSlot ? (
+        <span className="flex shrink-0 items-center gap-1.5 self-center text-xs text-fg-muted">
+          {subtitleSlot}
+        </span>
+      ) : null}
+    </>
+  )
+
   return (
     <div
       className={cn(
@@ -62,16 +80,16 @@ export function Toolbar({
         {Icon ? (
           <Icon aria-hidden strokeWidth={1.75} className="size-3.5 shrink-0 text-fg-muted" />
         ) : null}
-        <div className="flex min-w-0 items-baseline gap-2">
+        <div className={cn('flex min-w-0 items-baseline gap-2', centerPosition === 'after-title' && 'min-w-10 max-w-40')}>
           {title ? <h1 className="truncate text-sm font-semibold text-fg">{title}</h1> : null}
-          {subtitle ? <span className="truncate text-xs text-fg-muted">{subtitle}</span> : null}
-          {subtitleSlot ? (
-            <span className="flex shrink-0 items-center gap-1.5 self-center text-xs text-fg-muted">
-              {subtitleSlot}
-            </span>
-          ) : null}
+          {centerPosition === 'after-title' ? null : context}
         </div>
         {center ? <div className="ml-2 flex shrink-0 items-center">{center}</div> : null}
+        {centerPosition === 'after-title' ? (
+          <div className="ml-2 flex min-w-0 flex-1 items-center gap-2">
+            {context}
+          </div>
+        ) : null}
         <div className="ml-auto flex shrink-0 items-center gap-1">
           {actions}
           {overflow?.length ? (

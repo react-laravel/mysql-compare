@@ -1,3 +1,4 @@
+import { tableDisplayName } from '../../../shared/table-reference'
 import { useEffect, useRef, useState } from 'react'
 import { FileText, UploadCloud } from 'lucide-react'
 import { Dialog } from '@renderer/components/ui/dialog'
@@ -120,7 +121,7 @@ export function ImportTableDialog({
       open={open}
       onOpenChange={onOpenChange}
       title={t('importDialog.title')}
-      description={`${database}.${table}`}
+      description={`${database}.${tableDisplayName(table)}`}
       footer={
         <>
           <Button variant="secondary" onClick={() => onOpenChange(false)} disabled={busy}>

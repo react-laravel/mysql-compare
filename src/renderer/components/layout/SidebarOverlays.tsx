@@ -5,6 +5,8 @@
 // `sidebar-store` now, so the props are gone and each dialog reads exactly what
 // it needs.
 import { ConnectionDialog } from '@renderer/components/connection/ConnectionDialog'
+import { ConnectionOrganizationDialog } from '@renderer/components/connection/ConnectionOrganizationDialog'
+import { AddDatabaseDialog } from '@renderer/components/connection/AddDatabaseDialog'
 import { ExportDatabaseDialog } from '@renderer/components/table-view/ExportDatabaseDialog'
 import { ExportTableDialog } from '@renderer/components/table-view/ExportTableDialog'
 import { ImportTableDialog } from '@renderer/components/table-view/ImportTableDialog'
@@ -27,6 +29,8 @@ export function SidebarOverlays() {
   const refreshConnections = useConnectionStore((state) => state.refresh)
 
   const creating = useSidebarStore((state) => state.creating)
+  const organizingConnections = useSidebarStore((state) => state.organizingConnections)
+  const addDatabaseConnection = useSidebarStore((state) => state.addDatabaseConnection)
   const editing = useSidebarStore((state) => state.editing)
   const sshSource = useSidebarStore((state) => state.sshSource)
   const setCreating = useSidebarStore((state) => state.setCreating)
@@ -48,6 +52,8 @@ export function SidebarOverlays() {
 
   return (
     <>
+      {organizingConnections ? <ConnectionOrganizationDialog /> : null}
+      {addDatabaseConnection ? <AddDatabaseDialog /> : null}
       {creating || editing || sshSource ? (
         <ConnectionDialog
           open

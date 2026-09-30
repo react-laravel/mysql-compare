@@ -1,3 +1,4 @@
+import { tableDisplayName } from '../../../shared/table-reference'
 import type { Dispatch, SetStateAction } from 'react'
 import { Copy } from 'lucide-react'
 import { Badge } from '@renderer/components/ui/badge'
@@ -56,7 +57,7 @@ export function TableStructureDialogs({
             }
           }}
           title={t('columnDialog.editTitle')}
-          description={`${database}.${table}.${editingColumn.originalName}`}
+          description={`${database}.${tableDisplayName(table)}.${editingColumn.originalName}`}
           size="lg"
           footer={
             <>
@@ -154,7 +155,7 @@ export function TableStructureDialogs({
             }
           }}
           title={editingIndex.mode === 'add' ? t('indexDialog.addTitle') : t('indexDialog.editTitle')}
-          description={`${database}.${table}`}
+          description={`${database}.${tableDisplayName(table)}`}
           size="lg"
           footer={
             <>

@@ -1,3 +1,4 @@
+import { tableDisplayName } from '../../../shared/table-reference'
 // Status tab：左侧每张表一行，右侧是选中表的详情。
 //
 // Blueprint §3.5: the local `TableStatusIcon` map (a hand-picked emerald /
@@ -152,7 +153,7 @@ function ComparisonRow({
       )}
     >
       <StatusGlyph status={status} />
-      <span className="min-w-0 flex-1 truncate font-mono text-fg">{entry.table}</span>
+      <span className="min-w-0 flex-1 truncate font-mono text-fg">{tableDisplayName(entry.table)}</span>
       <span className="flex shrink-0 items-center gap-1">
         {badges.length === 0 ? (
           <Badge>{t('diff.status.ready')}</Badge>
@@ -205,7 +206,7 @@ function ComparisonDetail({
       header={
         <span className="flex min-w-0 items-center gap-2">
           <StatusGlyph status={status} />
-          <span className="truncate font-mono">{entry.table}</span>
+          <span className="truncate font-mono">{tableDisplayName(entry.table)}</span>
         </span>
       }
       headerActions={

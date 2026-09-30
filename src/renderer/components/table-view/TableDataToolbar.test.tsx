@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { useState } from 'react'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TableDataToolbar } from './TableDataToolbar'
@@ -142,6 +143,43 @@ describe('TableDataToolbar', () => {
     expect(props.onPageSizeChange).toHaveBeenCalledWith(250)
   })
 
+  it('applies submenu choices after mouse down and retains their checked state', () => {
+    function Harness() {
+      const [density, setDensity] = useState<'compact' | 'comfortable'>('compact')
+      const [pageSize, setPageSize] = useState(100)
+      return <TableDataToolbar {...createProps({
+        columnCounts: { visible: 3, total: 3 },
+        density,
+        onSetDensity: setDensity,
+        pageSize,
+        onPageSizeChange: setPageSize
+      })} />
+    }
+
+    render(<Harness />)
+    const choose = (submenu: string, choice: string) => {
+      openOverflow()
+      fireEvent.click(screen.getByRole('menuitem', { name: submenu }))
+      const item = screen.getByRole('menuitemcheckbox', { name: choice })
+      // A real click presses before it activates. A click-only test misses
+      // parent menus unmounting their portalled children on mouse down.
+      fireEvent.mouseDown(item)
+      expect(item.isConnected).toBe(true)
+      fireEvent.mouseUp(item)
+      fireEvent.click(item)
+      expect(screen.queryByRole('menu', { name: 'More actions' })).toBeNull()
+      openOverflow()
+      fireEvent.click(screen.getByRole('menuitem', { name: submenu }))
+      expect(screen.getByRole('menuitemcheckbox', { name: choice }).getAttribute('aria-checked')).toBe('true')
+      expect(screen.getAllByRole('menuitemcheckbox').filter((entry) => entry.getAttribute('aria-checked') === 'true')).toHaveLength(1)
+      fireEvent.mouseDown(document.body)
+    }
+
+    choose('Toggle row density', 'Comfortable')
+    choose('Toggle row density', 'Compact')
+    choose('Rows per page', '250')
+  })
+
   // Moved here from `TableDataPagination.test.tsx` when the page-size control
   // left the 24px pagination bar: `settings-store.defaultPageSize` seeds the
   // query, and a default this menu cannot offer would be uncheckable.
@@ -165,5 +203,24 @@ describe('TableDataToolbar', () => {
   it('shows the missing-primary-key warning as a subtitle badge', () => {
     render(<TableDataToolbar {...createProps({ hasPrimaryKey: false })} />)
     expect(screen.getByText('No primary key')).toBeTruthy()
+  })
+
+  it('distinguishes pending filters and lets composition finish before applying', () => {
+    const props = createProps({ where: 'name =', hasPendingWhere: true, hasActiveFilter: true })
+    const { rerender } = render(<TableDataToolbar {...props} />)
+    expect(screen.getByText('Not applied')).toBeTruthy()
+    const input = screen.getByRole('searchbox', { name: 'Filter rows with a WHERE condition' })
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true })
+    expect(props.onApplyWhere).not.toHaveBeenCalled()
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(props.onApplyWhere).toHaveBeenCalledOnce()
+    rerender(<TableDataToolbar {...props} hasPendingWhere={false} />)
+    expect(screen.getByText('Filtered')).toBeTruthy()
+  })
+
+  it('keeps destructive actions contextual and prevents edits before rows load', () => {
+    render(<TableDataToolbar {...createProps({ dataReady: false, loading: true })} />)
+    expect(screen.queryByRole('button', { name: 'Delete (0)' })).toBeNull()
+    expect((screen.getByRole('button', { name: 'Insert' }) as HTMLButtonElement).disabled).toBe(true)
   })
 })

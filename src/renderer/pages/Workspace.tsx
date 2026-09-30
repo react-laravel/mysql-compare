@@ -165,6 +165,7 @@ export function Workspace() {
             <Tabs
               variant="pill"
               size="sm"
+              className="font-medium"
               aria-label={t('workspace.tableTabList')}
               value={currentTableTab}
               onValueChange={(value) => {
@@ -267,6 +268,7 @@ export function Workspace() {
                   connectionId={tab.view.connectionId}
                   database={tab.view.database}
                   table={tab.view.table}
+                  engine={tab.view.engine}
                   readOnly={isRedisTable}
                   tabs={tableTabs}
                   active={active && currentTableTab === 'info'}

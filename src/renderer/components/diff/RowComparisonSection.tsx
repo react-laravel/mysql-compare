@@ -1,3 +1,4 @@
+import { tableDisplayName } from '../../../shared/table-reference'
 // Content diff tab 中按表展示行级对比详情的区域，包含 “Show all/Only different” 切换。
 //
 // Blueprint §3.5: `SearchInput` replaces the input + clear-button pair, the
@@ -125,7 +126,7 @@ export function RowComparisonSection({
               <div className="flex min-w-0 flex-wrap items-center gap-2">
                 <DiffGutter kind={rowDiffKind(rowComparison.dataDiff)} />
                 <strong className="min-w-0 truncate font-mono text-sm">
-                  {rowComparison.table}
+                  {tableDisplayName(rowComparison.table)}
                 </strong>
                 <RowCompareBadge dataDiff={rowComparison.dataDiff} />
                 <span className="mr-auto text-2xs text-fg-muted">

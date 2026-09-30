@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { tableKey } from '../../../shared/table-reference'
 import type { TableCompareEntry } from './diff-panel-utils'
 import {
   DEFAULT_COMPARE_SETUP_EXPANDED,
@@ -199,6 +200,18 @@ describe('diff-panel-utils', () => {
       'queued_table',
       'row_changed_table'
     ])
+  })
+
+  it('searches and sorts scoped PostgreSQL tables by their displayed names', () => {
+    const scopedTable = tableKey('sales.v2', 'users')
+    const scopedEntry = { ...entries[1]!, table: scopedTable }
+    expect(filterComparisonEntries([scopedEntry], 'changed', 'SALES.V2.USERS')).toEqual([
+      scopedEntry
+    ])
+    expect(prioritizeComparisonEntries([
+      scopedEntry,
+      { ...entries[1]!, table: 'orders' }
+    ]).map((entry) => entry.table)).toEqual(['orders', scopedTable])
   })
 
   it('prefers the first unfinished entry and otherwise falls back to the current or first entry', () => {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { REDIS_MAX_LISTED_KEYS } from '../../../shared/constants'
 import type { SafeConnection } from '../../../shared/types'
-import { buildSidebarRows, groupConnections } from './sidebar-tree-rows'
+import { buildSidebarRows, filterConnections, groupConnections } from './sidebar-tree-rows'
 import type { NodeState } from './sidebar-types'
 
 const mysql: SafeConnection = {
@@ -26,7 +26,45 @@ function node(overrides: Partial<NodeState> = {}): NodeState {
   return { expanded: true, loading: false, tables: {}, expandedDbs: new Set(), ...overrides }
 }
 
+describe('filterConnections', () => {
+  it('finds connections by endpoint, account, group and database without changing their order', () => {
+    const primary = { ...mysql, host: 'db.internal', username: 'report_reader', group: 'Analytics' }
+    const tunneled = { ...redis, useSSH: true, sshHost: 'jump.internal' }
+    const connections = [primary, tunneled]
+    for (const query of [' DB.INTERNAL ', 'db.internal:3306', 'READER', 'analytics', 'shop']) {
+      expect(filterConnections(connections, query)).toContain(primary)
+    }
+    expect(filterConnections(connections, 'jump.internal')).toEqual([tunneled])
+    expect(filterConnections(connections, 'internal')).toEqual(connections)
+    expect(filterConnections(connections, 'no-match')).toEqual([])
+    expect(filterConnections(connections, '  ')).toBe(connections)
+  })
+})
+
 describe('buildSidebarRows', () => {
+  it('explains missing schema access once without leaving unusable filter controls', () => {
+    const { rows } = buildSidebarRows({
+      groups: groupConnections([{ ...mysql, engine: 'postgres' }], 'Connections'),
+      nodes: { c1: node({ databases: ['shop'], tables: { shop: [] }, expandedDbs: new Set(['shop']), schemas: { shop: [] } }) },
+      tableFilters: {}, collapsedRedisFolders: new Set()
+    })
+    expect(rows.filter((row) => row.type === 'message')).toEqual([
+      expect.objectContaining({ message: 'noSchemas' })
+    ])
+    expect(rows.some((row) => row.type === 'filter' || row.type === 'schema-picker')).toBe(false)
+  })
+
+  it('only shows a database empty state after a successful empty response', () => {
+    const build = (state: Partial<NodeState>) => buildSidebarRows({
+      groups: groupConnections([mysql], 'Connections'), nodes: { c1: node(state) },
+      tableFilters: {}, collapsedRedisFolders: new Set()
+    }).rows
+    expect(build({ databases: [] })).toContainEqual(expect.objectContaining({ type: 'message', message: 'noDatabases' }))
+    expect(build({ databases: [], loading: true }).some((row) => row.type === 'message')).toBe(false)
+    expect(build({ databases: [], connectionError: 'offline' }).some((row) => row.type === 'message')).toBe(false)
+    expect(build({}).some((row) => row.type === 'message')).toBe(false)
+  })
+
   it('links each focusable row to its parent so ← can move up a level', () => {
     const { rows, focusables } = buildSidebarRows({
       groups: groupConnections([mysql], 'Connections'),

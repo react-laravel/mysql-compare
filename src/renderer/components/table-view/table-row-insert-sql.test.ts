@@ -1,9 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import { buildRowInsertSQL } from './table-row-insert-sql'
 import { testColumns } from './table-data-test-helpers'
+import { tableKey } from '../../../shared/table-reference'
 
 describe('buildRowInsertSQL', () => {
   const row = { id: 7, name: "O'Reilly", active: 1 }
+
+  it('keeps a scoped PostgreSQL table qualified in copied INSERT SQL', () => {
+    const sql = buildRowInsertSQL({ engine: 'postgres', database: 'app', table: tableKey('sales.v2', 'users'), columns: testColumns, row, includeId: true })
+    expect(sql).toContain('INSERT INTO "sales.v2"."users"')
+    expect(sql).not.toContain('\0')
+  })
 
   it('builds a MySQL INSERT with the generated ID', () => {
     expect(

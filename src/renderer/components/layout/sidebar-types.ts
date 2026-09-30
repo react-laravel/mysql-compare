@@ -7,6 +7,11 @@ export interface NodeState {
   tables: Record<string, string[]>
   tableCounts?: Record<string, number>
   expandedDbs: Set<string>
+  connectionError?: string
+  databaseLoading?: Record<string, boolean>
+  databaseErrors?: Record<string, string | undefined>
+  schemas?: Record<string, string[]>
+  activeSchemas?: Record<string, string>
 }
 
 export interface TableMenuState {

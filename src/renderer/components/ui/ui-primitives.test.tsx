@@ -18,6 +18,7 @@ import { ProgressBar } from './progress-bar'
 import { SearchInput } from './search-input'
 import { SplitPane } from './split-pane'
 import { Button } from './button'
+import { TreeRow } from './tree-row'
 
 afterEach(cleanup)
 
@@ -29,6 +30,21 @@ describe('IconButton', () => {
 })
 
 describe('DropdownMenu', () => {
+  it('does not toggle or navigate a tree row when its portalled menu is used', () => {
+    const activate = vi.fn()
+    const navigate = vi.fn()
+    const select = vi.fn()
+    render(<TreeRow depth={0} label="Server" expandable expanded onActivate={activate} onKeyDown={navigate}
+      overflowLabel="Server actions" overflow={[{ id: 'add', label: 'Add database', onSelect: select }]} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Server actions' }))
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'ArrowDown' })
+    expect(navigate).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Add database' }))
+    expect(select).toHaveBeenCalledTimes(1)
+    expect(activate).not.toHaveBeenCalled()
+    expect(screen.getByRole('treeitem').getAttribute('aria-expanded')).toBe('true')
+  })
+
   const items: MenuItem[] = [
     { id: 'open', label: 'Open', onSelect: vi.fn() },
     { id: 'drop', label: 'Drop table', danger: true, icon: Trash2, onSelect: vi.fn() }
@@ -73,6 +89,31 @@ describe('DropdownMenu', () => {
 
     fireEvent.click(screen.getByRole('menuitem', { name: 'Nope' }))
     expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  it('keeps all ancestors open while pressing a deeply nested submenu item', () => {
+    const onSelect = vi.fn()
+    render(
+      <DropdownMenu
+        trigger={<Button>Open menu</Button>}
+        items={[{ kind: 'submenu', id: 'first', label: 'First submenu', items: [
+          { kind: 'submenu', id: 'second', label: 'Second submenu', items: [
+            { id: 'choice', label: 'Apply choice', onSelect }
+          ] }
+        ] }]}
+      />
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Open menu' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'First submenu' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Second submenu' }))
+    const choice = screen.getByRole('menuitem', { name: 'Apply choice' })
+    fireEvent.mouseDown(choice)
+    expect(choice.isConnected).toBe(true)
+    expect(screen.getByRole('menuitem', { name: 'First submenu' })).toBeTruthy()
+    fireEvent.mouseUp(choice)
+    fireEvent.click(choice)
+    expect(onSelect).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('menu')).toBeNull()
   })
 })
 
@@ -173,7 +214,12 @@ describe('Escape layering', () => {
     return (
       <Dialog open={open} onOpenChange={setOpen} title="Outer dialog">
         <DropdownMenu
-          items={[{ id: 'a', label: 'Alpha', onSelect: vi.fn() }]}
+          items={[
+            { id: 'a', label: 'Alpha', onSelect: vi.fn() },
+            { kind: 'submenu', id: 'more', label: 'More options', items: [
+              { id: 'b', label: 'Beta', onSelect: vi.fn() }
+            ] }
+          ]}
           aria-label="Inner menu"
           trigger={<Button>Open menu</Button>}
         />
@@ -192,6 +238,23 @@ describe('Escape layering', () => {
 
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('closes a portalled submenu before its parent menu and dialog', () => {
+    render(<DialogWithMenu />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open menu' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'More options' }))
+    fireEvent.mouseDown(screen.getByRole('menuitem', { name: 'Beta' }))
+    expect(screen.getByRole('menuitem', { name: 'Beta' })).toBeTruthy()
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('menuitem', { name: 'Beta' })).toBeNull()
+    expect(screen.getByRole('menu', { name: 'Inner menu' })).toBeTruthy()
+    expect(screen.getByRole('dialog', { name: 'Outer dialog' })).toBeTruthy()
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('menu')).toBeNull()
+    expect(screen.getByRole('dialog', { name: 'Outer dialog' })).toBeTruthy()
   })
 
   it('lets a search field consume Escape before the surrounding dialog does', () => {

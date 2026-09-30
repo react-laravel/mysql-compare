@@ -7,7 +7,7 @@
 // grid had no keyboard path to it at all), the 300ms skeleton and the shared
 // `ContextMenu`.
 import { useMemo } from 'react'
-import { Copy, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { Copy, Pencil, Plus, RefreshCw, Trash2, TriangleAlert } from 'lucide-react'
 import { Badge } from '@renderer/components/ui/badge'
 import { Button } from '@renderer/components/ui/button'
 import { DataTable, type Column, type DataTableSort } from '@renderer/components/ui/data-table'
@@ -25,6 +25,7 @@ type Row = Record<string, unknown>
 interface TableDataGridProps {
   data: QueryRowsResult | null
   error?: Error | null
+  refreshing?: boolean
   visibleColumns: ColumnInfo[]
   orderBy?: { column: string; dir: 'ASC' | 'DESC' }
   density: 'compact' | 'comfortable'
@@ -56,6 +57,7 @@ const STICKY_CELL = 'bg-canvas group-hover:bg-hover group-aria-[selected=true]:b
 export function TableDataGrid({
   data,
   error,
+  refreshing = false,
   visibleColumns,
   orderBy,
   density,
@@ -115,23 +117,23 @@ export function TableDataGrid({
       ...visibleColumns.map<Column<Row>>((column) => ({
         id: column.name,
         sortable,
-        headerClassName: 'whitespace-normal align-bottom',
+        headerClassName: 'whitespace-nowrap align-top [&_button]:items-start [&_button]:text-left [&_button>svg]:mt-2',
         cellClassName: wrapCells
           ? 'max-w-md whitespace-pre-wrap break-words align-top'
           : 'max-w-xs truncate',
         title: (row) => formatCellValue(row[column.name]),
         header: (
-          <span className="flex flex-col items-start gap-0.5 py-1 leading-tight">
-            <span className="flex flex-wrap items-center gap-1">
-              {column.isPrimaryKey ? <Badge tone="warning">PK</Badge> : null}
-              <span className="whitespace-nowrap">{column.name}</span>
-              <span className="text-2xs font-normal text-fg-subtle">{column.type}</span>
+          <span className="flex min-w-0 flex-1 flex-col items-start gap-0.5 py-1 text-left leading-tight">
+            <span className="flex h-5 items-center gap-1 whitespace-nowrap">
+              <span className="max-w-56 truncate font-mono text-xs text-fg" title={column.name}>{column.name}</span>
+              {column.isPrimaryKey ? <Badge size="xs" tone="warning">PK</Badge> : null}
             </span>
-            {column.comment ? (
-              <span className="max-w-56 truncate text-2xs font-normal text-warning-text" title={column.comment}>
-                {column.comment}
-              </span>
-            ) : null}
+            <span className="block h-4 max-w-56 truncate font-mono text-2xs font-normal text-fg-subtle" title={column.type}>
+              {column.type}
+            </span>
+            <span className="block h-4 max-w-56 truncate text-2xs font-normal text-fg-muted" title={column.comment || undefined} aria-hidden={!column.comment || undefined}>
+              {column.comment || '\u00a0'}
+            </span>
           </span>
         ),
         cell: (row) => {
@@ -216,7 +218,7 @@ export function TableDataGrid({
     return items
   }
 
-  if (error) {
+  if (error && !data) {
     return (
       <div className="min-h-0 flex-1 overflow-auto">
         <EmptyState
@@ -226,7 +228,7 @@ export function TableDataGrid({
           error={error}
           detailsLabel={t('common.details')}
           action={
-            <Button variant="primary" icon={RefreshCw} onClick={onRetry}>
+            <Button variant="primary" icon={RefreshCw} onClick={onRetry} loading={refreshing} disabled={refreshing}>
               {t('common.retry')}
             </Button>
           }
@@ -236,6 +238,22 @@ export function TableDataGrid({
   }
 
   return (
+    <div className="flex min-h-0 flex-1 flex-col" aria-busy={refreshing || undefined}>
+      {error && data ? (
+        <div role="alert" className="flex shrink-0 items-start gap-2 border-b border-border bg-warning-quiet px-3 py-2 text-xs">
+          <TriangleAlert aria-hidden className="mt-0.5 size-3.5 shrink-0 text-warning-text" />
+          <div className="min-w-0 flex-1">
+            <p className="text-warning-text">{t('tableData.refreshFailedKeepingRows')}</p>
+            <details className="mt-1 text-fg-muted">
+              <summary className="cursor-pointer">{t('common.details')}</summary>
+              <p className="mt-1 whitespace-pre-wrap break-words">{error.message}</p>
+            </details>
+          </div>
+          <Button size="xs" icon={RefreshCw} loading={refreshing} disabled={refreshing} onClick={onRetry}>
+            {t('common.retry')}
+          </Button>
+        </div>
+      ) : null}
     <DataTable<Row>
       className="min-h-0 flex-1"
       aria-label={t('tableData.grid')}
@@ -310,5 +328,6 @@ export function TableDataGrid({
         )
       }
     />
+    </div>
   )
 }

@@ -1,3 +1,4 @@
+import { tableReference } from '../../../shared/table-reference'
 import type { ColumnInfo, SqlDbEngine } from '../../../shared/types'
 
 interface BuildRowInsertSQLArgs {
@@ -26,7 +27,7 @@ export function buildRowInsertSQL({
   const target =
     engine === 'mysql'
       ? `${quoteIdent(database)}.${quoteIdent(table)}`
-      : `${quoteIdent('public')}.${quoteIdent(table)}`
+      : `${quoteIdent(tableReference(table).schema)}.${quoteIdent(tableReference(table).name)}`
   const columnSQL = insertColumns.map((column) => quoteIdent(column.name)).join(', ')
   const valueSQL = insertColumns
     .map((column) => formatSQLLiteral(row[column.name], engine))

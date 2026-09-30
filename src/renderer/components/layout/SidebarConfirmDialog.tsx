@@ -1,3 +1,4 @@
+import { tableDisplayName } from '../../../shared/table-reference'
 // The sidebar's single destructive-confirmation surface (blueprint §2.8).
 //
 // It replaces the two native `confirm()` calls this file's predecessor had
@@ -15,7 +16,7 @@ function subjectOf(request: SidebarConfirmRequest): string {
     case 'copy-table':
     case 'truncate-table':
     case 'drop-table':
-      return `${request.database}.${request.table}`
+      return `${request.database}.${tableDisplayName(request.table)}`
     case 'drop-database':
       return request.database
     case 'delete-connection':
@@ -36,7 +37,7 @@ export function SidebarConfirmDialog() {
     if (!request) return ''
     switch (request.kind) {
       case 'copy-table':
-        return t('sidebar.overlays.copyToCopy', { table: request.table })
+        return t('sidebar.overlays.copyToCopy', { table: tableDisplayName(request.table) })
       case 'truncate-table':
         return t('sidebar.overlays.truncateTable')
       case 'drop-table':
@@ -53,18 +54,18 @@ export function SidebarConfirmDialog() {
     switch (request.kind) {
       case 'copy-table':
         return t('sidebar.confirm.copyTable', {
-          table: request.table,
-          targetTable: request.targetTable
+          table: tableDisplayName(request.table),
+          targetTable: tableDisplayName(request.targetTable)
         })
       case 'truncate-table':
         return t('sidebar.confirm.truncateTable', {
           database: request.database,
-          table: request.table
+          table: tableDisplayName(request.table)
         })
       case 'drop-table':
         return isRedis
           ? t('redis.confirmDeleteKey', { key: request.table })
-          : t('sidebar.confirm.dropTable', { database: request.database, table: request.table })
+          : t('sidebar.confirm.dropTable', { database: request.database, table: tableDisplayName(request.table) })
       case 'drop-database':
         return t('sidebar.confirm.dropDatabase', { database: request.database })
       case 'delete-connection':

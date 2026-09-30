@@ -129,6 +129,20 @@ async fn write_table(
       return Err("Cross-engine CREATE SQL export is not supported; export data only".into());
     }
     validate_create_sql(&schema.create_sql)?;
+    if dialect == SqlDialect::Postgres {
+      if let Some((namespace, _)) = crate::drivers::dialect::scoped_pg_table(&req.table) {
+        // PostgreSQL checks database CREATE permission even when IF NOT EXISTS
+        // finds a schema. Existing namespaces must remain usable by schema-only
+        // writers. Quote the DO body as a literal so names cannot close a dollar tag.
+        let name_literal = dialect.literal(Some(&serde_json::Value::String(namespace.clone())));
+        let body = format!(
+          "BEGIN IF NOT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = {name_literal}) THEN CREATE SCHEMA IF NOT EXISTS {}; END IF; END;",
+          crate::drivers::dialect::quote_pg_ident(&namespace)
+        );
+        let body_literal = dialect.literal(Some(&serde_json::Value::String(body)));
+        write_text(writer, &format!("DO {body_literal};\n"))?;
+      }
+    }
     write_text(
       writer,
       &format!(
@@ -193,7 +207,9 @@ fn write_export_rows(
       writer,
       &format!(
         "INSERT INTO {} ({cols}){} VALUES\n",
-        dialect.quote_ident(&req.table),
+        if dialect == SqlDialect::Postgres && crate::drivers::dialect::scoped_pg_table(&req.table).is_some() {
+          crate::drivers::dialect::quote_pg_table("public", &req.table)
+        } else { dialect.quote_ident(&crate::drivers::dialect::pg_table_parts(&req.table).1) },
         if dialect == SqlDialect::Postgres {
           " OVERRIDING SYSTEM VALUE"
         } else {

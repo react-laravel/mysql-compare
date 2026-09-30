@@ -37,6 +37,8 @@ def main():
         with (work / 'setup.log').open('w') as log:
             try:
                 run([PG_BIN / 'initdb', '-D', pg_data, '-U', 'contract_test', '-A', 'trust', '--no-locale', '--encoding=UTF8'], stdout=log, stderr=log)
+                hba = pg_data / 'pg_hba.conf'
+                hba.write_text('host all browse_user,browse_other_user 127.0.0.1/32 scram-sha-256\n' + hba.read_text())
                 run([PG_BIN / 'pg_ctl', '-D', pg_data, '-l', work / 'postgres.log', '-o', f'-p {pg_port} -h 127.0.0.1 -k {work}', '-w', 'start'], stdout=log, stderr=log)
                 pg_started = True
                 run([PG_BIN / 'createdb', '-h', '127.0.0.1', '-p', pg_port, '-U', 'contract_test', 'contracts'])

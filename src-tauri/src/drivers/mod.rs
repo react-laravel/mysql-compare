@@ -1,4 +1,5 @@
 pub mod dialect;
+pub mod connection_options;
 pub mod mysql;
 pub mod pg;
 pub mod redis;
@@ -125,13 +126,29 @@ impl EngineDriver {
     local_port: Option<u16>,
   ) -> Result<String, String> {
     let driver = Self::open(conn.clone(), local_port).await?;
-    let msg = match &driver {
-      Self::Mysql(d) => d.test().await?,
-      Self::Postgres(d) => d.test().await?,
-      Self::Redis(d) => d.test().await?,
+    let result = match &driver {
+      Self::Mysql(d) => d.test().await,
+      Self::Postgres(d) => d.test().await,
+      Self::Redis(d) => d.test().await,
     };
     driver.close().await;
-    Ok(msg)
+    result
+  }
+
+  pub async fn test_database_connection(
+    conn: &ConnectionConfig,
+    local_port: Option<u16>,
+  ) -> Result<String, String> {
+    let database = conn.database.as_deref().filter(|name| !name.is_empty())
+      .ok_or_else(|| "Database is required".to_string())?;
+    let driver = Self::open(conn.clone(), local_port).await?;
+    let result = match &driver {
+      Self::Mysql(d) => d.test_database(database).await,
+      Self::Postgres(d) => d.test().await,
+      Self::Redis(d) => d.test().await,
+    };
+    driver.close().await;
+    result
   }
 
   pub async fn close(&self) {
@@ -147,6 +164,25 @@ impl EngineDriver {
       Self::Mysql(d) => d.list_databases().await,
       Self::Postgres(d) => d.list_databases().await,
       Self::Redis(d) => d.list_databases().await,
+    }
+  }
+
+  pub async fn discover_databases(&self) -> Result<Vec<String>, String> {
+    match self {
+      Self::Mysql(d) => d.discover_databases().await,
+      Self::Postgres(d) => d.discover_databases().await,
+      Self::Redis(d) => d.list_databases().await,
+    }
+  }
+
+  pub async fn list_schemas(&self, database: &str) -> Result<Vec<String>, String> {
+    match self { Self::Postgres(d) => d.list_schemas(database).await, _ => Ok(Vec::new()) }
+  }
+
+  pub async fn list_tables_in_schema(&self, database: &str, schema: Option<&str>) -> Result<Vec<String>, String> {
+    match self {
+      Self::Postgres(d) => match schema { Some(schema) => d.list_tables_in_schema(database, schema).await, None => d.list_tables(database).await },
+      _ => self.list_tables(database).await,
     }
   }
 

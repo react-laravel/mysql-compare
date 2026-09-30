@@ -1,3 +1,4 @@
+import { tableDisplayName } from '../../../shared/table-reference'
 // 同步面板：选择策略 + 表 → 生成 SQL 预览 → 执行（带进度日志）
 //
 // Blueprint §2.5 / §3.5:
@@ -81,13 +82,13 @@ export function SyncPanel({
       if (!jobId || event.taskId !== jobId) return
       setLogs((current) => [
         ...current.slice(-499),
-        `[${event.level}] ${event.table} · ${event.step} ${event.done}/${event.total} ${event.message || ''}`
+        `[${event.level}] ${tableDisplayName(event.table)} · ${event.step} ${event.done}/${event.total} ${event.message || ''}`
       ])
-      setProgress({ done: event.done, total: event.total > 0 ? event.total : undefined, step: `${event.table} · ${event.step}` })
+      setProgress({ done: event.done, total: event.total > 0 ? event.total : undefined, step: `${tableDisplayName(event.table)} · ${event.step}` })
       if (jobId && event.step !== 'progress') {
         jobs.update(jobId, {
           count: { done: event.done, total: event.total },
-          detail: `${event.table} · ${event.step}`
+          detail: `${tableDisplayName(event.table)} · ${event.step}`
         })
       }
     })
@@ -238,7 +239,7 @@ export function SyncPanel({
                       disabled={running}
                       checked={selected.has(table)}
                       onChange={() => toggle(table)}
-                      label={<span className="font-mono text-xs">{table}</span>}
+                      label={<span className="font-mono text-xs">{tableDisplayName(table)}</span>}
                     />
                   </li>
                 ))}
@@ -324,7 +325,7 @@ export function SyncPanel({
           >
             <pre className="max-h-64 overflow-auto rounded-md border border-border bg-inset p-2 font-mono text-xs whitespace-pre-wrap">
               {plan.steps
-                .map((step) => `-- [${step.table}] ${step.description}\n${step.sqls.join('\n')}`)
+                .map((step) => `-- [${tableDisplayName(step.table)}] ${step.description}\n${step.sqls.join('\n')}`)
                 .join('\n\n')}
             </pre>
           </Panel>

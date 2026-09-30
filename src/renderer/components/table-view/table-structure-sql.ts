@@ -1,3 +1,4 @@
+import { tableReference } from '../../../shared/table-reference'
 import type { DbEngine } from '../../../shared/types'
 import type { ColumnDraft, IndexDraft } from './table-structure-types'
 
@@ -35,9 +36,9 @@ export function buildDropIndexSQL(
 ): string {
   if (engine === 'postgres') {
     if (indexName === 'PRIMARY') {
-      return `ALTER TABLE ${quoteTable('postgres', database, table)} DROP CONSTRAINT ${quoteIdent('postgres', `${table}_pkey`)};`
+      return `ALTER TABLE ${quoteTable('postgres', database, table)} DROP CONSTRAINT ${quoteIdent('postgres', `${tableReference(table).name}_pkey`)};`
     }
-    return `DROP INDEX IF EXISTS ${quoteIdent('postgres', indexName)};`
+    return `DROP INDEX IF EXISTS ${quotePostgresIndex(table, indexName)};`
   }
   return `ALTER TABLE ${quoteTable('mysql', database, table)} ${buildMySQLDropIndexClause(indexName)};`
 }
@@ -116,9 +117,9 @@ function buildPostgresIndexSQL(database: string, table: string, draft: IndexDraf
 
   if (draft.mode === 'edit') {
     if (draft.originalName === 'PRIMARY' || draft.primary) {
-      statements.push(`ALTER TABLE ${target} DROP CONSTRAINT ${quoteIdent('postgres', `${table}_pkey`)}`)
+      statements.push(`ALTER TABLE ${target} DROP CONSTRAINT ${quoteIdent('postgres', `${tableReference(table).name}_pkey`)}`)
     } else if (draft.originalName) {
-      statements.push(`DROP INDEX IF EXISTS ${quoteIdent('postgres', draft.originalName)}`)
+      statements.push(`DROP INDEX IF EXISTS ${quotePostgresIndex(table, draft.originalName)}`)
     }
   }
 
@@ -179,9 +180,12 @@ function quoteIdent(engine: SqlEngine, name: string): string {
 }
 
 function quoteTable(engine: SqlEngine, database: string, table: string): string {
-  // PG MVP pins UI "database" to the real database; table ops always use public schema.
-  const schema = engine === 'postgres' ? 'public' : database
-  return `${quoteIdent(engine, schema)}.${quoteIdent(engine, table)}`
+  const ref = engine === 'postgres' ? tableReference(table) : { schema: database, name: table }
+  return `${quoteIdent(engine, ref.schema)}.${quoteIdent(engine, ref.name)}`
+}
+
+function quotePostgresIndex(table: string, index: string): string {
+  return `${quoteIdent('postgres', tableReference(table).schema)}.${quoteIdent('postgres', index)}`
 }
 
 function quoteString(value: string): string {

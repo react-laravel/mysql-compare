@@ -1,3 +1,4 @@
+import { tableDisplayName } from '../../../shared/table-reference'
 // 对比结果卡片中三个 Tab 的内容子组件：Tables / Status / Schema。
 // 拆出来主要是把 DiffPanel.tsx 的 JSX 体积压下去，逻辑全部由父组件传入。
 //
@@ -295,7 +296,7 @@ export function SchemaTabContent({
             padded={false}
             header={
               <span className="flex min-w-0 flex-wrap items-center gap-2">
-                <span className="truncate font-mono">{td.table}</span>
+                <span className="truncate font-mono">{tableDisplayName(td.table)}</span>
                 <KindBadge kind={td.kind} />
                 <span className="text-2xs font-normal text-fg-muted">
                   {t('diff.status.columnDiffCount', { count: td.columnDiffs.length })} ·{' '}

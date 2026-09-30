@@ -1,3 +1,4 @@
+import { tableDisplayName } from '../../shared/table-reference'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { open, save } from '@tauri-apps/plugin-dialog'
@@ -110,6 +111,8 @@ export function createTauriApi(): AppAPI {
     },
     connection: {
       list: () => wrap(() => invoke<IPCResult<SafeConnection[]>>('connection_list')),
+      organize: (items) => wrap(() => invoke<IPCResult<SafeConnection[]>>('connection_organize', { items })),
+      updateDatabaseBrowsing: (id, options) => wrap(() => invoke<IPCResult<SafeConnection>>('connection_update_database_browsing', { id, ...options })),
       upsert: (conn: ConnectionConfig) =>
         wrap(() => invoke<IPCResult<SafeConnection>>('connection_upsert', { conn })),
       remove: (id: string) => wrap(() => invoke<IPCResult<void>>('connection_remove', { id })),
@@ -134,14 +137,16 @@ export function createTauriApi(): AppAPI {
         wrap(() => invoke<IPCResult<{ message: string }>>('connection_test', { conn }))
     },
     db: {
+      discoverDatabases: (connectionId) => wrap(() => invoke<IPCResult<string[]>>('db_discover_databases', { connectionId })),
+      listSchemas: (connectionId, database) => wrap(() => invoke<IPCResult<string[]>>('db_list_schemas', { connectionId, database })),
       listDatabases: (connectionId: string) =>
         wrap(() => invoke<IPCResult<string[]>>('db_list_databases', { connectionId })),
       getDatabaseInfo: (connectionId: string, database: string) =>
         wrap(() =>
           invoke<IPCResult<DatabaseInfo>>('db_get_database_info', { connectionId, database })
         ),
-      listTables: (connectionId: string, database: string) =>
-        wrap(() => invoke<IPCResult<string[]>>('db_list_tables', { connectionId, database })),
+      listTables: (connectionId: string, database: string, schema?: string) =>
+        wrap(() => invoke<IPCResult<string[]>>('db_list_tables', { connectionId, database, schema })),
       queryRows: (req: QueryRowsRequest) =>
         wrap(() => invoke<IPCResult<QueryRowsResult>>('db_query_rows', { req })),
       insertRow: (req: InsertRowRequest) => wrap(() => invoke<IPCResult>('db_insert_row', { req })),
@@ -164,7 +169,7 @@ export function createTauriApi(): AppAPI {
         wrap(() => invoke<IPCResult<void>>('db_truncate_table', { req })),
       exportTable: async (req: ExportTableRequest) => {
         const filePath = await save({
-          defaultPath: `${req.table}.${req.format}`
+          defaultPath: `${tableDisplayName(req.table).replace(/[\\/]/g, "_")}.${req.format}`
         })
         if (!filePath) {
           return { ok: true, data: { canceled: true, rowsExported: 0 } as ExportTableResult }

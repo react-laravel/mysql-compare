@@ -1,5 +1,6 @@
 import type {
   ConnectionConfig,
+  ConnectionOrganizationItem,
   CopyTableRequest,
   DatabaseCredentialConfig,
   DatabaseDiff,
@@ -65,6 +66,8 @@ export interface AppAPI {
   readonly runtime: AppRuntimeInfo
   readonly connection: {
     list: () => Promise<IPCResult<SafeConnection[]>>
+    organize: (items: ConnectionOrganizationItem[]) => Promise<IPCResult<SafeConnection[]>>
+    updateDatabaseBrowsing: (id: string, options: { database?: string; showAll?: boolean; credential?: DatabaseCredentialConfig }) => Promise<IPCResult<SafeConnection>>
     upsert: (conn: ConnectionConfig) => Promise<IPCResult<SafeConnection>>
     remove: (id: string) => Promise<IPCResult<void>>
     close: (id: string) => Promise<IPCResult<void>>
@@ -82,8 +85,10 @@ export interface AppAPI {
   }
   readonly db: {
     listDatabases: (connectionId: string) => Promise<IPCResult<string[]>>
+    discoverDatabases: (connectionId: string) => Promise<IPCResult<string[]>>
+    listSchemas: (connectionId: string, database: string) => Promise<IPCResult<string[]>>
     getDatabaseInfo: (connectionId: string, database: string) => Promise<IPCResult<DatabaseInfo>>
-    listTables: (connectionId: string, database: string) => Promise<IPCResult<string[]>>
+    listTables: (connectionId: string, database: string, schema?: string) => Promise<IPCResult<string[]>>
     queryRows: (req: QueryRowsRequest) => Promise<IPCResult<QueryRowsResult>>
     insertRow: (req: InsertRowRequest) => Promise<IPCResult>
     updateRow: (req: UpdateRowRequest) => Promise<IPCResult>

@@ -110,4 +110,21 @@ impl AppState {
     }
     self.tunnels.close(connection_id);
   }
+
+  /// Future requests use the saved options; in-flight operations keep their
+  /// snapshot without tearing down a shared SSH tunnel.
+  pub fn invalidate_driver(&self, connection_id: &str) {
+    self.drivers.lock().remove(connection_id);
+  }
+
+  pub async fn test_database_connection(&self, app: &AppHandle, conn: &ConnectionConfig) -> Result<String, String> {
+    let mut resolved = conn.clone();
+    self.connections.resolve_ssh_source(app, &mut resolved)?;
+    let test_id = format!("{}::test::{}", resolved.id, uuid::Uuid::new_v4());
+    resolved.id = test_id.clone();
+    let port = if resolved.use_ssh { Some(self.tunnels.ensure(app, &self.host_keys, &resolved)?) } else { None };
+    let result = EngineDriver::test_database_connection(&resolved, port).await;
+    self.tunnels.close(&test_id);
+    result
+  }
 }

@@ -109,10 +109,15 @@ export const TreeRow = React.forwardRef<HTMLDivElement, TreeRowProps>(function T
       tabIndex={tabIndex}
       title={title}
       data-focus-inset
-      onKeyDown={onKeyDown}
+      onKeyDown={(event) => {
+        // React events from a portalled row menu still bubble through this
+        // component, but must not activate or navigate the tree underneath.
+        if (event.currentTarget.contains(event.target as Node)) onKeyDown?.(event)
+      }}
       onFocus={onFocus}
       onContextMenu={onContextMenu}
       onClick={(event) => {
+        if (!event.currentTarget.contains(event.target as Node)) return
         if (editing) return
         if ((event.target as HTMLElement).closest('[data-tree-action]')) return
         onActivate?.()

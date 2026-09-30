@@ -1,4 +1,10 @@
 //! These tests only run against disposable servers created by scripts/test-data-contracts.py.
+#[path = "pg_schema_contract_tests.rs"]
+mod pg_schema_contract_tests;
+
+#[path = "mysql_connection_tests.rs"]
+mod mysql_connection_tests;
+
 use crate::{drivers::EngineDriver, export_import, types::*};
 use serde_json::json;
 use std::sync::Arc;
@@ -285,4 +291,65 @@ async fn mysql_data_contracts() {
 #[ignore = "requires disposable PostgreSQL; run scripts/test-data-contracts.py"]
 async fn postgres_data_contracts() {
   contracts("postgres", "MYSQL_COMPARE_PG_TEST_PORT").await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL from scripts/test-data-contracts.py"]
+async fn postgres_browsing_data_contracts() {
+  use crate::drivers::dialect::{pg_table_key, quote_pg_table};
+  let port: u16 = std::env::var("MYSQL_COMPARE_PG_TEST_PORT").unwrap().parse().unwrap();
+  let admin_config: ConnectionConfig = serde_json::from_value(json!({ "id":"browse-admin", "engine":"postgres", "name":"disposable", "host":"127.0.0.1", "port":port, "username":"contract_test", "database":"contracts", "createdAt":0, "updatedAt":0 })).unwrap();
+  let admin = EngineDriver::open(admin_config.clone(), None).await.unwrap();
+  admin.execute_sql("SET password_encryption = 'scram-sha-256'; CREATE ROLE browse_user LOGIN PASSWORD 'browse-test-password'; CREATE ROLE browse_other_user LOGIN PASSWORD 'other-test-password'", Some("contracts")).await.unwrap();
+  for database in ["browse_main", "browse_other"] {
+    admin.execute_sql(&format!("CREATE DATABASE {database}"), Some("contracts")).await.unwrap();
+  }
+  admin.execute_sql("CREATE TABLE same_name (id INTEGER PRIMARY KEY, label TEXT); INSERT INTO same_name VALUES (1, 'public'); CREATE SCHEMA \"sales.v2\"; CREATE TABLE \"sales.v2\".same_name (id INTEGER PRIMARY KEY, label TEXT); INSERT INTO \"sales.v2\".same_name VALUES (1, 'private'); GRANT ALL ON public.same_name, \"sales.v2\".same_name TO browse_user; GRANT USAGE, CREATE ON SCHEMA \"sales.v2\" TO browse_user", Some("browse_main")).await.unwrap();
+  admin.execute_sql("CREATE TABLE confidential (id INTEGER PRIMARY KEY); INSERT INTO confidential VALUES (7); GRANT SELECT ON confidential TO browse_other_user", Some("browse_other")).await.unwrap();
+  let mut base = admin_config.clone();
+  base.username = "browse_user".into();
+  base.password = Some("browse-test-password".into());
+  base.database = Some("browse_main".into());
+  let driver = Arc::new(EngineDriver::open(base.clone(), None).await.unwrap());
+  assert_eq!(driver.list_databases().await.unwrap(), ["browse_main"]);
+  assert!(driver.discover_databases().await.unwrap().contains(&"browse_other".into()));
+  assert!(driver.list_tables("browse_other").await.unwrap().is_empty());
+  assert!(driver.list_schemas("browse_main").await.unwrap().contains(&"sales.v2".into()));
+  let scoped = pg_table_key("sales.v2", "same_name");
+  assert_eq!(driver.list_tables_in_schema("browse_main", Some("sales.v2")).await.unwrap(), [scoped.clone()]);
+  let request: QueryRowsRequest = serde_json::from_value(json!({ "connectionId":"browse", "database":"browse_main", "table":scoped, "page":1, "pageSize":10 })).unwrap();
+  assert_eq!(driver.query_rows(&request).await.unwrap().rows[0]["label"], "private");
+  assert_eq!(driver.query_rows(&QueryRowsRequest { table:"same_name".into(), ..request.clone() }).await.unwrap().rows[0]["label"], "public");
+  driver.update_row(&serde_json::from_value(json!({ "connectionId":"browse", "database":"browse_main", "table":scoped, "pkValues": {"id":1}, "changes":{"label":"changed-private"} })).unwrap()).await.unwrap();
+  assert_eq!(driver.query_rows(&request).await.unwrap().rows[0]["label"], "changed-private");
+  assert_eq!(driver.query_rows(&QueryRowsRequest { table:"same_name".into(), ..request.clone() }).await.unwrap().rows[0]["label"], "public");
+  let copy = driver.copy_table(&CopyTableRequest { connection_id:"browse".into(), database:"browse_main".into(), table:scoped.clone(), target_table:"copy".into() }).await.unwrap();
+  assert_eq!(copy, pg_table_key("sales.v2", "copy"));
+  let renamed = driver.rename_table(&RenameTableRequest { connection_id:"browse".into(), database:"browse_main".into(), table:copy, new_table:"renamed".into() }).await.unwrap();
+  assert_eq!(renamed, pg_table_key("sales.v2", "renamed"));
+  let path = std::env::temp_dir().join(format!("scoped-export-{}.sql", uuid::Uuid::new_v4()));
+  let export: ExportTableRequest = serde_json::from_value(json!({ "connectionId":"browse", "database":"browse_main", "table":scoped, "format":"sql", "scope":"all", "includeCreateTable":false })).unwrap();
+  export_import::export_table(driver.clone(), &export, path.to_str().unwrap()).await.unwrap();
+  let sql = std::fs::read_to_string(&path).unwrap();
+  assert!(sql.contains(&format!("INSERT INTO {}", quote_pg_table("public", &scoped))));
+  assert!(!sql.contains('\0'));
+  std::fs::remove_file(path).unwrap();
+
+  let denied = QueryRowsRequest { database:"browse_other".into(), table:"confidential".into(), ..request.clone() };
+  assert!(driver.query_rows(&denied).await.unwrap_err().contains("permission denied"));
+  base.databases = Some(vec!["browse_other".into()]);
+  base.database_credentials = Some(std::collections::HashMap::from([("browse_other".into(), DatabaseCredentialConfig { username:Some("browse_other_user".into()), password:Some("other-test-password".into()) })]));
+  let alternate = EngineDriver::open(base.clone(), None).await.unwrap();
+  assert_eq!(alternate.query_rows(&denied).await.unwrap().rows[0]["id"], 7);
+  let user = alternate.execute_sql("SELECT current_user AS username, current_database() AS database", Some("browse_other")).await.unwrap();
+  assert_eq!(user["rows"][0]["username"], "browse_other_user");
+  assert_eq!(user["rows"][0]["database"], "browse_other");
+  let mut bad_password = base.clone();
+  bad_password.password = Some("incorrect-test-password".into());
+  assert!(EngineDriver::test_connection(&bad_password, None).await.unwrap_err().contains("password authentication failed"));
+  base.database = Some("database_that_does_not_exist".into());
+  assert!(EngineDriver::test_connection(&base, None).await.is_err());
+  driver.close().await;
+  alternate.close().await;
+  admin.close().await;
 }

@@ -45,10 +45,11 @@ impl MysqlDriver {
 
   fn url_for_db(&self, database: Option<&str>) -> String {
     let (host, port) = self.host_port();
-    let user = urlencoding(&self.connection.username);
-    let pass = urlencoding(self.connection.password.as_deref().unwrap_or(""));
+    let (username, password) = super::connection_options::credentials(&self.connection, database.unwrap_or(""));
+    let user = urlencoding(username);
+    let pass = urlencoding(password);
     let db = database.unwrap_or("");
-    format!("mysql://{user}:{pass}@{host}:{port}/{db}")
+    format!("mysql://{user}:{pass}@{host}:{port}/{}", urlencoding(db))
   }
 
   async fn pool(&self, database: &str) -> Result<MySqlPool, String> {
@@ -86,7 +87,17 @@ impl MysqlDriver {
   }
 
   pub async fn test(&self) -> Result<String, String> {
-    let pool = self.server_pool().await?;
+    // The connection dialog probes the server account, independently of the
+    // optional default database and any per-database credentials.
+    Self::test_pool(self.server_pool().await?).await
+  }
+
+  pub async fn test_database(&self, database: &str) -> Result<String, String> {
+    if database.is_empty() { return Err("Database is required".into()); }
+    Self::test_pool(self.pool(database).await?).await
+  }
+
+  async fn test_pool(pool: MySqlPool) -> Result<String, String> {
     let row: (String,) = sqlx::query_as("SELECT VERSION()")
       .fetch_one(&pool)
       .await
@@ -95,6 +106,16 @@ impl MysqlDriver {
   }
 
   pub async fn list_databases(&self) -> Result<Vec<String>, String> {
+    let mut configured = super::connection_options::configured_databases(&self.connection);
+    if super::connection_options::show_all_databases(&self.connection) {
+      for database in self.discover_databases().await? {
+        if !configured.contains(&database) { configured.push(database); }
+      }
+    }
+    Ok(configured)
+  }
+
+  pub async fn discover_databases(&self) -> Result<Vec<String>, String> {
     let pool = self.server_pool().await?;
     let rows = sqlx::query("SHOW DATABASES")
       .fetch_all(&pool)
@@ -112,7 +133,8 @@ impl MysqlDriver {
 
   pub async fn get_database_info(&self, database: &str) -> Result<DatabaseInfo, String> {
     assert_ident(database, "database")?;
-    let pool = self.server_pool().await?;
+    // Metadata must use the selected database's account, just like table reads.
+    let pool = self.pool(database).await?;
     let meta = sqlx::query(
       "SELECT SCHEMA_NAME, DEFAULT_CHARACTER_SET_NAME, DEFAULT_COLLATION_NAME
        FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = ? LIMIT 1",

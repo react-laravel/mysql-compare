@@ -1,5 +1,6 @@
 // 纯展示用的格式化工具，从 DiffPanel.tsx 抽出，便于复用与单元测试。
 import type { TableDataDiff } from '../../../shared/types'
+import { tableDisplayName } from '../../../shared/table-reference'
 import type { Translator } from '@renderer/i18n'
 
 /**
@@ -19,7 +20,7 @@ export function formatComparePhase(
   if (phase === 'comparing') {
     const vars = { done: completedSharedTableCount, total: sharedTableCount }
     return pendingSharedTable
-      ? t('diff.phase.comparingPending', { ...vars, pending: pendingSharedTable })
+      ? t('diff.phase.comparingPending', { ...vars, pending: tableDisplayName(pendingSharedTable) })
       : t('diff.phase.comparing', vars)
   }
   if (phase === 'cancelled') {

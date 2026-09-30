@@ -1,3 +1,4 @@
+import { tableDisplayName } from '../../../shared/table-reference'
 // The table compare's view toolbar (blueprint §3.6).
 //
 // Before: a 4-button strip plus a swatch legend plus an amber no-primary-key
@@ -143,7 +144,7 @@ export function TableCompareToolbar({
   return (
     <Toolbar
       icon={ArrowRightLeft}
-      title={t('diff.compareView.title', { table })}
+      title={t('diff.compareView.title', { table: tableDisplayName(table) })}
       subtitle={`${sourceLabel} ↔ ${targetLabel}`}
       progress={progress}
       overflowLabel={t('common.moreActions')}

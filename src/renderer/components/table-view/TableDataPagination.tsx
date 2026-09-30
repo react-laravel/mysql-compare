@@ -6,6 +6,7 @@
 // there — the table tab (chunk 7) and the table compare (chunk 10) — so this
 // component no longer knows about `PAGE_SIZE_OPTIONS` at all.
 import { ChevronLeft, ChevronRight } from 'lucide-react'
+import { useRef } from 'react'
 import { IconButton } from '@renderer/components/ui/icon-button'
 import { Input } from '@renderer/components/ui/input'
 import { formatNumber } from '@renderer/lib/format'
@@ -13,6 +14,7 @@ import { useI18n } from '@renderer/i18n'
 
 interface TableDataPaginationProps {
   totalRows: number
+  pageSize?: number
   page: number
   totalPages: number
   pageDraft: string
@@ -25,6 +27,7 @@ interface TableDataPaginationProps {
 
 export function TableDataPagination({
   totalRows,
+  pageSize,
   page,
   totalPages,
   pageDraft,
@@ -35,11 +38,16 @@ export function TableDataPagination({
   onResetPageDraft
 }: TableDataPaginationProps) {
   const { t } = useI18n()
+  const skipBlurSubmit = useRef(false)
 
   return (
     <div className="flex h-statusbar shrink-0 items-center justify-between gap-2 border-t border-border bg-surface px-2 text-xs text-fg-muted">
       <span className="truncate">
-        {t('tableData.rowsPagination', {
+        {pageSize ? t('tableData.rowRange', {
+          start: formatNumber(totalRows === 0 ? 0 : (page - 1) * pageSize + 1),
+          end: formatNumber(Math.min(page * pageSize, totalRows)),
+          total: formatNumber(totalRows)
+        }) : t('tableData.rowsPagination', {
           total: formatNumber(totalRows),
           page,
           totalPages
@@ -62,15 +70,26 @@ export function TableDataPagination({
           size="sm"
           min={1}
           max={totalPages}
+          step={1}
           value={pageDraft}
           onChange={(event) => onPageDraftChange(event.target.value)}
-          onBlur={onSubmitPageDraft}
+          onFocus={() => { skipBlurSubmit.current = false }}
+          onBlur={() => {
+            if (!skipBlurSubmit.current) onSubmitPageDraft()
+            skipBlurSubmit.current = false
+          }}
           onKeyDown={(event) => {
             if (event.key === 'Enter') {
+              event.preventDefault()
+              event.stopPropagation()
+              skipBlurSubmit.current = true
               onSubmitPageDraft()
               event.currentTarget.blur()
             }
             if (event.key === 'Escape') {
+              event.preventDefault()
+              event.stopPropagation()
+              skipBlurSubmit.current = true
               onResetPageDraft()
               event.currentTarget.blur()
             }

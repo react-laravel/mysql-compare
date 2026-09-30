@@ -37,7 +37,7 @@ export interface Column<Row> {
   truncate?: boolean
   /** per-column cell overrides (cell wrapping in the data grid) */
   cellClassName?: string
-  /** per-column header overrides (the data grid's two-line column headers) */
+  /** per-column header overrides (the data grid's stacked column headers) */
   headerClassName?: string
   /** plain text used for the cell's `title` tooltip */
   title?: (row: Row) => string | undefined

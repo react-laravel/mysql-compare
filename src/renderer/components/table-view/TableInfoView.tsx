@@ -1,3 +1,4 @@
+import { tableDisplayName } from '../../../shared/table-reference'
 // 表信息视图：统计、备注、CREATE TABLE 与危险区。
 //
 // Blueprint §3.3: `StatTile` grid + `Panel`s, and "Drop table…" opens the
@@ -17,18 +18,19 @@ import { Input } from '@renderer/components/ui/input'
 import { Panel } from '@renderer/components/ui/panel'
 import { Skeleton } from '@renderer/components/ui/skeleton'
 import { StatTile } from '@renderer/components/ui/stat-tile'
-import { Toolbar } from '@renderer/components/ui/toolbar'
+import { TableViewToolbar } from './TableViewToolbar'
 import { formatBytes, formatNumber } from '@renderer/lib/format'
 import { useAppAction } from '@renderer/lib/app-actions'
 import { useConnectionStore } from '@renderer/store/connection-store'
 import { useUIStore } from '@renderer/store/ui-store'
 import { useI18n } from '@renderer/i18n'
-import type { TableSchema } from '../../../shared/types'
+import type { DbEngine, TableSchema } from '../../../shared/types'
 
 interface Props {
   connectionId: string
   database: string
   table: string
+  engine?: DbEngine
   readOnly?: boolean
   /** the Data / Structure / Info pill `Tabs` owned by the workspace */
   tabs?: ReactNode
@@ -39,6 +41,7 @@ export function TableInfoView({
   connectionId,
   database,
   table,
+  engine,
   readOnly = false,
   tabs,
   active = true
@@ -128,10 +131,12 @@ export function TableInfoView({
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
-      <Toolbar
-        title={<span className="font-mono">{table}</span>}
-        subtitle={[connection?.name, database].filter(Boolean).join(' / ')}
-        center={tabs}
+      <TableViewToolbar
+        table={table}
+        database={database}
+        connectionName={connection?.name}
+        engine={engine ?? connection?.engine}
+        tabs={tabs}
         progress={loading ? { status: 'running', label: t('common.loading') } : null}
         overflowLabel={t('common.moreActions')}
         overflow={[
@@ -249,7 +254,7 @@ export function TableInfoView({
                 className="mt-3"
                 tone="danger"
                 header={t('tableInfo.dangerZone')}
-                description={t('tableInfo.dropTableDescription', { database, table })}
+                description={t('tableInfo.dropTableDescription', { database, table: tableDisplayName(table) })}
                 headerActions={
                   <Button
                     variant="danger"
@@ -277,7 +282,7 @@ export function TableInfoView({
             if (!open && !busy) setEditing(false)
           }}
           title={t('tableInfo.editTableComment')}
-          description={`${database}.${table}`}
+          description={`${database}.${tableDisplayName(table)}`}
           size="lg"
           footer={
             <>

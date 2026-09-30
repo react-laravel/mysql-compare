@@ -7,6 +7,7 @@
 // none were open (`Workspace.tsx:154`) — open tabs are now just the first
 // section of a palette that can also open things.
 import { useMemo } from 'react'
+import { tableDisplayName } from '../../../shared/table-reference'
 import {
   Columns3,
   Download,
@@ -100,6 +101,20 @@ export function useCommands(): Command[] {
         perform: () => shell.openSettings()
       },
       {
+        id: 'connections.organize',
+        group: 'navigate',
+        title: t('sidebar.organization.title'),
+        keywords: 'connections organize sort group host 连接 排序 分组 主机',
+        icon: Folder,
+        perform: sidebarActions.organizeConnections
+      },
+      ...connections.filter((connection) => connection.engine !== 'redis').map<Command>((connection) => ({
+        id: `connections.add-database.${connection.id}`, group: 'navigate',
+        title: `${t('sidebar.browsing.addDatabase')} · ${connection.name}`,
+        keywords: 'database add 数据库 添加', icon: Plus,
+        perform: () => sidebarActions.openAddDatabase(connection)
+      })),
+      {
         id: 'nav.shortcuts',
         group: 'navigate',
         title: t('palette.commands.openShortcuts'),
@@ -182,7 +197,7 @@ export function useCommands(): Command[] {
         id: 'action.compare-table',
         group: 'action',
         title: t('palette.commands.compareTableWith', {
-          table: compareTable?.table ?? t('common.data')
+          table: compareTable ? tableDisplayName(compareTable.table) : t('common.data')
         }),
         keywords: 'compare table side by side 对比 表',
         icon: GitCompareArrows,

@@ -15,7 +15,39 @@ pub fn quote_pg_ident(name: &str) -> String {
 }
 
 pub fn quote_pg_table(schema: &str, table: &str) -> String {
+  if let Some((schema, name)) = scoped_pg_table(table) {
+    return format!("{}.{}", quote_pg_ident(&schema), quote_pg_ident(&name));
+  }
   format!("{}.{}", quote_pg_ident(schema), quote_pg_ident(table))
+}
+
+pub fn scoped_pg_table(table: &str) -> Option<(String, String)> {
+  let parts: (String, String) = serde_json::from_str(table.strip_prefix('\0')?).ok()?;
+  if parts.0.is_empty() || parts.1.is_empty() || parts.0.contains('\0') || parts.1.contains('\0') { return None; }
+  Some(parts)
+}
+
+pub fn pg_table_parts(table: &str) -> (String, String) {
+  scoped_pg_table(table).unwrap_or_else(|| ("public".into(), table.into()))
+}
+
+pub fn pg_table_key(schema: &str, table: &str) -> String {
+  if schema == "public" { table.into() } else { format!("\0{}", serde_json::to_string(&(schema, table)).unwrap()) }
+}
+
+pub fn pg_table_display_name(table: &str) -> String {
+  match scoped_pg_table(table) {
+    Some((schema, name)) if schema != "public" => format!("{schema}.{name}"),
+    Some((_, name)) => name,
+    None => table.into(),
+  }
+}
+
+pub fn assert_pg_table(table: &str) -> Result<(), String> {
+  let (schema, name) = pg_table_parts(table);
+  if schema.is_empty() || name.is_empty() || schema.contains('\0') || name.contains('\0') {
+    Err("Invalid PostgreSQL table reference".into())
+  } else { Ok(()) }
 }
 
 pub fn assert_safe_where(where_sql: Option<&str>) -> Result<(), String> {
@@ -222,5 +254,16 @@ mod tests {
   fn composite_lookup_refuses_partial_keys() {
     let key = serde_json::from_value(json!({"id": 1})).unwrap();
     assert!(key_rows_filter(&[key], &["tenant".into(), "id".into()], SqlDialect::Mysql).is_err());
+  }
+
+  #[test]
+  fn scoped_table_keys_quote_each_identifier_without_ambiguity() {
+    let key = pg_table_key("sales.v2", "odd\".name");
+    assert_eq!(quote_pg_table("public", &key), "\"sales.v2\".\"odd\"\".name\"");
+    assert_eq!(pg_table_display_name(&key), "sales.v2.odd\".name");
+    assert_eq!(pg_table_display_name("a.b"), "a.b");
+    assert!(assert_pg_table(&key).is_ok());
+    assert!(assert_pg_table("\0invalid").is_err());
+    assert_eq!(quote_pg_table("public", "a.b"), "\"public\".\"a.b\"");
   }
 }

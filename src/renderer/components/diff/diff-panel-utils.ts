@@ -1,4 +1,5 @@
 import type { DatabaseDiff, TableDiff, TableRowComparison } from '../../../shared/types'
+import { tableDisplayName } from '../../../shared/table-reference'
 
 export const TABLE_COMPARE_CONCURRENCY_OPTIONS = [1, 5, 10, 20, 50] as const
 export const DEFAULT_TABLE_COMPARE_CONCURRENCY = 5
@@ -262,7 +263,7 @@ export function filterComparisonEntries(
 export function matchesTableSearchQuery(table: string, searchQuery: string): boolean {
   const normalizedQuery = searchQuery.trim().toLowerCase()
   if (!normalizedQuery) return true
-  return table.toLowerCase().includes(normalizedQuery)
+  return tableDisplayName(table).toLowerCase().includes(normalizedQuery)
 }
 
 function applyStatusFilter(
@@ -287,7 +288,7 @@ export function prioritizeComparisonEntries(entries: TableCompareEntry[]): Table
   return entries
     .map((entry, index) => ({ entry, index }))
     .sort((left, right) => {
-      const byName = left.entry.table.localeCompare(right.entry.table)
+      const byName = tableDisplayName(left.entry.table).localeCompare(tableDisplayName(right.entry.table))
       if (byName !== 0) return byName
       return left.index - right.index
     })

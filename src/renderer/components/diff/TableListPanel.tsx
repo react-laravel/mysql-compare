@@ -1,3 +1,4 @@
+import { tableDisplayName } from '../../../shared/table-reference'
 // Tables tab 中显示的源/目标表清单卡片，会撑满父容器高度。
 //
 // Blueprint §3.5: presence is a `DiffGutter` sign first and a `Badge` second —
@@ -54,7 +55,7 @@ export function TableListPanel({ title, tables, phase, getPresence }: TableListP
                   )}
                 >
                   <DiffGutter kind={kind} />
-                  <span className="min-w-0 flex-1 truncate font-mono">{table}</span>
+                  <span className="min-w-0 flex-1 truncate font-mono">{tableDisplayName(table)}</span>
                   {presence === 'source-only' && (
                     <Badge tone="accent" icon={Plus} className="shrink-0">
                       {t('diff.presentation.onlyInSource')}

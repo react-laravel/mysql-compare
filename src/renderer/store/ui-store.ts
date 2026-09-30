@@ -1,3 +1,4 @@
+import { tableDisplayName } from '../../shared/table-reference'
 // 用于在右侧主区域切换显示什么：表数据 / 表结构 / diff
 import { create, type StateCreator } from 'zustand'
 import { persist } from 'zustand/middleware'
@@ -256,8 +257,8 @@ function getTabTitle(view: WorkspaceView): string {
   if (view.kind === 'ssh-files') return `SSH · ${view.connectionName}`
   if (view.kind === 'ssh-terminal') return `Terminal · ${view.connectionName}`
   if (view.kind === 'ssh-editor') return view.path.split('/').filter(Boolean).pop() || view.path
-  if (view.kind === 'table-compare') return `Compare · ${view.table}`
-  if (view.kind === 'table') return `${view.database} / ${view.table}`
+  if (view.kind === 'table-compare') return `Compare · ${tableDisplayName(view.table)}`
+  if (view.kind === 'table') return `${view.database} / ${tableDisplayName(view.table)}`
   return ''
 }
 

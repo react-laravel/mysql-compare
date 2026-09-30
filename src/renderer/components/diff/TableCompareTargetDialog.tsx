@@ -1,3 +1,4 @@
+import { tableDisplayName } from '../../../shared/table-reference'
 // "Compare with…" — the second entrance to the table compare (blueprint §2.4).
 //
 // Before, the only way to reach a side-by-side table compare was
@@ -82,7 +83,7 @@ export function TableCompareTargetDialog() {
         if (!open) setRequest(null)
       }}
       size="md"
-      title={t('diff.compareTarget.title', { table: request.table })}
+      title={t('diff.compareTarget.title', { table: tableDisplayName(request.table) })}
       description={t('diff.compareTarget.description')}
       footer={
         <>
@@ -98,7 +99,7 @@ export function TableCompareTargetDialog() {
       <div className="flex flex-col gap-3">
         <Field label={t('diff.endpoint.source')}>
           <p className="rounded-md border border-border bg-inset p-2 font-mono text-xs break-all text-fg">
-            {request.connection.name} / {request.database} / {request.table}
+            {request.connection.name} / {request.database} / {tableDisplayName(request.table)}
           </p>
         </Field>
         <Field

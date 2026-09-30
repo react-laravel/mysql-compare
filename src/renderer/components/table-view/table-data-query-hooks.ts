@@ -23,7 +23,7 @@ interface UseTableDataQueryArgs {
 interface UseTableDataQueryResult {
   data: QueryRowsResult | null
   loading: boolean
-  /** drives `EmptyState variant="error"` with a Retry action (DS §7.5) */
+  /** Can coexist with data when a refresh of the same query fails. */
   error: Error | null
   page: number
   pageDraft: string
@@ -61,8 +61,12 @@ export function useTableDataQuery({
   tableReloadToken,
   showToast
 }: UseTableDataQueryArgs): UseTableDataQueryResult {
-  const [data, setData] = useState<QueryRowsResult | null>(null)
-  const [error, setError] = useState<Error | null>(null)
+  const [queryState, setQueryState] = useState<{
+    key: string
+    data: QueryRowsResult | null
+    error: Error | null
+    loading: boolean
+  } | null>(null)
   const [page, setPage] = useState(1)
   const [pageDraft, setPageDraft] = useState('1')
   // Settings supply the *initial* value only — changing the default must not
@@ -72,16 +76,34 @@ export function useTableDataQuery({
   const [where, setWhere] = useState('')
   const [appliedWhere, setAppliedWhere] = useState('')
   const [orderBy, setOrderBy] = useState<TableDataSortOrder>()
-  const [loading, setLoading] = useState(false)
   const [visibleColumns, setVisibleColumnsState] = useState<Set<string>>(new Set())
   const [wrapCells, setWrapCells] = useState(settings.wrapCells)
   const [density, setDensity] = useState<'compact' | 'comfortable'>(settings.density)
   const [reloadToken, setReloadToken] = useState(0)
-  const requestIdRef = useRef(0)
-  const orderByKey = orderBy ? `${orderBy.column}:${orderBy.dir}` : ''
+  const showToastRef = useRef(showToast)
+  const request = useMemo(() => ({
+    connectionId,
+    database,
+    table,
+    page,
+    pageSize,
+    orderBy,
+    where: appliedWhere || undefined
+  }), [connectionId, database, table, page, pageSize, orderBy, appliedWhere])
+  const queryKey = JSON.stringify(request)
+  // Rows belong to the exact query that loaded them, including its page. A new
+  // query must never expose those rows before its effect has started loading.
+  const currentQueryState = queryState?.key === queryKey ? queryState : null
+  const data = currentQueryState?.data ?? null
+  const error = currentQueryState?.error ?? null
+  const loading = currentQueryState?.loading ?? true
   const hiddenColumnsStorageKey = getHiddenColumnsStorageKey(connectionId, database, table)
 
   const refresh = () => setReloadToken((current) => current + 1)
+
+  useEffect(() => {
+    showToastRef.current = showToast
+  }, [showToast])
 
   useEffect(() => {
     setPage(1)
@@ -90,55 +112,38 @@ export function useTableDataQuery({
     setWhere('')
     setAppliedWhere('')
     setVisibleColumnsState(new Set())
-    setData(null)
-    setError(null)
   }, [connectionId, database, table])
 
   useEffect(() => {
-    const requestId = ++requestIdRef.current
-    setLoading(true)
+    let active = true
+    setQueryState((current) => ({
+      key: queryKey,
+      data: current?.key === queryKey ? current.data : null,
+      error: null,
+      loading: true
+    }))
 
     void (async () => {
       try {
-        const result = await unwrap<QueryRowsResult>(
-          api.db.queryRows({
-            connectionId,
-            database,
-            table,
-            page,
-            pageSize,
-            orderBy,
-            where: appliedWhere || undefined
-          })
-        )
-        if (requestId !== requestIdRef.current) return
-        setData(result)
-        setError(null)
+        const result = await unwrap<QueryRowsResult>(api.db.queryRows(request))
+        if (!active) return
+        setQueryState({ key: queryKey, data: result, error: null, loading: false })
       } catch (caught) {
-        if (requestId !== requestIdRef.current) return
-        setData(null)
-        // The view renders the failure itself; the toast is the "you navigated
-        // away" channel, so both stay.
-        setError(caught instanceof Error ? caught : new Error(String(caught)))
-        showToast((caught as Error).message, 'error')
-      } finally {
-        if (requestId === requestIdRef.current) {
-          setLoading(false)
-        }
+        if (!active) return
+        const error = caught instanceof Error ? caught : new Error(String(caught))
+        setQueryState((current) => ({
+          key: queryKey,
+          data: current?.key === queryKey ? current.data : null,
+          error,
+          loading: false
+        }))
+        showToastRef.current(error.message, 'error')
       }
     })()
-  }, [
-    appliedWhere,
-    connectionId,
-    database,
-    orderByKey,
-    page,
-    pageSize,
-    reloadToken,
-    showToast,
-    table,
-    tableReloadToken
-  ])
+    // The API has no cancellation channel. Ignore both results and toast side
+    // effects after a newer request or unmount makes this request irrelevant.
+    return () => { active = false }
+  }, [request, queryKey, reloadToken, tableReloadToken])
 
   const totalPages = useMemo(
     () => (data ? Math.max(1, Math.ceil(data.total / pageSize)) : 1),
@@ -146,10 +151,10 @@ export function useTableDataQuery({
   )
 
   useEffect(() => {
-    if (page > totalPages) {
+    if (data && page > totalPages) {
       setPage(totalPages)
     }
-  }, [page, totalPages])
+  }, [data, page, totalPages])
 
   useEffect(() => {
     setPageDraft(String(page))
@@ -179,26 +184,35 @@ export function useTableDataQuery({
   }, [data?.primaryKey, orderBy])
 
   const applyWhere = () => {
+    const normalized = normalizeWhereClauseInput(where)
     setPage(1)
-    setAppliedWhere(normalizeWhereClauseInput(where))
+    setPageDraft('1')
+    setWhere(normalized)
+    setAppliedWhere(normalized)
   }
 
   const clearWhere = () => {
     setWhere('')
     if (!appliedWhere) return
     setPage(1)
+    setPageDraft('1')
     setAppliedWhere('')
   }
 
   const goToPage = (nextPage: number) => {
+    if (!Number.isSafeInteger(nextPage)) {
+      setPageDraft(String(page))
+      return
+    }
     const safePage = Math.max(1, Math.min(totalPages, nextPage))
     setPage(safePage)
+    setPageDraft(String(safePage))
   }
 
   const submitPageDraft = () => {
-    const parsed = Number.parseInt(pageDraft, 10)
-    if (Number.isFinite(parsed)) {
-      goToPage(parsed)
+    const draft = pageDraft.trim()
+    if (/^[+-]?\d+$/.test(draft)) {
+      goToPage(Number(draft))
       return
     }
     setPageDraft(String(page))
@@ -207,10 +221,12 @@ export function useTableDataQuery({
   const onPageSizeChange = (nextPageSize: number) => {
     setPageSize(nextPageSize)
     setPage(1)
+    setPageDraft('1')
   }
 
   const onSort = (column: string) => {
     setPage(1)
+    setPageDraft('1')
     setOrderBy((current) => {
       if (!current || current.column !== column) return { column, dir: 'ASC' }
       if (current.dir === 'ASC') return { column, dir: 'DESC' }

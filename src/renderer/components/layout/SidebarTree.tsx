@@ -27,6 +27,9 @@ import { EmptyState } from '@renderer/components/ui/empty-state'
 import { IconButton } from '@renderer/components/ui/icon-button'
 import { ScrollArea } from '@renderer/components/ui/scroll-area'
 import { SearchInput } from '@renderer/components/ui/search-input'
+import { Select } from '@renderer/components/ui/select'
+import { databaseErrorKind } from '../connection/database-browsing'
+import { tableDisplayName, tableReference } from '../../../shared/table-reference'
 import { Skeleton } from '@renderer/components/ui/skeleton'
 import { TreeRow } from '@renderer/components/ui/tree-row'
 import { useI18n } from '@renderer/i18n'
@@ -43,6 +46,7 @@ import {
 } from './sidebar-menus'
 import {
   buildSidebarRows,
+  filterConnections,
   groupConnections,
   type SidebarRow,
   type SidebarRowMessage
@@ -53,7 +57,10 @@ const MESSAGE_KEY: Record<SidebarRowMessage, string> = {
   noTables: 'sidebar.noTables',
   noTablesMatch: 'sidebar.noTablesMatch',
   noKeys: 'sidebar.noKeys',
-  noKeysMatch: 'sidebar.noKeysMatch'
+  noKeysMatch: 'sidebar.noKeysMatch',
+  noVisibleTables: 'sidebar.browsing.noVisibleTables',
+  noSchemas: 'sidebar.browsing.noSchemas',
+  noDatabases: 'sidebar.explorer.noDatabases'
 }
 
 export function SidebarTree() {
@@ -76,7 +83,8 @@ export function SidebarTree() {
   const setCollapsed = useSidebarStore((state) => state.setCollapsed)
 
   const [collapsedRedisFolders, setCollapsedRedisFolders] = useState<Set<string>>(new Set())
-  const [activeIndex, setActiveIndex] = useState(0)
+  const [activeKey, setActiveKey] = useState<string | null>(null)
+  const focusedKey = useRef<string | null>(null)
   const searchRef = useRef<HTMLInputElement>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const rowRefs = useRef<(HTMLDivElement | null)[]>([])
@@ -93,11 +101,7 @@ export function SidebarTree() {
     }, [])
   )
 
-  const filtered = useMemo(() => {
-    const query = keyword.trim().toLowerCase()
-    if (!query) return connections
-    return connections.filter((connection) => connection.name.toLowerCase().includes(query))
-  }, [connections, keyword])
+  const filtered = useMemo(() => filterConnections(connections, keyword), [connections, keyword])
 
   const { rows, focusables } = useMemo(
     () =>
@@ -109,6 +113,32 @@ export function SidebarTree() {
       }),
     [collapsedRedisFolders, filtered, nodes, t, tableFilters]
   )
+
+  const activeIndex = Math.max(0, focusables.findIndex(({ row }) => row.key === activeKey))
+  const previousFocusables = useRef(focusables)
+  useEffect(() => {
+    const previous = previousFocusables.current
+    previousFocusables.current = focusables
+    if (!activeKey || focusables.some(({ row }) => row.key === activeKey)) return
+
+    // Refreshes and schema changes can remove a row. Keep keyboard navigation
+    // on its nearest surviving parent instead of an unrelated numeric position.
+    let index = previous.findIndex(({ row }) => row.key === activeKey)
+    let nextIndex = -1
+    while (index >= 0) {
+      index = previous[index]?.row.parentIndex ?? -1
+      if (index < 0) break
+      nextIndex = focusables.findIndex(({ row }) => row.key === previous[index]?.row.key)
+      if (nextIndex >= 0) break
+    }
+    nextIndex = Math.max(0, nextIndex)
+    const nextKey = focusables[nextIndex]?.row.key ?? null
+    setActiveKey(nextKey)
+    // Filtering from an input must never move focus out of that input.
+    if (focusedKey.current === activeKey && document.activeElement === document.body) {
+      rowRefs.current[nextIndex]?.focus()
+    }
+  }, [activeKey, focusables])
 
   // The sticky database header (a genuinely good touch worth keeping) now lives
   // with the scroll region that produces it instead of being computed in
@@ -143,7 +173,7 @@ export function SidebarTree() {
 
   const focusRow = (index: number) => {
     const clamped = Math.min(Math.max(index, 0), Math.max(focusables.length - 1, 0))
-    setActiveIndex(clamped)
+    setActiveKey(focusables[clamped]?.row.key ?? null)
     rowRefs.current[clamped]?.focus()
   }
 
@@ -226,6 +256,9 @@ export function SidebarTree() {
   }
 
   const onRowKeyDown = (event: React.KeyboardEvent, row: SidebarRow) => {
+    // Buttons and portalled menus own their keys; Enter must not also toggle
+    // the connection, and arrow keys must not steal focus from a control.
+    if (event.defaultPrevented || event.target !== event.currentTarget || event.nativeEvent.isComposing) return
     const index = row.focusIndex ?? 0
     const meta = focusables[index]
     if (!meta) return
@@ -250,7 +283,9 @@ export function SidebarTree() {
       case 'ArrowRight':
         event.preventDefault()
         if (!meta.expandable) return
-        if (meta.expanded) focusRow(index + 1)
+        if (meta.expanded) {
+          if (focusables[index + 1]?.row.parentIndex === index) focusRow(index + 1)
+        }
         else activateRow(row)
         return
       case 'ArrowLeft':
@@ -290,7 +325,7 @@ export function SidebarTree() {
     () =>
       inlineRename
         ? {
-            value: inlineRename.table,
+            value: inlineRename.connection.engine === 'postgres' ? tableReference(inlineRename.table).name : inlineRename.table,
             onCommit: (next: string) => {
               if (!next.trim()) {
                 actions.cancelRename()
@@ -321,6 +356,12 @@ export function SidebarTree() {
       onSelect: actions.createConnection
     },
     {
+      id: 'organize-connections',
+      icon: Folder,
+      label: t('sidebar.organization.title'),
+      onSelect: actions.organizeConnections
+    },
+    {
       id: 'refresh-connections',
       icon: RefreshCw,
       label: t('sidebar.refreshConnections'),
@@ -346,13 +387,40 @@ export function SidebarTree() {
       posInSet: row.posInSet,
       onKeyDown: (event: React.KeyboardEvent) => onRowKeyDown(event, row),
       onContextMenu: (event: React.MouseEvent) => openContextMenu(event, row),
-      onFocus: () => setActiveIndex(index),
+      onFocus: () => {
+        focusedKey.current = row.key
+        setActiveKey(row.key)
+      },
       ref: (element: HTMLDivElement | null) => {
         rowRefs.current[index] = element
       }
     }
 
     switch (row.type) {
+      case 'add-database':
+        return <div key={row.key} className="px-2 py-1"><Button size="xs" variant="ghost" icon={Plus} onClick={() => actions.openAddDatabase(row.connection)}>{t('sidebar.browsing.addDatabase')}</Button></div>
+
+      case 'schema-picker':
+        return <label key={row.key} className="flex min-w-0 items-center gap-2 py-1 pr-1" style={{ paddingLeft: row.depth * 12 + 8 }}>
+          <span className="shrink-0 text-2xs text-fg-subtle">{t('sidebar.explorer.schema')}</span>
+          <Select size="sm" aria-label={t('sidebar.explorer.schemaFor', { database: row.database })} value={row.schema} disabled={row.schemas.length === 0}
+            title={row.schema || undefined} containerClassName="min-w-0 flex-1"
+            placeholder={row.schemas.length ? undefined : t('sidebar.browsing.noSchemas')}
+            options={row.schemas.map((name) => ({ value: name, label: name }))}
+            onChange={(event) => void actions.setDatabaseSchema(row.connection, row.database, event.target.value)} />
+        </label>
+
+      case 'browse-error': {
+        const kind = databaseErrorKind(row.message)
+        return <div key={row.key} role="alert" aria-label={row.database ?? row.connection.name} className="space-y-1 py-2 pr-2 text-xs" style={{ paddingLeft: row.depth * 12 + 8 }}>
+          <p className="text-danger-text">{t(`sidebar.browsing.${kind}Error`)}</p>
+          <details className="text-fg-muted"><summary>{t('sidebar.browsing.details')}</summary><p className="break-words">{row.message}</p></details>
+          <div className="flex flex-wrap gap-1">
+            <Button size="xs" onClick={() => void (row.database ? actions.refreshDatabase(row.connection, row.database) : actions.refreshConnectionDatabases(row.connection))}>{t('sidebar.browsing.retry')}</Button>
+            {row.database && kind !== 'connection' ? <Button size="xs" onClick={() => actions.openDatabaseCredential(row.connection, row.database!)}>{t('sidebar.browsing.otherAccount')}</Button> : null}
+          </div>
+        </div>
+      }
       case 'group':
         return (
           <div
@@ -370,7 +438,7 @@ export function SidebarTree() {
         // string where the shape is known. Three row skeletons after 300ms —
         // a fast expand shows nothing at all rather than a flash.
         return (
-          <div key={row.key} role="presentation" aria-busy className="px-2 py-1 pl-8">
+          <div key={row.key} role="status" aria-busy className="py-1 pr-2" style={{ paddingLeft: row.depth * 12 + 8 }}>
             <span className="sr-only">{t('common.loading')}</span>
             <Skeleton variant="row" count={3} />
           </div>
@@ -388,7 +456,12 @@ export function SidebarTree() {
             label={
               <span className="flex min-w-0 items-center gap-1.5">
                 <EngineIcon engine={row.connection.engine} className="size-3.5 shrink-0" />
-                <span className="truncate">{row.connection.name}</span>
+                <span className="truncate" title={`${row.connection.username}@${row.connection.host}:${row.connection.port}`}>
+                  {row.connection.name}
+                  {row.connection.database && row.connection.database !== row.connection.name ? (
+                    <span className="text-xs text-fg-muted"> / {row.connection.database}</span>
+                  ) : null}
+                </span>
               </span>
             }
             badges={
@@ -515,12 +588,12 @@ export function SidebarTree() {
             {...common}
             key={row.key}
             icon={TableIcon}
-            label={row.table}
+            label={tableReference(row.table).name}
             selected={selected}
             editing={editingFor(row.connection.id, row.database, row.table)}
             onActivate={() => actions.selectTable(row.connection, row.database, row.table)}
             overflow={overflowFor(row)}
-            overflowLabel={t('sidebar.moreActionsFor', { name: row.table })}
+            overflowLabel={t('sidebar.moreActionsFor', { name: tableDisplayName(row.table) })}
           />
         )
       }
@@ -565,8 +638,8 @@ export function SidebarTree() {
         return (
           <div
             key={row.key}
-            role="presentation"
-            className="py-1 text-xs text-fg-subtle"
+            role="status"
+            className="py-1 pr-2 text-xs text-fg-subtle"
             style={{ paddingLeft: row.depth * 12 + 8 }}
           >
             {t(MESSAGE_KEY[row.message])}
@@ -604,7 +677,8 @@ export function SidebarTree() {
           size="sm"
           value={keyword}
           onValueChange={setKeyword}
-          placeholder={t('sidebar.searchConnection')}
+          placeholder={t('sidebar.explorer.searchPlaceholder')}
+          aria-label={t('sidebar.explorer.searchLabel')}
           clearLabel={t('common.clear')}
           containerClassName="min-w-0 flex-1"
         />

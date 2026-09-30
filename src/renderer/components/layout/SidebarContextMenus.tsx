@@ -1,3 +1,4 @@
+import { tableDisplayName } from '../../../shared/table-reference'
 // Right-click menus for the three tree object types.
 //
 // A thin wrapper: the items come from `sidebar-menus.ts`, which the row's
@@ -53,7 +54,7 @@ export function SidebarContextMenus() {
         <ContextMenu
           at={tableMenu}
           onClose={() => setTableMenu(null)}
-          aria-label={tableMenu.table}
+          aria-label={tableDisplayName(tableMenu.table)}
           items={buildTableMenuItems({
             connection: tableMenu.connection,
             database: tableMenu.database,

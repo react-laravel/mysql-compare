@@ -78,4 +78,16 @@ jobs:
         env:
           MYSQL_COMPARE_MYSQL_TEST_PORT: 3306
           MYSQL_COMPARE_PG_TEST_PORT: 5432
-        run: cargo test --manifest-path src-tauri/Cargo.toml --lib data_contract_tests -- --ignored
+        run: |
+          # The browsing contracts exercise password failures. Keep the fixture
+          # administrator trusted, but authenticate the two restricted accounts.
+          docker exec "${{ job.services.postgres.id }}" sh -eu -c '
+            hba="$PGDATA/pg_hba.conf"
+            rules="$(mktemp)"
+            printf "%s\n" "host all browse_user,browse_other_user all scram-sha-256" > "$rules"
+            cat "$hba" >> "$rules"
+            cat "$rules" > "$hba"
+            rm "$rules"
+          '
+          docker exec "${{ job.services.postgres.id }}" psql -U contract_test -d contracts -v ON_ERROR_STOP=1 -c 'SELECT pg_reload_conf()'
+          cargo test --manifest-path src-tauri/Cargo.toml --lib data_contract_tests -- --ignored

@@ -16,10 +16,14 @@ import { useConnectionStore } from '@renderer/store/connection-store'
 import { useSidebarStore } from '@renderer/store/sidebar-store'
 import { useUIStore } from '@renderer/store/ui-store'
 import { REDIS_MAX_LISTED_KEYS } from '../../../shared/constants'
-import type { SafeConnection, TableSchema } from '../../../shared/types'
+import type { ConnectionOrganizationItem, DatabaseCredentialConfig, SafeConnection, TableSchema } from '../../../shared/types'
+import { tableDisplayName, tableReference, renamedTableKey } from '../../../shared/table-reference'
 import type { CreateRedisKeyPayload, SidebarConfirmRequest } from './sidebar-types'
 
 type Translate = ReturnType<typeof useI18n>['t']
+// Shared across tree, menus and dialogs so their requests cannot overwrite one another.
+const tableRequests = new Map<string, number>()
+const databaseRequests = new Map<string, number>()
 
 export function getDatabaseKey(connectionId: string, database: string): string {
   return `${connectionId}:${database}`
@@ -72,6 +76,13 @@ export interface SidebarActions {
 
   // ---- connection ---------------------------------------------------------
   createConnection: () => void
+  openAddDatabase: (connection: SafeConnection) => void
+  addDatabase: (connection: SafeConnection, database: string, credential: DatabaseCredentialConfig) => Promise<void>
+  setShowAllDatabases: (connection: SafeConnection, showAll: boolean) => Promise<void>
+  refreshConnectionDatabases: (connection: SafeConnection) => Promise<void>
+  setDatabaseSchema: (connection: SafeConnection, database: string, schema: string) => Promise<void>
+  organizeConnections: () => void
+  saveConnectionOrganization: (items: ConnectionOrganizationItem[]) => Promise<void>
   editConnection: (connection: SafeConnection) => void
   createConnectionWithSSH: (connection: SafeConnection) => void
   closeConnection: (connection: SafeConnection) => Promise<void>
@@ -147,23 +158,70 @@ export function createSidebarActions(t: Translate): SidebarActions {
     })
   }
 
-  const loadTables = async (connection: SafeConnection, database: string) => {
-    const [tables, keyCount] = await Promise.all([
-      unwrap(api.db.listTables(connection.id, database)),
-      connection.engine === 'redis'
-        ? loadDatabaseKeyCount(connection.id, database)
-        : Promise.resolve(undefined)
-    ])
-    applyTables(connection.id, database, tables, keyCount)
+  const updateNode = (id: string, update: (node: import('./sidebar-types').NodeState) => import('./sidebar-types').NodeState) => {
+    sidebar().setNodes((state) => state[id] ? { ...state, [id]: update(state[id]!) } : state)
   }
 
-  const refreshDatabase = async (connection: SafeConnection, database: string) => {
+  const loadDatabases = async (connection: SafeConnection) => {
+    const request = (databaseRequests.get(connection.id) ?? 0) + 1
+    databaseRequests.set(connection.id, request)
+    sidebar().setNodes((state) => ({ ...state, [connection.id]: {
+      ...(state[connection.id] ?? { expanded: true, tables: {}, expandedDbs: new Set<string>() }),
+      loading: true, connectionError: undefined
+    } }))
     try {
-      await loadTables(connection, database)
+      const databases = await unwrap(api.db.listDatabases(connection.id))
+      const tableCounts = connection.engine === 'redis' ? await loadDatabaseKeyCounts(connection.id, databases) : undefined
+      if (databaseRequests.get(connection.id) !== request) return
+      updateNode(connection.id, (node) => ({ ...node, loading: false, databases, tableCounts }))
     } catch (error) {
-      toastError(error)
+      if (databaseRequests.get(connection.id) !== request) return
+      updateNode(connection.id, (node) => ({ ...node, loading: false, connectionError: (error as Error).message }))
     }
   }
+
+  const loadTables = async (connection: SafeConnection, database: string, chosenSchema?: string) => {
+    const key = getDatabaseKey(connection.id, database)
+    const request = (tableRequests.get(key) ?? 0) + 1
+    tableRequests.set(key, request)
+    const currentRequest = () => tableRequests.get(key) === request && Boolean(sidebar().nodes[connection.id])
+    updateNode(connection.id, (node) => ({ ...node,
+      databaseLoading: { ...node.databaseLoading, [database]: true },
+      databaseErrors: { ...node.databaseErrors, [database]: undefined }
+    }))
+    try {
+      let schema: string | undefined
+      if (connection.engine === 'postgres') {
+        const schemas = await unwrap(api.db.listSchemas(connection.id, database))
+        if (!currentRequest()) return
+        const previous = chosenSchema ?? sidebar().nodes[connection.id]?.activeSchemas?.[database]
+        schema = previous && schemas.includes(previous) ? previous : schemas.includes('public') ? 'public' : schemas[0]
+        updateNode(connection.id, (node) => ({ ...node,
+          schemas: { ...node.schemas, [database]: schemas },
+          activeSchemas: { ...node.activeSchemas, [database]: schema ?? '' }
+        }))
+        if (!schema) {
+          applyTables(connection.id, database, [], undefined)
+          return
+        }
+      }
+      const [tables, keyCount] = await Promise.all([
+        unwrap(api.db.listTables(connection.id, database, schema)),
+        connection.engine === 'redis' ? loadDatabaseKeyCount(connection.id, database) : Promise.resolve(undefined)
+      ])
+      if (currentRequest()) applyTables(connection.id, database, tables, keyCount)
+    } catch (error) {
+      if (currentRequest()) updateNode(connection.id, (node) => ({ ...node,
+        databaseErrors: { ...node.databaseErrors, [database]: (error as Error).message }
+      }))
+    } finally {
+      if (currentRequest()) updateNode(connection.id, (node) => ({ ...node,
+        databaseLoading: { ...node.databaseLoading, [database]: false }
+      }))
+    }
+  }
+
+  const refreshDatabase = (connection: SafeConnection, database: string) => loadTables(connection, database)
 
   const withBusy = async (run: () => Promise<void>) => {
     sidebar().setActionBusy(true)
@@ -181,7 +239,7 @@ export function createSidebarActions(t: Translate): SidebarActions {
           api.db.copyTable({ connectionId: connection.id, database, table, targetTable })
         )
         await refreshDatabase(connection, database)
-        ui().showToast(t('sidebar.toast.copiedTo', { table: result.table }), 'success')
+        ui().showToast(t('sidebar.toast.copiedTo', { table: tableDisplayName(result.table) }), 'success')
       } catch (error) {
         toastError(error)
       }
@@ -201,7 +259,7 @@ export function createSidebarActions(t: Translate): SidebarActions {
         )
         await refreshDatabase(connection, database)
         ui().refreshTableData(connection.id, database, table)
-        ui().showToast(t('sidebar.toast.truncatedTable', { table }), 'success')
+        ui().showToast(t('sidebar.toast.truncatedTable', { table: tableDisplayName(table) }), 'success')
       } catch (error) {
         toastError(error)
       }
@@ -218,7 +276,7 @@ export function createSidebarActions(t: Translate): SidebarActions {
         ui().showToast(
           connection.engine === 'redis'
             ? t('redis.keyDeleted', { key: table })
-            : t('sidebar.toast.droppedTable', { table }),
+            : t('sidebar.toast.droppedTable', { table: tableDisplayName(table) }),
           'success'
         )
       } catch (error) {
@@ -280,25 +338,7 @@ export function createSidebarActions(t: Translate): SidebarActions {
           [connection.id]: { expanded: true, loading: true, tables: {}, expandedDbs: new Set() }
         }))
       }
-      try {
-        const databases = await unwrap(api.db.listDatabases(connection.id))
-        const tableCounts =
-          connection.engine === 'redis'
-            ? await loadDatabaseKeyCounts(connection.id, databases)
-            : undefined
-        sidebar().setNodes((state) => {
-          const node = state[connection.id]
-          if (!node) return state
-          return { ...state, [connection.id]: { ...node, loading: false, databases, tableCounts } }
-        })
-      } catch (error) {
-        toastError(error)
-        sidebar().setNodes((state) => {
-          const node = state[connection.id]
-          if (!node) return state
-          return { ...state, [connection.id]: { ...node, loading: false } }
-        })
-      }
+      await loadDatabases(connection)
     },
 
     toggleDatabase: async (connection, database) => {
@@ -340,6 +380,21 @@ export function createSidebarActions(t: Translate): SidebarActions {
     },
 
     createConnection: () => sidebar().setCreating(true),
+    openAddDatabase: (connection) => sidebar().setAddDatabaseConnection(connection),
+    addDatabase: async (connection, database, credential) => {
+      const updated = await connectionStore().updateDatabaseBrowsing(connection.id, { database, credential })
+      await loadDatabases(updated)
+    },
+    setShowAllDatabases: async (connection, showAll) => {
+      try {
+        const updated = await connectionStore().updateDatabaseBrowsing(connection.id, { showAll })
+        await loadDatabases(updated)
+      } catch (error) { toastError(error) }
+    },
+    refreshConnectionDatabases: loadDatabases,
+    setDatabaseSchema: (connection, database, schema) => loadTables(connection, database, schema),
+    organizeConnections: () => sidebar().setOrganizingConnections(true),
+    saveConnectionOrganization: (items) => connectionStore().organize(items),
     editConnection: (connection) => sidebar().setEditing(connection),
     createConnectionWithSSH: (connection) => {
       sidebar().setCreating(false)
@@ -466,7 +521,7 @@ export function createSidebarActions(t: Translate): SidebarActions {
         ui().showToast(t('sidebar.toast.newTableNameRequired'), 'error')
         return
       }
-      if (trimmed === target.table) {
+      if (trimmed === (target.connection.engine === 'postgres' ? tableReference(target.table).name : target.table)) {
         state.setInlineRename(null)
         return
       }
@@ -477,12 +532,12 @@ export function createSidebarActions(t: Translate): SidebarActions {
               connectionId: target.connection.id,
               database: target.database,
               table: target.table,
-              newTable: trimmed
+              newTable: target.connection.engine === 'postgres' ? renamedTableKey(target.table, trimmed) : trimmed
             })
           )
           await refreshDatabase(target.connection, target.database)
           ui().renameTableTabs(target.connection.id, target.database, target.table, result.table)
-          ui().showToast(t('sidebar.toast.renamedTo', { table: result.table }), 'success')
+          ui().showToast(t('sidebar.toast.renamedTo', { table: tableDisplayName(result.table) }), 'success')
           sidebar().setInlineRename(null)
         } catch (error) {
           toastError(error)
@@ -496,7 +551,7 @@ export function createSidebarActions(t: Translate): SidebarActions {
         connection,
         database,
         table,
-        targetTable: `${table}_copy`
+        targetTable: renamedTableKey(table, `${tableReference(table).name}_copy`)
       }),
 
     // The direct route to a side-by-side table compare, which previously took
@@ -508,11 +563,11 @@ export function createSidebarActions(t: Translate): SidebarActions {
     },
 
     showCreateSQL: async (connection, database, table) => {
-      sidebar().setCreateSQLDialog({ title: `${database}.${table}`, sql: '', loading: true })
+      sidebar().setCreateSQLDialog({ title: `${database}.${tableDisplayName(table)}`, sql: '', loading: true })
       try {
         const schema = await unwrap<TableSchema>(api.schema.getTable(connection.id, database, table))
         sidebar().setCreateSQLDialog({
-          title: `${database}.${table}`,
+          title: `${database}.${tableDisplayName(table)}`,
           sql: schema.createSQL,
           loading: false
         })
@@ -563,16 +618,6 @@ export function createSidebarActions(t: Translate): SidebarActions {
         return
       }
 
-      const existing = dialog.connection.databaseCredentials?.[dialog.database]
-      if (
-        !state.databaseCredentialUseDefault &&
-        !existing?.hasPassword &&
-        !state.databaseCredentialPassword
-      ) {
-        ui().showToast(t('sidebar.toast.databasePasswordRequired'), 'error')
-        return
-      }
-
       await withBusy(async () => {
         try {
           await connectionStore().setDatabaseCredential(
@@ -582,6 +627,8 @@ export function createSidebarActions(t: Translate): SidebarActions {
               ? {}
               : { username, password: state.databaseCredentialPassword || undefined }
           )
+          const requestKey = getDatabaseKey(dialog.connection.id, dialog.database)
+          tableRequests.set(requestKey, (tableRequests.get(requestKey) ?? 0) + 1)
           // The pooled connection for that database is now stale: collapse it
           // and drop its cached table list so the next expand reconnects.
           sidebar().setNodes((current) => {
@@ -592,10 +639,18 @@ export function createSidebarActions(t: Translate): SidebarActions {
             const { [dialog.database]: _removed, ...tables } = node.tables
             return {
               ...current,
-              [dialog.connection.id]: { ...node, expandedDbs, tables }
+              [dialog.connection.id]: { ...node, expandedDbs, tables,
+                databaseLoading: { ...node.databaseLoading, [dialog.database]: false },
+                databaseErrors: { ...node.databaseErrors, [dialog.database]: undefined }
+              }
             }
           })
-          ui().closeDatabaseTabs(dialog.connection.id, dialog.database)
+          for (const tab of ui().workspaceTabs) {
+            const view = tab.view
+            if (view.kind === 'table' && view.connectionId === dialog.connection.id && view.database === dialog.database) {
+              ui().refreshTableData(view.connectionId, view.database, view.table)
+            }
+          }
           ui().showToast(
             t(
               state.databaseCredentialUseDefault
@@ -619,7 +674,6 @@ export function createSidebarActions(t: Translate): SidebarActions {
       const dialog = state.databaseCredentialDialog
       if (!dialog) return
       const username = state.databaseCredentialUsername.trim()
-      const existing = dialog.connection.databaseCredentials?.[dialog.database]
       if (!state.databaseCredentialUseDefault && !username) {
         state.setDatabaseCredentialFeedback({
           level: 'error',
@@ -627,18 +681,6 @@ export function createSidebarActions(t: Translate): SidebarActions {
         })
         return
       }
-      if (
-        !state.databaseCredentialUseDefault &&
-        !existing?.hasPassword &&
-        !state.databaseCredentialPassword
-      ) {
-        state.setDatabaseCredentialFeedback({
-          level: 'error',
-          message: t('sidebar.toast.databasePasswordRequired')
-        })
-        return
-      }
-
       state.setDatabaseCredentialFeedback(null)
       await withBusy(async () => {
         try {

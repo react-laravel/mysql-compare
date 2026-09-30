@@ -3,6 +3,10 @@ identifier = "allow-commands"
 description = "Allow all MySQL Compare desktop commands"
 commands.allow = [
   "connection_list",
+  "connection_organize",
+  "connection_update_database_browsing",
+  "db_discover_databases",
+  "db_list_schemas",
   "connection_upsert",
   "connection_remove",
   "connection_close",

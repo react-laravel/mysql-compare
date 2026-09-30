@@ -1,3 +1,4 @@
+import { tableDisplayName } from '../../../shared/table-reference'
 // Side-by-side table compare (blueprint §2.4 / §3.6).
 //
 // Chunk 10 rebuilt the chrome and the destructive paths:
@@ -326,13 +327,13 @@ export function TableCompareView({
     // registered without `onCancel` — visible progress, no fake Cancel.
     const jobId = jobs.start({
       kind: 'sync',
-      label: t('diff.compareView.overwriteJobLabel', { table }),
+      label: t('diff.compareView.overwriteJobLabel', { table: tableDisplayName(table) }),
       tabId: `table-compare:${compareSessionId}`
     })
 
     const unsubscribe = api.sync.onProgress?.((event) => {
       if (event.taskId !== jobId) return
-      jobs.update(jobId, { detail: `${event.table} · ${event.message ?? event.step}`, ...(event.total > 0 ? { count: { done: event.done, total: event.total } } : {}) })
+      jobs.update(jobId, { detail: `${tableDisplayName(event.table)} · ${event.message ?? event.step}`, ...(event.total > 0 ? { count: { done: event.done, total: event.total } } : {}) })
     })
     try {
       const result = await unwrap(
@@ -355,7 +356,7 @@ export function TableCompareView({
       jobs.finish(jobId, { status: result.errors === 0 ? 'done' : 'error' })
       showToast(
         result.errors === 0
-          ? t('diff.compareView.overwriteSuccess', { table })
+          ? t('diff.compareView.overwriteSuccess', { table: tableDisplayName(table) })
           : t('diff.sync.executeResult', { executed: result.executed, errors: result.errors }),
         result.errors === 0 ? 'success' : 'error'
       )
@@ -447,6 +448,7 @@ export function TableCompareView({
       {(sourceState.data || targetState.data) && (
         <TableDataPagination
           totalRows={totalRows}
+          pageSize={pageSize}
           page={page}
           totalPages={totalPages}
           pageDraft={pageDraft}
@@ -478,8 +480,8 @@ export function TableCompareView({
         }
         subject={
           overwriteConfirm || confirmSide === 'target'
-            ? `${targetLabel} / ${table}`
-            : `${sourceLabel} / ${table}`
+            ? `${targetLabel} / ${tableDisplayName(table)}`
+            : `${sourceLabel} / ${tableDisplayName(table)}`
         }
         consequence={
           overwriteConfirm

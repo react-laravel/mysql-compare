@@ -6,7 +6,7 @@
 // line on the bottom edge that costs zero layout. The amber no-primary-key
 // band (`TableDataView.tsx:186-191`, −26px of permanent chrome) became a
 // `Badge` in the subtitle.
-import type { ReactNode, RefObject } from 'react'
+import { useId, type ReactNode, type RefObject } from 'react'
 import {
   Columns3,
   Copy,
@@ -26,7 +26,7 @@ import { Button } from '@renderer/components/ui/button'
 import type { MenuItem } from '@renderer/components/ui/dropdown-menu'
 import { IconButton } from '@renderer/components/ui/icon-button'
 import { SearchInput } from '@renderer/components/ui/search-input'
-import { Toolbar } from '@renderer/components/ui/toolbar'
+import { TableViewToolbar } from './TableViewToolbar'
 import { Tooltip } from '@renderer/components/ui/tooltip'
 import { PAGE_SIZE_OPTIONS } from '@renderer/store/settings-store'
 import { formatNumber } from '@renderer/lib/format'
@@ -46,6 +46,7 @@ export interface TableDataToolbarProps {
   selectedCount: number
   totalRows?: number
   hasPrimaryKey: boolean
+  dataReady?: boolean
   wrapCells: boolean
   density: 'compact' | 'comfortable'
   pageSize: number
@@ -88,6 +89,7 @@ export function TableDataToolbar({
   selectedCount,
   totalRows,
   hasPrimaryKey,
+  dataReady = true,
   wrapCells,
   density,
   pageSize,
@@ -113,6 +115,7 @@ export function TableDataToolbar({
   onClearSelection
 }: TableDataToolbarProps) {
   const { t } = useI18n()
+  const filterStatusId = useId()
 
   const overflow: MenuItem[] = []
 
@@ -216,8 +219,6 @@ export function TableDataToolbar({
     overflow.push({ kind: 'separator', id: 'sep-object' }, ...objectItems)
   }
 
-  const subtitle = `${[connectionName, database].filter(Boolean).join(' / ')}${engine ? ` · ${engine}` : ''}`
-
   // The keyless-table warning goes in `subtitleSlot`, not `subtitle`: it is the
   // reason half this toolbar is disabled, and `subtitle` truncates.
   const subtitleSlot =
@@ -232,11 +233,13 @@ export function TableDataToolbar({
     ) : null
 
   return (
-    <Toolbar
-      title={<span className="font-mono">{table}</span>}
-      subtitle={subtitle}
+    <TableViewToolbar
+      table={table}
+      database={database}
+      connectionName={connectionName}
+      engine={engine}
       subtitleSlot={subtitleSlot}
-      center={tabs}
+      tabs={tabs}
       overflowLabel={t('common.moreActions')}
       overflow={overflow}
       progress={loading ? { status: 'running', label: t('common.loading') } : null}
@@ -254,18 +257,18 @@ export function TableDataToolbar({
           />
           {!readOnly && (
             <>
-              <Button size="sm" variant="primary" icon={Plus} onClick={onInsert}>
+              <Button size="sm" variant="primary" icon={Plus} disabled={!dataReady || loading} onClick={onInsert}>
                 {t('common.insert')}
               </Button>
-              <Button
+              {selectedCount > 0 && <Button
                 size="sm"
                 variant="danger-ghost"
                 icon={Trash2}
                 onClick={onDeleteSelected}
-                disabled={selectedCount === 0}
+                disabled={!dataReady || loading || !hasPrimaryKey}
               >
                 {t('tableData.deleteCount', { count: selectedCount })}
-              </Button>
+              </Button>}
             </>
           )}
         </>
@@ -273,7 +276,7 @@ export function TableDataToolbar({
       filters={
         <>
           {filterEnabled && (
-            <>
+            <div className="flex min-w-0 flex-[1_1_24rem] items-center gap-1.5">
               <SearchInput
                 ref={filterInputRef}
                 size="sm"
@@ -285,11 +288,17 @@ export function TableDataToolbar({
                 clearLabel={t('tableData.clearFilter')}
                 onClear={onClearWhere}
                 placeholder={t('tableData.whereClausePlaceholder')}
-                containerClassName="min-w-[16rem] flex-[1_1_22rem]"
+                aria-label={t('tableData.filterLabel')}
+                aria-describedby={hasActiveFilter ? filterStatusId : undefined}
+                containerClassName="min-w-0 flex-1"
                 onKeyDown={(event) => {
-                  if (event.key === 'Enter') onApplyWhere()
-                  if (event.key === 'Escape') {
+                  if (event.key === 'Enter' && !event.nativeEvent.isComposing && hasPendingWhere) {
                     event.preventDefault()
+                    onApplyWhere()
+                  }
+                  if (event.key === 'Escape' && hasActiveFilter) {
+                    event.preventDefault()
+                    event.stopPropagation()
                     onClearWhere()
                   }
                 }}
@@ -297,16 +306,24 @@ export function TableDataToolbar({
               <Button size="sm" variant="secondary" onClick={onApplyWhere} disabled={!hasPendingWhere}>
                 {t('common.apply')}
               </Button>
-            </>
+            </div>
           )}
           <span className="ml-auto flex items-center gap-1.5" aria-live="polite">
             {totalRows != null ? (
               <Badge>{t('tableData.rowCount', { count: formatNumber(totalRows) })}</Badge>
             ) : null}
             {selectedCount > 0 ? (
-              <Badge tone="accent">{t('tableData.selectedRows', { count: selectedCount })}</Badge>
+              <>
+                <Badge tone="accent">{t('tableData.selectedRows', { count: selectedCount })}</Badge>
+                <IconButton icon={X} label={t('tableData.clearSelection')} size="xs" variant="ghost" onClick={onClearSelection} />
+              </>
             ) : null}
             {hasActiveFilter ? (
+              <Badge id={filterStatusId} tone={hasPendingWhere ? 'warning' : 'accent'}>
+                {t(hasPendingWhere ? 'tableData.filterPending' : 'tableData.filterApplied')}
+              </Badge>
+            ) : null}
+            {hasActiveFilter && !where ? (
               <Button size="xs" variant="ghost" icon={Eraser} onClick={onClearWhere}>
                 {t('tableData.clearFilter')}
               </Button>

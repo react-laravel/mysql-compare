@@ -73,7 +73,7 @@ describe('AppShell', () => {
 
   it('does not fire the shortcut-help key while typing', () => {
     render(<AppShell />)
-    const search = screen.getByPlaceholderText('Search connection')
+    const search = screen.getByRole('searchbox', { name: 'Search connections by name, host, account or group' })
 
     fireEvent.keyDown(search, { key: '?' })
     expect(screen.queryByRole('dialog', { name: 'Keyboard shortcuts' })).toBeNull()
@@ -115,7 +115,7 @@ describe('AppShell', () => {
 
     expect(useSidebarStore.getState().collapsed).toBe(false)
     await waitFor(() =>
-      expect(document.activeElement).toBe(screen.getByPlaceholderText('Search connection'))
+      expect(document.activeElement).toBe(screen.getByRole('searchbox', { name: 'Search connections by name, host, account or group' }))
     )
   })
 

@@ -6,7 +6,7 @@ use sqlx::postgres::{PgPool, PgPoolOptions};
 use sqlx::{Executor, Postgres, Row};
 
 use crate::drivers::dialect::{
-  assert_ident, assert_safe_where, clamp_page_size, quote_pg_ident, quote_pg_table,
+  assert_pg_table, pg_table_parts, pg_table_key, assert_safe_where, clamp_page_size, quote_pg_ident, quote_pg_table,
 };
 use crate::drivers::util::{json_from_pg_row, urlencoding};
 use crate::types::{
@@ -45,9 +45,10 @@ impl PgDriver {
 
   fn url_for_db(&self, database: &str) -> String {
     let (host, port) = self.host_port();
-    let user = urlencoding(&self.connection.username);
-    let pass = urlencoding(self.connection.password.as_deref().unwrap_or(""));
-    format!("postgres://{user}:{pass}@{host}:{port}/{database}")
+    let (username, password) = super::connection_options::credentials(&self.connection, database);
+    let user = urlencoding(username);
+    let pass = urlencoding(password);
+    format!("postgres://{user}:{pass}@{host}:{port}/{}", urlencoding(database))
   }
 
   async fn pool(&self, database: &str) -> Result<PgPool, String> {
@@ -77,22 +78,9 @@ impl PgDriver {
   }
 
   async fn maintenance_pool(&self) -> Result<PgPool, String> {
-    let candidates = [
-      self.connection.database.clone().unwrap_or_default(),
-      "postgres".into(),
-      "template1".into(),
-    ];
-    let mut last = String::new();
-    for db in candidates {
-      if db.is_empty() {
-        continue;
-      }
-      match self.pool(&db).await {
-        Ok(p) => return Ok(p),
-        Err(e) => last = e,
-      }
-    }
-    Err(last)
+    let database = self.connection.database.as_deref().filter(|name| !name.trim().is_empty())
+      .unwrap_or(if self.connection.username.trim().is_empty() { "postgres" } else { &self.connection.username });
+    self.pool(database).await
   }
 
   pub async fn close(&self) {
@@ -115,11 +103,20 @@ impl PgDriver {
   }
 
   pub async fn list_databases(&self) -> Result<Vec<String>, String> {
+    let mut configured = super::connection_options::configured_databases(&self.connection);
+    if super::connection_options::show_all_databases(&self.connection) {
+      for database in self.discover_databases().await? {
+        if !configured.contains(&database) { configured.push(database); }
+      }
+    }
+    Ok(configured)
+  }
+
+  pub async fn discover_databases(&self) -> Result<Vec<String>, String> {
     let pool = self.maintenance_pool().await?;
     let rows = sqlx::query(
       "SELECT datname FROM pg_database
        WHERE NOT datistemplate AND datallowconn
-         AND has_database_privilege(datname, 'CONNECT')
        ORDER BY datname",
     )
     .fetch_all(&pool)
@@ -137,9 +134,8 @@ impl PgDriver {
     let pool = self.pool(database).await?;
     let count: (i64,) = sqlx::query_as(
       "SELECT COUNT(*) FROM information_schema.tables
-       WHERE table_schema = $1 AND table_type = 'BASE TABLE'",
+       WHERE left(table_schema, 3) <> 'pg_' AND table_schema <> 'information_schema' AND table_type = 'BASE TABLE' AND has_schema_privilege(table_schema, 'USAGE')",
     )
-    .bind(DEFAULT_SCHEMA)
     .fetch_one(&pool)
     .await
     .map_err(|e| e.to_string())?;
@@ -158,23 +154,29 @@ impl PgDriver {
     })
   }
 
-  pub async fn list_tables(&self, database: &str) -> Result<Vec<String>, String> {
+  pub async fn list_schemas(&self, database: &str) -> Result<Vec<String>, String> {
     let pool = self.pool(database).await?;
-    let rows = sqlx::query(
-      "SELECT table_name FROM information_schema.tables
-       WHERE table_schema = $1 AND table_type = 'BASE TABLE'
-       ORDER BY table_name",
-    )
-    .bind(DEFAULT_SCHEMA)
-    .fetch_all(&pool)
-    .await
-    .map_err(|e| e.to_string())?;
-    Ok(
-      rows
-        .into_iter()
-        .filter_map(|r| r.try_get::<String, _>(0).ok())
-        .collect(),
-    )
+    sqlx::query_scalar("SELECT nspname FROM pg_namespace WHERE left(nspname, 3) <> 'pg_' AND nspname <> 'information_schema' AND has_schema_privilege(oid, 'USAGE') ORDER BY (nspname = 'public') DESC, nspname")
+      .fetch_all(&pool).await.map_err(|e| e.to_string())
+  }
+
+  pub async fn list_tables(&self, database: &str) -> Result<Vec<String>, String> {
+    self.list_tables_for_schema(database, None).await
+  }
+
+  pub async fn list_tables_in_schema(&self, database: &str, schema: &str) -> Result<Vec<String>, String> {
+    self.list_tables_for_schema(database, Some(schema)).await
+  }
+
+  async fn list_tables_for_schema(&self, database: &str, schema: Option<&str>) -> Result<Vec<String>, String> {
+    let pool = self.pool(database).await?;
+    if let Some(schema) = schema {
+      let allowed: bool = sqlx::query_scalar("SELECT has_schema_privilege($1, 'USAGE')").bind(schema).fetch_one(&pool).await.map_err(|e| e.to_string())?;
+      if !allowed { return Err("permission denied for schema".into()); }
+    }
+    let rows = sqlx::query("SELECT table_schema, table_name FROM information_schema.tables WHERE ($1::text IS NULL OR table_schema = $1) AND left(table_schema, 3) <> 'pg_' AND table_schema <> 'information_schema' AND table_type = 'BASE TABLE' AND has_schema_privilege(table_schema, 'USAGE') ORDER BY table_schema, table_name")
+      .bind(schema).fetch_all(&pool).await.map_err(|e| e.to_string())?;
+    rows.into_iter().map(|row| Ok(pg_table_key(&row.try_get::<String,_>("table_schema").map_err(|e| e.to_string())?, &row.try_get::<String,_>("table_name").map_err(|e| e.to_string())?))).collect()
   }
 
   pub async fn list_foreign_key_edges(
@@ -182,33 +184,16 @@ impl PgDriver {
     database: &str,
   ) -> Result<Vec<(String, String)>, String> {
     let pool = self.pool(database).await?;
-    let rows = sqlx::query(
-      "SELECT DISTINCT tc.table_name AS from_table, ccu.table_name AS to_table
-       FROM information_schema.table_constraints AS tc
-       JOIN information_schema.constraint_column_usage AS ccu
-         ON ccu.constraint_name = tc.constraint_name
-        AND ccu.table_schema = tc.table_schema
-       WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = $1",
-    )
-    .bind(DEFAULT_SCHEMA)
-    .fetch_all(&pool)
-    .await
-    .map_err(|e| e.to_string())?;
-    Ok(
-      rows
-        .into_iter()
-        .filter_map(|r| {
-          Some((
-            r.try_get::<String, _>("from_table").ok()?,
-            r.try_get::<String, _>("to_table").ok()?,
-          ))
-        })
-        .collect(),
-    )
+    let rows = sqlx::query("SELECT sn.nspname AS from_schema, src.relname AS from_table, tn.nspname AS to_schema, dst.relname AS to_table FROM pg_constraint c JOIN pg_class src ON src.oid = c.conrelid JOIN pg_namespace sn ON sn.oid = src.relnamespace JOIN pg_class dst ON dst.oid = c.confrelid JOIN pg_namespace tn ON tn.oid = dst.relnamespace WHERE c.contype = 'f'")
+      .fetch_all(&pool).await.map_err(|e| e.to_string())?;
+    rows.into_iter().map(|row| {
+      Ok((pg_table_key(&row.try_get::<String,_>("from_schema").map_err(|e| e.to_string())?, &row.try_get::<String,_>("from_table").map_err(|e| e.to_string())?), pg_table_key(&row.try_get::<String,_>("to_schema").map_err(|e| e.to_string())?, &row.try_get::<String,_>("to_table").map_err(|e| e.to_string())?)))
+    }).collect()
   }
 
   pub async fn get_table_schema(&self, database: &str, table: &str) -> Result<TableSchema, String> {
-    assert_ident(table, "table")?;
+    assert_pg_table(table)?;
+    let (table_schema, table_name) = pg_table_parts(table);
     let pool = self.pool(database).await?;
     let col_rows = sqlx::query(
       "SELECT a.attname AS column_name, format_type(a.atttypid, a.atttypmod) AS data_type,
@@ -222,8 +207,8 @@ impl PgDriver {
        WHERE n.nspname = $1 AND c.relname = $2 AND a.attnum > 0 AND NOT a.attisdropped
        ORDER BY a.attnum",
     )
-    .bind(DEFAULT_SCHEMA)
-    .bind(table)
+    .bind(&table_schema)
+    .bind(&table_name)
     .fetch_all(&pool)
     .await
     .map_err(|e| e.to_string())?;
@@ -238,8 +223,8 @@ impl PgDriver {
          AND tc.table_schema = $1 AND tc.table_name = $2
        ORDER BY kcu.ordinal_position",
     )
-    .bind(DEFAULT_SCHEMA)
-    .bind(table)
+    .bind(&table_schema)
+    .bind(&table_name)
     .fetch_all(&pool)
     .await
     .map_err(|e| e.to_string())?;
@@ -250,7 +235,7 @@ impl PgDriver {
     let pk_set: HashSet<_> = primary_key.iter().cloned().collect();
 
     if col_rows.is_empty() {
-      return Err(format!("Table {table} has no readable columns"));
+      return Err(format!("Table {} has no readable columns", crate::drivers::dialect::pg_table_display_name(table)));
     }
     let mut definitions = Vec::new();
     for row in &col_rows {
@@ -300,7 +285,7 @@ impl PgDriver {
     let constraints = sqlx::query("SELECT con.conname, pg_get_constraintdef(con.oid, true) AS definition
       FROM pg_constraint con JOIN pg_class c ON c.oid = con.conrelid JOIN pg_namespace n ON n.oid = c.relnamespace
       WHERE n.nspname = $1 AND c.relname = $2 AND con.contype IN ('p','u','f','c','x') ORDER BY con.conname")
-      .bind(DEFAULT_SCHEMA).bind(table).fetch_all(&pool).await.map_err(|e| e.to_string())?;
+      .bind(&table_schema).bind(&table_name).fetch_all(&pool).await.map_err(|e| e.to_string())?;
     for row in constraints {
       let name: String = row.try_get("conname").map_err(|e| e.to_string())?;
       let definition: String = row.try_get("definition").map_err(|e| e.to_string())?;
@@ -316,7 +301,7 @@ impl PgDriver {
        FROM pg_index i JOIN pg_class c ON c.oid = i.indrelid JOIN pg_namespace n ON n.oid = c.relnamespace
        JOIN pg_class ci ON ci.oid = i.indexrelid JOIN pg_am am ON am.oid = ci.relam
        WHERE n.nspname = $1 AND c.relname = $2 ORDER BY ci.relname")
-      .bind(DEFAULT_SCHEMA).bind(table).fetch_all(&pool).await.map_err(|e| e.to_string())?;
+      .bind(&table_schema).bind(&table_name).fetch_all(&pool).await.map_err(|e| e.to_string())?;
     let mut indexes = Vec::new();
     let mut index_sql = Vec::new();
     for row in index_rows {
@@ -417,7 +402,7 @@ impl PgDriver {
   }
 
   pub async fn query_rows(&self, req: &QueryRowsRequest) -> Result<QueryRowsResult, String> {
-    assert_ident(&req.table, "table")?;
+    assert_pg_table(&req.table)?;
     assert_safe_where(req.where_fragment())?;
     let schema = self.query_schema(&req.database, &req.table).await?;
     let pool = self.pool(&req.database).await?;
@@ -648,33 +633,42 @@ impl PgDriver {
   pub async fn rename_table(&self, req: &RenameTableRequest) -> Result<String, String> {
     self.schemas.lock().clear();
     let pool = self.pool(&req.database).await?;
+    assert_pg_table(&req.table)?;
+    let (schema, _) = pg_table_parts(&req.table);
+    let (_, new_name) = pg_table_parts(&req.new_table);
+    assert_pg_table(&req.new_table)?;
     let sql = format!(
       "ALTER TABLE {} RENAME TO {}",
       quote_pg_table(DEFAULT_SCHEMA, &req.table),
-      quote_pg_ident(&req.new_table)
+      quote_pg_ident(&new_name)
     );
     sqlx::query(&sql)
       .execute(&pool)
       .await
       .map_err(|e| e.to_string())?;
-    Ok(req.new_table.clone())
+    Ok(pg_table_key(&schema, &new_name))
   }
 
   pub async fn copy_table(&self, req: &CopyTableRequest) -> Result<String, String> {
     self.schemas.lock().clear();
     let pool = self.pool(&req.database).await?;
+    assert_pg_table(&req.table)?;
+    assert_pg_table(&req.target_table)?;
+    let (schema, _) = pg_table_parts(&req.table);
+    let (_, target_name) = pg_table_parts(&req.target_table);
+    let target_table = pg_table_key(&schema, &target_name);
     let sql = format!(
       "CREATE TABLE {} (LIKE {} INCLUDING ALL); INSERT INTO {} SELECT * FROM {}",
-      quote_pg_table(DEFAULT_SCHEMA, &req.target_table),
+      quote_pg_table(DEFAULT_SCHEMA, &target_table),
       quote_pg_table(DEFAULT_SCHEMA, &req.table),
-      quote_pg_table(DEFAULT_SCHEMA, &req.target_table),
+      quote_pg_table(DEFAULT_SCHEMA, &target_table),
       quote_pg_table(DEFAULT_SCHEMA, &req.table)
     );
     pool
       .execute(sql.as_str())
       .await
       .map_err(|e| e.to_string())?;
-    Ok(req.target_table.clone())
+    Ok(target_table)
   }
 
   pub async fn drop_database(&self, req: &DropDatabaseRequest) -> Result<(), String> {

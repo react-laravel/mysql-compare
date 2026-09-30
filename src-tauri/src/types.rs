@@ -18,6 +18,13 @@ impl Default for DbEngine {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ConnectionOrganizationItem {
+  pub id: String,
+  pub group: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DatabaseCredentialConfig {
   pub username: Option<String>,
   pub password: Option<String>,
@@ -44,6 +51,8 @@ pub struct ConnectionConfig {
   pub password: Option<String>,
   pub database_credentials: Option<HashMap<String, DatabaseCredentialConfig>>,
   pub database: Option<String>,
+  pub databases: Option<Vec<String>>,
+  pub show_all_databases: Option<bool>,
   #[serde(rename = "useSSH", default)]
   pub use_ssh: bool,
   pub ssh_host: Option<String>,
@@ -70,6 +79,8 @@ pub struct SafeConnection {
   pub port: u16,
   pub username: String,
   pub database: Option<String>,
+  pub databases: Option<Vec<String>>,
+  pub show_all_databases: Option<bool>,
   #[serde(rename = "useSSH")]
   pub use_ssh: bool,
   pub ssh_host: Option<String>,

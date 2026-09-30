@@ -88,6 +88,8 @@ export interface SidebarState {
 
   // ---- dialogs ------------------------------------------------------------
   creating: boolean
+  organizingConnections: boolean
+  addDatabaseConnection: SafeConnection | null
   editing: SafeConnection | null
   sshSource: SafeConnection | null
   /**
@@ -131,6 +133,8 @@ export interface SidebarState {
   closeMenus: () => void
 
   setCreating: (creating: boolean) => void
+  setOrganizingConnections: (open: boolean) => void
+  setAddDatabaseConnection: (connection: SafeConnection | null) => void
   setEditing: (connection: SafeConnection | null) => void
   setSSHSource: (connection: SafeConnection | null) => void
   setInlineRename: (state: RenameDialogState | null) => void
@@ -172,6 +176,8 @@ const sidebarStateCreator: StateCreator<SidebarState, [['zustand/persist', unkno
   connectionMenu: null,
 
   creating: false,
+  organizingConnections: false,
+  addDatabaseConnection: null,
   editing: null,
   sshSource: null,
   inlineRename: null,
@@ -207,6 +213,8 @@ const sidebarStateCreator: StateCreator<SidebarState, [['zustand/persist', unkno
   closeMenus: () => set({ tableMenu: null, databaseMenu: null, connectionMenu: null }),
 
   setCreating: (creating) => set({ creating }),
+  setOrganizingConnections: (organizingConnections) => set({ organizingConnections }),
+  setAddDatabaseConnection: (addDatabaseConnection) => set({ addDatabaseConnection }),
   setEditing: (editing) => set({ editing }),
   setSSHSource: (sshSource) => set({ sshSource }),
   setInlineRename: (inlineRename) => set({ inlineRename }),

@@ -66,6 +66,7 @@ export function SidebarDatabaseCredentialDialog() {
       title={t('sidebar.overlays.databaseCredentialTitle')}
       description={t('sidebar.overlays.databaseCredentialDescription')}
       size="sm"
+      dismissible={!busy}
       footer={
         <>
           <Button variant="secondary" className="mr-auto" onClick={onTest} disabled={busy}>

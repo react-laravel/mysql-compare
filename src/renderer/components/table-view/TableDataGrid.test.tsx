@@ -93,6 +93,19 @@ describe('TableDataGrid', () => {
     expect(props.onToggleSelect).toHaveBeenCalledWith(0, true)
   })
 
+  it('keeps loaded rows visible with an explicit refresh failure and retry', () => {
+    const onRetry = vi.fn()
+    const props = createProps({ error: new Error('Connection interrupted'), onRetry })
+    const { rerender } = render(<TableDataGrid {...props} />)
+    expect(screen.getByText('Alice')).toBeTruthy()
+    expect(screen.getByRole('alert').textContent).toContain('Showing the last loaded results')
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(onRetry).toHaveBeenCalledTimes(1)
+    rerender(<TableDataGrid {...props} refreshing />)
+    expect((screen.getByRole('button', { name: 'Retry' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getByText('Alice')).toBeTruthy()
+  })
+
   // The old grid was mouse-only; Enter on a focused row now opens the editor.
   it('opens the row editor from the keyboard', () => {
     const props = createProps()

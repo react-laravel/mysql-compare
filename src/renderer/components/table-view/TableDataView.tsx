@@ -1,3 +1,4 @@
+import { tableDisplayName } from '../../../shared/table-reference'
 // 表数据视图：分页、where 过滤、排序、行 CRUD
 //
 // Blueprint §3.1 / §2.6: two chrome bands plus a filters row instead of five.
@@ -217,6 +218,7 @@ export function TableDataView({
         selectedCount={selected.size}
         totalRows={data?.total}
         hasPrimaryKey={data?.hasPrimaryKey ?? true}
+        dataReady={Boolean(data)}
         wrapCells={wrapCells}
         density={density}
         pageSize={pageSize}
@@ -252,6 +254,7 @@ export function TableDataView({
       <TableDataGrid
         data={data}
         error={error}
+        refreshing={loading}
         visibleColumns={visibleDataColumns}
         orderBy={effectiveOrderBy}
         density={density}
@@ -279,6 +282,7 @@ export function TableDataView({
       {data && (
         <TableDataPagination
           totalRows={data.total}
+          pageSize={pageSize}
           page={page}
           totalPages={totalPages}
           pageDraft={pageDraft}
@@ -298,7 +302,7 @@ export function TableDataView({
         tone="danger"
         title={t('tableData.confirmDeleteTitle')}
         body={t('tableData.confirmDeleteRows', { count: pendingDelete?.length ?? 0 })}
-        subject={`${database}.${table}`}
+        subject={`${database}.${tableDisplayName(table)}`}
         cancelLabel={t('common.cancel')}
         confirmLabel={t('common.delete')}
         onConfirm={confirmDeleteRows}

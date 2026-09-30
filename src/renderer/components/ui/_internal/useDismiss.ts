@@ -16,26 +16,45 @@ interface DismissOptions {
 
 interface DismissLayer {
   node: () => HTMLElement | null
+  anchors: () => (HTMLElement | null)[]
+  escape: boolean
   dismiss: () => void
 }
 
 /**
- * Every mounted Escape-dismissable surface, in mount order. `stopPropagation()`
+ * Every enabled dismissable surface, in mount order. `stopPropagation()`
  * cannot arbitrate between them — listeners on the same node all run regardless
  * — so the ladder is resolved explicitly here instead.
  */
-const escapeLayers: DismissLayer[] = []
+const dismissLayers: DismissLayer[] = []
 /** One Escape press dismisses one layer, even across re-entrant listeners. */
 const handledEscapes = new WeakSet<KeyboardEvent>()
 
+/** Portalled children belong to the layer containing their trigger. */
+function containsTarget(layer: DismissLayer, target: Node, visited = new Set<DismissLayer>()): boolean {
+  if (visited.has(layer)) return false
+  visited.add(layer)
+  const node = layer.node()
+  if (node?.contains(target) || layer.anchors().some((anchor) => anchor?.contains(target))) {
+    return true
+  }
+  return dismissLayers.some(
+    (child) =>
+      child !== layer &&
+      child.anchors().some((anchor) => anchor != null && node?.contains(anchor)) &&
+      containsTarget(child, target, visited)
+  )
+}
+
 /**
  * The layer Escape belongs to: a surface that *contains* another surface sits
- * below it (a `Popover` portalled into a `Dialog`), and among surfaces that do
- * not nest, the most recently mounted one is on top.
+ * below it, including children portalled elsewhere with triggers inside it.
+ * Among unrelated surfaces, the most recently mounted one is on top.
  */
 function topEscapeLayer(): DismissLayer | null {
-  if (escapeLayers.length === 0) return null
-  const entries = escapeLayers.map((layer) => ({ layer, node: layer.node() }))
+  const entries = dismissLayers
+    .filter((layer) => layer.escape)
+    .map((layer) => ({ layer, node: layer.node() }))
   const unobstructed = entries.filter(
     (entry) =>
       !entries.some(
@@ -44,7 +63,7 @@ function topEscapeLayer(): DismissLayer | null {
           entry.node != null &&
           other.node != null &&
           other.node !== entry.node &&
-          entry.node.contains(other.node)
+          containsTarget(entry.layer, other.node)
       )
   )
   const pool = unobstructed.length > 0 ? unobstructed : entries
@@ -70,9 +89,11 @@ export function useDismiss(
 
     const layer: DismissLayer = {
       node: () => ref.current,
+      anchors: () => ignored.current?.map((anchor) => anchor.current) ?? [],
+      escape,
       dismiss: () => handler.current()
     }
-    if (escape) escapeLayers.push(layer)
+    dismissLayers.push(layer)
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (!escape) return
@@ -89,16 +110,15 @@ export function useDismiss(
       const node = ref.current
       if (!node) return
       const target = event.target as Node
-      if (node.contains(target)) return
-      if (ignored.current?.some((candidate) => candidate.current?.contains(target))) return
+      if (containsTarget(layer, target)) return
       handler.current()
     }
 
     document.addEventListener('keydown', onKeyDown)
     document.addEventListener('mousedown', onPointerDown)
     return () => {
-      const index = escapeLayers.indexOf(layer)
-      if (index >= 0) escapeLayers.splice(index, 1)
+      const index = dismissLayers.indexOf(layer)
+      if (index >= 0) dismissLayers.splice(index, 1)
       document.removeEventListener('keydown', onKeyDown)
       document.removeEventListener('mousedown', onPointerDown)
     }

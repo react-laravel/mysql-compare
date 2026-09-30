@@ -4,6 +4,12 @@
 export type SqlDbEngine = 'mysql' | 'postgres'
 export type DbEngine = SqlDbEngine | 'redis'
 
+/** Display metadata only; array order is the sidebar connection order. */
+export interface ConnectionOrganizationItem {
+  id: string
+  group?: string
+}
+
 export interface DatabaseCredentialConfig {
   username?: string
   password?: string
@@ -27,6 +33,8 @@ export interface ConnectionConfig {
   /** PostgreSQL 数据库级登录覆盖；用于同一服务器下不同数据库使用不同账号密码 */
   databaseCredentials?: Record<string, DatabaseCredentialConfig>
   database?: string
+  databases?: string[]
+  showAllDatabases?: boolean
   // SSH Tunnel
   useSSH: boolean
   sshHost?: string

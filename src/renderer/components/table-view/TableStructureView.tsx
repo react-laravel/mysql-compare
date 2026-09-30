@@ -1,3 +1,4 @@
+import { tableDisplayName } from '../../../shared/table-reference'
 // 表结构视图：字段、索引、CREATE TABLE，并支持列/索引结构修改。
 //
 // Blueprint §3.2: one `Toolbar` (title · sub-tabs · actions · `⋯`) over a
@@ -16,7 +17,7 @@ import { IconButton } from '@renderer/components/ui/icon-button'
 import { Panel } from '@renderer/components/ui/panel'
 import { SearchInput } from '@renderer/components/ui/search-input'
 import { Skeleton } from '@renderer/components/ui/skeleton'
-import { Toolbar } from '@renderer/components/ui/toolbar'
+import { TableViewToolbar } from './TableViewToolbar'
 import { useAppAction } from '@renderer/lib/app-actions'
 import { useConnectionStore } from '@renderer/store/connection-store'
 import { useUIStore } from '@renderer/store/ui-store'
@@ -145,7 +146,7 @@ export function TableStructureView({
       title: t('tableStructure.confirmColumnChange'),
       description: t('tableStructure.reviewSqlForColumn', {
         db: database,
-        table,
+        table: tableDisplayName(table),
         column: editingColumn.originalName
       }),
       sql: pendingColumnSQL,
@@ -190,7 +191,7 @@ export function TableStructureView({
       title: editingIndex.mode === 'add'
         ? t('tableStructure.confirmAddIndex')
         : t('tableStructure.confirmIndexChange'),
-      description: `${database}.${table}`,
+      description: `${database}.${tableDisplayName(table)}`,
       sql: pendingIndexSQL,
       successMessage: editingIndex.mode === 'add'
         ? t('tableStructure.indexAdded')
@@ -201,7 +202,7 @@ export function TableStructureView({
   const reviewDeleteIndex = (index: IndexInfo) => {
     setPendingAction({
       title: t('tableStructure.confirmDeleteIndex'),
-      description: `${database}.${table}.${index.name}`,
+      description: `${database}.${tableDisplayName(table)}.${index.name}`,
       sql: buildDropIndexSQL(sqlEngine, database, table, index.name),
       successMessage: t('tableStructure.indexDeleted', { name: index.name })
     })
@@ -343,10 +344,12 @@ export function TableStructureView({
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
-      <Toolbar
-        title={<span className="font-mono">{table}</span>}
-        subtitle={[connectionName, database].filter(Boolean).join(' / ')}
-        center={tabs}
+      <TableViewToolbar
+        table={table}
+        database={database}
+        connectionName={connectionName}
+        engine={engine}
+        tabs={tabs}
         progress={schemaLoading ? { status: 'running', label: t('common.loading') } : null}
         overflowLabel={t('common.moreActions')}
         overflow={[

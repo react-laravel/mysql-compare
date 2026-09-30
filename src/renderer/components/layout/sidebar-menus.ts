@@ -25,6 +25,8 @@ import type { MenuItem } from '@renderer/components/ui/dropdown-menu'
 import type { useI18n } from '@renderer/i18n'
 import type { SafeConnection } from '../../../shared/types'
 import type { SidebarActions } from './sidebar-actions'
+import { showsAllDatabases } from '../connection/database-browsing'
+import { tableDisplayName } from '../../../shared/table-reference'
 
 type Translate = ReturnType<typeof useI18n>['t']
 
@@ -39,6 +41,11 @@ export function buildConnectionMenuItems({
   actions
 }: MenuContext & { connection: SafeConnection }): MenuItem[] {
   return [
+    ...(connection.engine !== 'redis' ? [
+      { id: 'add-database', icon: Plus, label: t('sidebar.browsing.addDatabase'), onSelect: () => actions.openAddDatabase(connection) } satisfies MenuItem,
+      { kind: 'checkbox', id: 'show-all-databases', label: t('sidebar.browsing.showAll'), checked: showsAllDatabases(connection), onSelect: () => void actions.setShowAllDatabases(connection, !showsAllDatabases(connection)) } satisfies MenuItem,
+      { kind: 'separator', id: 'sep-browsing' } satisfies MenuItem
+    ] : []),
     ...(connection.useSSH
       ? [
           {
@@ -61,6 +68,12 @@ export function buildConnectionMenuItems({
       icon: Pencil,
       label: t('common.edit'),
       onSelect: () => actions.editConnection(connection)
+    },
+    {
+      id: 'organize-connections',
+      icon: Folder,
+      label: t('sidebar.organization.title'),
+      onSelect: actions.organizeConnections
     },
     ...(connection.useSSH
       ? [
@@ -111,16 +124,14 @@ export function buildDatabaseMenuItems({
             label: t('sidebar.overlays.openSqlConsole'),
             onSelect: () => actions.openSQLConsole(connection, database)
           },
-          ...(connection.engine === 'postgres'
-            ? [
+          ...([
                 {
                   id: 'credential',
                   icon: KeyRound,
                   label: t('sidebar.overlays.databaseCredential'),
                   onSelect: () => actions.openDatabaseCredential(connection, database)
                 } satisfies MenuItem
-              ]
-            : []),
+              ]),
           {
             id: 'export',
             icon: Download,
@@ -214,7 +225,7 @@ export function buildTableMenuItems({
     {
       id: 'copy',
       icon: Copy,
-      label: t('sidebar.overlays.copyToCopy', { table }),
+      label: t('sidebar.overlays.copyToCopy', { table: tableDisplayName(table) }),
       onSelect: () => actions.requestCopyTable(connection, database, table)
     },
     {

@@ -35,6 +35,10 @@ pub fn run() {
     })
     .invoke_handler(tauri::generate_handler![
       commands::connection::connection_list,
+      commands::connection::connection_organize,
+      commands::connection::connection_update_database_browsing,
+      commands::db::db_discover_databases,
+      commands::db::db_list_schemas,
       commands::connection::connection_upsert,
       commands::connection::connection_remove,
       commands::connection::connection_close,

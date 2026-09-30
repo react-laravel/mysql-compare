@@ -46,14 +46,31 @@ pub async fn db_list_tables(
   state: State<'_, AppState>,
   connection_id: String,
   database: String,
+  schema: Option<String>,
 ) -> Result<IpcResult<Vec<String>>, String> {
   match state.get_driver(&app, &connection_id).await {
-    Ok(d) => match d.list_tables(&database).await {
+    Ok(d) => match d.list_tables_in_schema(&database, schema.as_deref()).await {
       Ok(v) => Ok(IpcResult::ok(v)),
       Err(e) => Ok(IpcResult::err(e)),
     },
     Err(e) => Ok(IpcResult::err(e)),
   }
+}
+
+#[tauri::command]
+pub async fn db_discover_databases(app: AppHandle, state: State<'_, AppState>, connection_id: String) -> Result<IpcResult<Vec<String>>, String> {
+  Ok(match state.get_driver(&app, &connection_id).await {
+    Ok(driver) => crate::ipc::map_result(driver.discover_databases().await),
+    Err(error) => IpcResult::err(error),
+  })
+}
+
+#[tauri::command]
+pub async fn db_list_schemas(app: AppHandle, state: State<'_, AppState>, connection_id: String, database: String) -> Result<IpcResult<Vec<String>>, String> {
+  Ok(match state.get_driver(&app, &connection_id).await {
+    Ok(driver) => crate::ipc::map_result(driver.list_schemas(&database).await),
+    Err(error) => IpcResult::err(error),
+  })
 }
 
 #[tauri::command]

@@ -8,8 +8,9 @@ import type { SafeConnection } from '../../../shared/types'
 import { buildRedisKeyTree, type RedisKeyTreeNode } from './redis-key-tree'
 import { getDatabaseKey, isRedisKeyListTruncated } from './sidebar-actions'
 import type { NodeState } from './sidebar-types'
+import { tableDisplayName, tableReference } from '../../../shared/table-reference'
 
-export type SidebarRowMessage = 'noTables' | 'noTablesMatch' | 'noKeys' | 'noKeysMatch'
+export type SidebarRowMessage = 'noTables' | 'noTablesMatch' | 'noKeys' | 'noKeysMatch' | 'noVisibleTables' | 'noSchemas' | 'noDatabases'
 
 interface RowBase {
   key: string
@@ -26,6 +27,9 @@ export type SidebarRow = RowBase &
     | { type: 'group'; label: string; count: number }
     | { type: 'connection'; connection: SafeConnection; expanded: boolean }
     | { type: 'loading' }
+    | { type: 'browse-error'; connection: SafeConnection; database?: string; message: string }
+    | { type: 'add-database'; connection: SafeConnection }
+    | { type: 'schema-picker'; connection: SafeConnection; database: string; schema: string; schemas: string[] }
     | {
         type: 'database'
         connection: SafeConnection
@@ -85,6 +89,16 @@ export interface ConnectionGroup {
   connections: SafeConnection[]
 }
 
+export function filterConnections(connections: SafeConnection[], keyword: string): SafeConnection[] {
+  const query = keyword.trim().toLowerCase()
+  if (!query) return connections
+  return connections.filter((connection) => [
+    connection.name, connection.host, `${connection.host}:${connection.port}`,
+    connection.username, connection.group, connection.database, connection.engine,
+    connection.useSSH ? connection.sshHost : undefined
+  ].some((value) => value?.toLowerCase().includes(query)))
+}
+
 /** `connection.group` or a single fallback bucket, in first-seen order. */
 export function groupConnections(
   connections: SafeConnection[],
@@ -95,7 +109,7 @@ export function groupConnections(
 
   connections.forEach((connection) => {
     const name = connection.group?.trim()
-    const key = name || '__ungrouped'
+    const key = name ? `named:${name}` : '__ungrouped'
     let group = byKey.get(key)
     if (!group) {
       group = { key, label: name || ungroupedLabel, connections: [] }
@@ -188,8 +202,12 @@ export function buildSidebarRows({
       if (node.loading) {
         rows.push({ type: 'loading', key: `loading:${connection.id}`, depth: 1 })
       }
+      if (node.connectionError) rows.push({ type: 'browse-error', key: `error:${connection.id}`, depth: 1, connection, message: node.connectionError })
 
       const databases = node.databases ?? []
+      if (node.databases && databases.length === 0 && !node.loading && !node.connectionError) {
+        rows.push({ type: 'message', key: `empty:${connection.id}`, depth: 1, message: 'noDatabases' })
+      }
       databases.forEach((database, databaseIndex) => {
         const dbExpanded = node.expandedDbs.has(database)
         const isRedis = connection.engine === 'redis'
@@ -205,11 +223,30 @@ export function buildSidebarRows({
           expanded: dbExpanded,
           keyCount,
           hasCustomCredential:
-            connection.engine === 'postgres' &&
+            connection.engine !== 'redis' &&
             connection.databaseCredentials?.[database] !== undefined
         })
 
         if (!dbExpanded) return
+
+        const schemas = node.schemas?.[database]
+        if (connection.engine === 'postgres' && schemas?.length) rows.push({
+          type: 'schema-picker', key: `schema:${connection.id}:${database}`, depth: 2,
+          connection, database, schemas, schema: node.activeSchemas?.[database] ?? ''
+        })
+        if (node.databaseLoading?.[database]) {
+          rows.push({ type: 'loading', key: `loading:${connection.id}:${database}`, depth: 2 })
+          return
+        }
+        const error = node.databaseErrors?.[database]
+        if (error) {
+          rows.push({ type: 'browse-error', key: `error:${connection.id}:${database}`, depth: 2, connection, database, message: error })
+          return
+        }
+        if (connection.engine === 'postgres' && schemas?.length === 0) {
+          rows.push({ type: 'message', key: `empty:${connection.id}:${database}`, depth: 2, message: 'noSchemas' })
+          return
+        }
 
         const filterValue = tableFilters[getDatabaseKey(connection.id, database)] ?? ''
         rows.push({
@@ -224,7 +261,7 @@ export function buildSidebarRows({
         const tables = node.tables[database]
         const query = filterValue.toLowerCase()
         const visible = (tables ?? []).filter(
-          (table) => !query || table.toLowerCase().includes(query)
+          (table) => !query || tableDisplayName(table).toLowerCase().includes(query)
         )
 
         if (isRedis) {
@@ -255,7 +292,7 @@ export function buildSidebarRows({
                 : 'noTablesMatch'
               : isRedis
                 ? 'noKeys'
-                : 'noTables'
+                : connection.engine === 'postgres' ? (schemas?.length === 0 ? 'noSchemas' : 'noVisibleTables') : 'noTables'
           })
         }
 
@@ -271,6 +308,7 @@ export function buildSidebarRows({
           })
         }
       })
+      if (connection.engine !== 'redis') rows.push({ type: 'add-database', key: `add:${connection.id}`, depth: 1, connection })
     })
   })
 
@@ -316,7 +354,7 @@ export function rowLabel(row: SidebarRow): string {
     case 'database':
       return row.database
     case 'table':
-      return row.table
+      return tableReference(row.table).name
     case 'redis-folder':
     case 'redis-key':
       return row.label
