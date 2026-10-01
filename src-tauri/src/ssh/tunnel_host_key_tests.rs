@@ -17,6 +17,7 @@ use parking_lot::Mutex;
 
 use super::{connect_forward_session, connect_session_with_verifier, spawn_tunnel_with_session};
 use crate::types::ConnectionConfig;
+use crate::store::host_keys::{HostKeyChallenge, HostKeyStore, CHALLENGE_PREFIX};
 
 const GREETING: [u8; 5] = [0x4a, 0, 0, 0, 0x0a];
 
@@ -33,6 +34,9 @@ struct SshFixture {
 
 impl SshFixture {
   fn new() -> Self {
+    Self::with_sftp("internal-sftp")
+  }
+  fn with_sftp(sftp_subsystem: &str) -> Self {
     let dir = std::env::temp_dir().join(format!("mysql-compare-ssh-{}", uuid::Uuid::new_v4()));
     fs::create_dir(&dir).unwrap();
     for name in ["trusted-host", "changed-host", "client"] {
@@ -69,7 +73,7 @@ impl SshFixture {
         "UsePAM no\nStrictModes no\nPasswordAuthentication no\n\
          KbdInteractiveAuthentication no\nAuthorizedKeysFile \"{}\"\n\
          AllowTcpForwarding local\nPermitOpen 127.0.0.1:{database_port}\n\
-         LoginGraceTime 5\nLogLevel DEBUG1\n",
+         Subsystem sftp {sftp_subsystem}\nMaxSessions 1\nLoginGraceTime 5\nLogLevel DEBUG1\n",
         dir.join("client.pub").display()
       ),
     )
@@ -213,6 +217,112 @@ fn assert_no_authentication_or_forwarding(log: &str) {
 }
 
 #[test]
+fn first_seen_host_requires_confirmation_before_authentication_then_retries_safely() {
+  let fixture = SshFixture::new();
+  let store = HostKeyStore::load_path(fixture.dir.join("ssh-host-keys.json")).unwrap();
+  let error = connect_session_with_verifier(&fixture.conn, |host, port, key| {
+    store.verify(host, port, &super::fingerprint_sha256(key))
+  }).err().expect("unknown SSH identity must not receive credentials");
+  let challenge: HostKeyChallenge = serde_json::from_str(error.strip_prefix(CHALLENGE_PREFIX).expect("structured confirmation challenge")).unwrap();
+  assert_eq!(challenge.fingerprint, super::fingerprint_sha256(&fixture.trusted_key));
+  assert_no_authentication_or_forwarding(&fixture.completed_log(0));
+  assert_eq!(fixture.database_connections.load(Ordering::SeqCst), 0);
+  assert!(!fixture.dir.join("ssh-host-keys.json").exists());
+  store.confirm(&challenge.challenge_id, &challenge.fingerprint).unwrap();
+  let session = connect_session_with_verifier(&fixture.conn, |host, port, key| {
+    store.verify(host, port, &super::fingerprint_sha256(key))
+  }).expect("confirmed host authenticates on retry");
+  assert!(session.authenticated());
+  drop(session);
+  assert!(fixture.completed_log(1).contains("Accepted publickey"));
+  assert_eq!(fixture.database_connections.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn cancellation_after_verified_handshake_stops_before_authentication_or_forwarding() {
+  let fixture = SshFixture::new();
+  let cancellation = crate::operations::Cancellation::new();
+  let error = crate::operations::with_cancellation(Some(cancellation.clone()), || {
+    connect_session_with_verifier(&fixture.conn, |_, _, key| {
+      assert_eq!(key, fixture.trusted_key);
+      // Simulate the UI cancel arriving immediately after host verification.
+      cancellation.cancel();
+      Ok(())
+    })
+  }).err().expect("cancellation must prevent credential authentication");
+  assert!(error.contains("canceled"));
+  assert_no_authentication_or_forwarding(&fixture.completed_log(0));
+  assert_eq!(fixture.database_connections.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn sftp_streams_large_files_without_editor_loading_and_preserves_existing_targets() {
+  use std::os::unix::fs::PermissionsExt;
+  use sha2::{Digest, Sha256};
+  use crate::ssh::sftp;
+  let fixture = SshFixture::new();
+  let session = || connect_session_with_verifier(&fixture.conn, |_, _, key| {
+    assert_eq!(key, fixture.trusted_key);
+    Ok(())
+  }).expect("authenticate disposable SFTP session with its verified key");
+  let remote_directory = fixture.dir.join("remote-transfer");
+  fs::create_dir(&remote_directory).unwrap();
+  let source = fixture.dir.join("large-file.txt");
+  let bytes = vec![b'x'; 10 * 1024 * 1024 + 123];
+  fs::write(&source, &bytes).unwrap();
+  let remote_file = remote_directory.join("large-file.txt");
+  sftp::upload_file(session(), remote_directory.to_str().unwrap(), source.to_str().unwrap()).unwrap();
+  assert_eq!(Sha256::digest(fs::read(&remote_file).unwrap()), Sha256::digest(&bytes));
+  assert!(sftp::read_file_with_session(session(), remote_file.to_str().unwrap()).unwrap_err().contains("8 MiB"));
+  let downloaded = fixture.dir.join("downloaded.txt");
+  sftp::download_file(session(), remote_file.to_str().unwrap(), downloaded.to_str().unwrap()).unwrap();
+  assert_eq!(Sha256::digest(fs::read(&downloaded).unwrap()), Sha256::digest(&bytes));
+
+  fs::write(&source, b"must not overwrite the uploaded file").unwrap();
+  assert!(sftp::upload_file(session(), remote_directory.to_str().unwrap(), source.to_str().unwrap()).is_err());
+  assert_eq!(Sha256::digest(fs::read(&remote_file).unwrap()), Sha256::digest(&bytes));
+
+  let editor_file = remote_directory.join("editor.txt");
+  fs::write(&editor_file, b"original").unwrap();
+  fs::set_permissions(&editor_file, fs::Permissions::from_mode(0o755)).unwrap();
+  sftp::write_file_with_session(session(), editor_file.to_str().unwrap(), "updated 中文").unwrap();
+  assert_eq!(fs::read_to_string(&editor_file).unwrap(), "updated 中文");
+  assert_eq!(fs::metadata(&editor_file).unwrap().permissions().mode() & 0o7777, 0o755);
+  assert_eq!(sftp::read_file_with_session(session(), editor_file.to_str().unwrap()).unwrap().content, "updated 中文");
+  assert!(sftp::write_file_with_session(session(), editor_file.to_str().unwrap(), std::str::from_utf8(&bytes).unwrap()).is_err());
+  assert_eq!(fs::read_to_string(&editor_file).unwrap(), "updated 中文");
+  assert!(fs::read_dir(&remote_directory).unwrap().all(|entry| !entry.unwrap().file_name().to_string_lossy().ends_with(".part")));
+
+  let download_root = fixture.dir.join("download-root");
+  fs::create_dir(&download_root).unwrap();
+  let existing = download_root.join("remote-transfer");
+  fs::create_dir(&existing).unwrap(); fs::write(existing.join("keep.txt"), b"keep").unwrap();
+  assert!(sftp::download_directory(session(), remote_directory.to_str().unwrap(), download_root.to_str().unwrap()).is_err());
+  assert_eq!(fs::read(existing.join("keep.txt")).unwrap(), b"keep");
+  assert_eq!(fixture.database_connections.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn sftp_refused_atomic_replacement_preserves_original_file_and_permissions() {
+  use std::os::unix::fs::PermissionsExt;
+  let fixture = SshFixture::with_sftp("internal-sftp -P posix-rename");
+  let session = connect_session_with_verifier(&fixture.conn, |_, _, key| {
+    assert_eq!(key, fixture.trusted_key); Ok(())
+  }).unwrap();
+  let directory = fixture.dir.join("refused-edit");
+  fs::create_dir(&directory).unwrap();
+  let target = directory.join("script.sh");
+  fs::write(&target, b"original script").unwrap();
+  fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).unwrap();
+  let error = crate::ssh::sftp::write_file_with_session(session, target.to_str().unwrap(), "replacement script").unwrap_err();
+  assert!(error.contains("refused") || error.contains("does not support"), "{error}");
+  assert_eq!(fs::read(&target).unwrap(), b"original script");
+  assert_eq!(fs::metadata(&target).unwrap().permissions().mode() & 0o7777, 0o755);
+  assert_eq!(fs::read_dir(directory).unwrap().count(), 1);
+  assert_eq!(fixture.database_connections.load(Ordering::SeqCst), 0);
+}
+
+#[test]
 fn forward_connection_rejects_mismatched_host_key_before_authentication() {
   let fixture = SshFixture::new();
   fixture.changed_key.store(true, Ordering::SeqCst);
@@ -286,6 +396,7 @@ fn forward_listener_checks_every_connection_after_successful_probe() {
     if changed {
       assert_no_authentication_or_forwarding(&log);
       assert_eq!(fixture.database_connections.load(Ordering::SeqCst), before);
+      assert!(tunnel.host_key_error.lock().as_deref().unwrap().contains("Close this connection and reconnect"));
     } else {
       assert!(log.contains("Accepted publickey"), "{log}");
       assert!(log.contains("direct-tcpip"), "{log}");
@@ -293,6 +404,7 @@ fn forward_listener_checks_every_connection_after_successful_probe() {
         fixture.database_connections.load(Ordering::SeqCst),
         before + 1
       );
+      assert!(tunnel.host_key_error.lock().is_none());
     }
   }
 }

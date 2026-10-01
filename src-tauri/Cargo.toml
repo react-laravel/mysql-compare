@@ -29,8 +29,8 @@ aes-gcm = "0.10"
 rand = "0.8"
 base64 = "0.22"
 dirs = "6"
-sqlx = { version = "0.8", features = ["runtime-tokio", "mysql", "postgres", "chrono", "json"] }
-redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls-ring-native-roots", "mysql", "postgres", "chrono", "json"] }
+redis = { version = "0.27", features = ["tokio-rustls-comp", "connection-manager"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "net"] }
 chrono = { version = "0.4", features = ["serde"] }
 hex = "0.4"
@@ -44,4 +44,14 @@ regex = "1"
 ssh2 = "0.9"
 
 [target.'cfg(windows)'.dependencies]
+keyring = { version = "3.6", features = ["windows-native"] }
 ssh2 = { version = "0.9", features = ["vendored-openssl"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3"
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd"))'.dependencies]
+keyring = { version = "3.6", features = ["sync-secret-service", "crypto-rust"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

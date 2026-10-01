@@ -98,6 +98,19 @@ describe('dev-mock-api', () => {
     expect(result.columns.map((c) => c.name)).toEqual(['field', 'value'])
   })
 
+  it('scans Redis in individual batches and matches keys outside the old listing limit', async () => {
+    const first = data(await api.db.scanRedisKeys('mock-redis', 'db1'))
+    expect(first.keys).toHaveLength(500)
+    expect(first.nextCursor).toBe('500')
+    expect(first.complete).toBe(false)
+    const empty = data(await api.db.scanRedisKeys('mock-redis', 'db1', '0', '*unscanned:key:20000*'))
+    expect(empty.keys).toEqual([])
+    expect(empty.complete).toBe(false)
+    const matching = data(await api.db.scanRedisKeys('mock-redis', 'db1', '19500', '*unscanned:key:20000*'))
+    expect(matching.keys).toEqual(['unscanned:key:20000'])
+    expect(matching.nextCursor).toBe('20000')
+  })
+
   it('returns a schema whose createSQL matches the engine', async () => {
     const mysql = data(await api.schema.getTable('mock-mysql', 'shop', 'users'))
     expect(mysql.primaryKey).toEqual(['id'])

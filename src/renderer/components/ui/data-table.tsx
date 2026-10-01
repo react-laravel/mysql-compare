@@ -5,6 +5,7 @@ import { Checkbox } from './checkbox'
 import { ContextMenu, useContextMenu } from './context-menu'
 import type { MenuItem } from './dropdown-menu'
 import { Skeleton } from './skeleton'
+import { useVirtualRows } from './use-virtual-rows'
 import {
   TBody,
   THead,
@@ -90,6 +91,8 @@ export interface DataTableProps<Row> {
   className?: string
   tableClassName?: string
   rowClassName?: (row: Row, index: number) => string | undefined
+  /** Fixed-height rows with bounded cell content. Enabled above 100 rows. */
+  virtualized?: { rowHeight: number; headerHeight?: number }
   'aria-label'?: string
 }
 
@@ -137,8 +140,34 @@ export function DataTable<Row>({
   className,
   tableClassName,
   rowClassName,
+  virtualized,
   'aria-label': ariaLabel
 }: DataTableProps<Row>) {
+  const viewportRef = React.useRef<HTMLDivElement | null>(null)
+  const rowRefs = React.useRef(new Map<number, HTMLTableRowElement>())
+  const [focusedIndex, setFocusedIndex] = React.useState<number | null>(null)
+  const [activeIndex, setActiveIndex] = React.useState(0)
+  const pendingFocus = React.useRef<number | null>(null)
+  const window = useVirtualRows({
+    viewportRef,
+    count: rows.length,
+    enabled: Boolean(virtualized),
+    rowHeight: virtualized?.rowHeight ?? 28,
+    headerHeight: virtualized?.headerHeight ?? 28,
+    pinnedIndexes: focusedIndex == null ? [] : [focusedIndex]
+  })
+  React.useLayoutEffect(() => {
+    if (pendingFocus.current == null) return
+    rowRefs.current.get(pendingFocus.current)?.focus()
+    pendingFocus.current = null
+  })
+  const focusRow = (index: number) => {
+    const next = Math.max(0, Math.min(rows.length - 1, index))
+    setActiveIndex(next)
+    pendingFocus.current = next
+    window.scrollToIndex(next)
+    rowRefs.current.get(next)?.focus()
+  }
   const menu = useContextMenu<{ row: Row; index: number }>()
   // A checkbox `change` event carries no modifier state, so the preceding
   // `click` records it for range selection.
@@ -200,12 +229,14 @@ export function DataTable<Row>({
   }
 
   return (
-    <div className={cn('min-h-0 overflow-auto', className)} aria-busy={streaming || undefined}>
+    <div ref={viewportRef} className={cn('min-h-0 overflow-auto', className)} aria-busy={streaming || undefined}>
       <Table
         variant={variant}
         density={density}
         aria-label={ariaLabel}
-        className={tableClassName}
+        className={cn(window.virtual && 'table-fixed', tableClassName)}
+        aria-rowcount={rows.length + 1}
+        style={window.virtual ? { minWidth: columns.reduce((width, column) => width + (column.width ?? column.minWidth ?? 160), selection ? 32 : 0) } : undefined}
       >
         <THead className={stickyHeader ? undefined : 'static'}>
           <Tr className="hover:bg-transparent">
@@ -238,7 +269,11 @@ export function DataTable<Row>({
           </Tr>
         </THead>
         <TBody>
-          {rows.map((row, index) => {
+          {window.indexes.map((index, visibleIndex) => {
+            const row = rows[index]!
+            const previousIndex = window.indexes[visibleIndex - 1]
+            const gapStart = previousIndex == null ? 0 : window.offsets[previousIndex + 1]!
+            const gap = window.offsets[index]! - gapStart
             const key = keys[index] ?? String(index)
             const selected = selection?.selected.has(key) ?? false
             const tone = rowTone?.(row) ?? null
@@ -246,10 +281,21 @@ export function DataTable<Row>({
             const clickActivates = activatable && activateOn === 'click'
             const interactive = activatable || onRowClick != null
             return (
+              <React.Fragment key={key}>
+              {gap > 0 ? <tr aria-hidden><td colSpan={columns.length + (selection ? 1 : 0)} style={{ height: gap, padding: 0, border: 0 }} /></tr> : null}
               <Tr
-                key={key}
+                ref={(element: HTMLTableRowElement | null) => {
+                  if (element) rowRefs.current.set(index, element)
+                  else rowRefs.current.delete(index)
+                }}
+                aria-rowindex={index + 2}
+                style={window.virtual ? { height: virtualized?.rowHeight } : undefined}
+                onFocusCapture={() => { setFocusedIndex(index); setActiveIndex(index) }}
+                onBlurCapture={(event) => {
+                  if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocusedIndex(null)
+                }}
                 selected={selected}
-                tabIndex={interactive ? 0 : undefined}
+                tabIndex={interactive ? (index === Math.min(activeIndex, rows.length - 1) ? 0 : -1) : undefined}
                 data-focus-inset={interactive ? '' : undefined}
                 onClick={
                   clickActivates
@@ -263,15 +309,16 @@ export function DataTable<Row>({
                     ? () => onRowActivate?.(row, index)
                     : undefined
                 }
-                onKeyDown={
-                  activatable
-                    ? (event) => {
-                        if (event.key !== 'Enter' && event.key !== ' ') return
-                        event.preventDefault()
-                        onRowActivate?.(row, index)
-                      }
-                    : undefined
-                }
+                onKeyDown={(event) => {
+                  if (event.target !== event.currentTarget || event.defaultPrevented) return
+                  if (interactive && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+                    event.preventDefault()
+                    focusRow(event.key === 'Home' ? 0 : event.key === 'End' ? rows.length - 1 : index + (event.key === 'ArrowDown' ? 1 : -1))
+                  } else if (activatable && (event.key === 'Enter' || event.key === ' ')) {
+                    event.preventDefault()
+                    onRowActivate?.(row, index)
+                  }
+                }}
                 onContextMenu={
                   onRowContextMenu ? (event) => menu.open(event, { row, index }) : undefined
                 }
@@ -316,8 +363,12 @@ export function DataTable<Row>({
                   </Td>
                 ))}
               </Tr>
+              </React.Fragment>
             )
           })}
+          {window.virtual && (window.offsets[(window.indexes.at(-1) ?? -1) + 1] ?? 0) < window.totalHeight ? (
+            <tr aria-hidden><td colSpan={columns.length + (selection ? 1 : 0)} style={{ height: window.totalHeight - (window.offsets[(window.indexes.at(-1) ?? -1) + 1] ?? 0), padding: 0, border: 0 }} /></tr>
+          ) : null}
           {streaming ? (
             <tr>
               <td colSpan={columns.length + (selection ? 1 : 0)} className="p-1">

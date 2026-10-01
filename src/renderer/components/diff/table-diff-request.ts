@@ -7,14 +7,14 @@ import type {
 } from '../../../shared/types'
 
 export interface TableDiffRequestRouter {
-  databases: (req: DiffRequest) => Promise<IPCResult<DatabaseDiff>>
-  table?: (req: TableDiffRequest) => Promise<IPCResult<TableComparisonResult>>
+  databases: (req: DiffRequest, operationId?: string) => Promise<IPCResult<DatabaseDiff>>
+  table?: (req: TableDiffRequest, operationId?: string) => Promise<IPCResult<TableComparisonResult>>
 }
 
 export function supportsIncrementalTableDiff(
   router: TableDiffRequestRouter
 ): router is TableDiffRequestRouter & {
-  table: (req: TableDiffRequest) => Promise<IPCResult<TableComparisonResult>>
+  table: (req: TableDiffRequest, operationId?: string) => Promise<IPCResult<TableComparisonResult>>
 } {
   return typeof router.table === 'function'
 }
@@ -31,10 +31,11 @@ export function extractTableComparisonResult(
 
 export async function requestTableComparison(
   router: TableDiffRequestRouter,
-  req: TableDiffRequest
+  req: TableDiffRequest,
+  operationId?: string
 ): Promise<IPCResult<TableComparisonResult>> {
   if (supportsIncrementalTableDiff(router)) {
-    return router.table(req)
+    return operationId ? router.table(req, operationId) : router.table(req)
   }
 
   const result = await router.databases({
@@ -44,7 +45,7 @@ export async function requestTableComparison(
     targetDatabase: req.targetDatabase,
     includeData: req.includeData,
     tables: [req.table]
-  })
+  }, operationId)
 
   if (!result.ok) {
     return { ok: false, error: result.error }

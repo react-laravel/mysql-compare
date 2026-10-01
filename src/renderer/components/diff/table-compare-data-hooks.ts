@@ -5,13 +5,14 @@
 // unchanged: the same per-side request de-duplication, the same shared
 // stable-order column, the same prefetch of the next tables with differences.
 import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
-import { api, unwrap } from '@renderer/lib/api'
+import { useI18n } from '@renderer/i18n'
 import { completeComparisonPage, sharedComparisonKey } from './table-compare-page'
 import type { QueryRowsResult } from '../../../shared/types'
 import { getUpcomingRowDiffTables } from './diff-panel-utils'
 import {
   fetchComparedTableData,
-  clearComparedTableCacheScope,
+  cancelComparedTableCacheScope,
+  queryComparedRows,
   prefetchComparedTables,
   type ComparedTableRowsQuery
 } from './table-compare-data-cache'
@@ -54,6 +55,7 @@ export interface TableCompareModel {
   reloadSource: () => void
   reloadTarget: () => void
   reloadBoth: () => void
+  cancelLoading: () => void
 }
 
 const PREFETCH_TABLE_COUNT = 3
@@ -72,6 +74,8 @@ export function useTableCompareModel({
   diffTables,
   active = true
 }: TableCompareModelOptions): TableCompareModel {
+  const { t } = useI18n()
+  const disposeLoad = useRef<(() => void) | null>(null)
   const cacheScopeKeyRef = useRef<string | null>(null)
   if (cacheScopeKeyRef.current === null) {
     tableCompareCacheScopeCounter += 1
@@ -136,6 +140,7 @@ export function useTableCompareModel({
 
   useEffect(() => {
     let disposed = false
+    disposeLoad.current = () => { disposed = true }
     const sourceQuery: ComparedTableRowsQuery = { cacheScopeKey, connectionId: sourceConnectionId, database: sourceDatabase, table, page, pageSize, reloadToken: sourceReloadToken }
     const targetQuery: ComparedTableRowsQuery = { cacheScopeKey, connectionId: targetConnectionId, database: targetDatabase, table, page, pageSize, reloadToken: targetReloadToken }
     setSourceState((current) => ({ ...current, loading: true, error: null }))
@@ -143,7 +148,7 @@ export function useTableCompareModel({
     void Promise.all([fetchComparedTableData(sourceQuery), fetchComparedTableData(targetQuery)])
       .then(async ([source, target]) => {
         if (disposed) return
-        const [completeSource, completeTarget] = await completeComparisonPage(source, target, sourceQuery, targetQuery, (request) => unwrap(api.db.queryRows(request)))
+        const [completeSource, completeTarget] = await completeComparisonPage(source, target, sourceQuery, targetQuery, (request) => queryComparedRows(cacheScopeKey, request))
         if (disposed) return
         setSourceState({ data: completeSource, error: null, loading: false })
         setTargetState({ data: completeTarget, error: null, loading: false })
@@ -154,10 +159,10 @@ export function useTableCompareModel({
         setSourceState(state)
         setTargetState(state)
       })
-    return () => { disposed = true }
+    return () => { disposed = true; cancelComparedTableCacheScope(cacheScopeKey) }
   }, [cacheScopeKey, sourceConnectionId, sourceDatabase, targetConnectionId, targetDatabase, table, page, pageSize, sourceReloadToken, targetReloadToken])
 
-  useEffect(() => () => clearComparedTableCacheScope(cacheScopeKey), [cacheScopeKey])
+  useEffect(() => () => cancelComparedTableCacheScope(cacheScopeKey), [cacheScopeKey])
 
   const upcomingDiffTables = useMemo(
     () => getUpcomingRowDiffTables(comparedTables, diffTables, table, PREFETCH_TABLE_COUNT),
@@ -226,6 +231,12 @@ export function useTableCompareModel({
     totalRows,
     reloadSource,
     reloadTarget,
+    cancelLoading: () => {
+      disposeLoad.current?.()
+      cancelComparedTableCacheScope(cacheScopeKey)
+      setSourceState((current) => ({ ...current, loading: false, error: current.data ? null : t('common.cancelled') }))
+      setTargetState((current) => ({ ...current, loading: false, error: current.data ? null : t('common.cancelled') }))
+    },
     reloadBoth: () => {
       reloadSource()
       reloadTarget()

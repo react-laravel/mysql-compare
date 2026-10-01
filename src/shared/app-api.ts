@@ -54,6 +54,8 @@ import type {
   UpdateRowRequest
 } from './types'
 
+export interface TrustedHostKey { host: string; port: number; fingerprint: string }
+
 export interface AppRuntimeInfo {
   readonly mode: 'electron' | 'web' | 'tauri'
   readonly supportsNativeFilePicker: boolean
@@ -64,6 +66,7 @@ export interface AppRuntimeInfo {
 
 export interface AppAPI {
   readonly runtime: AppRuntimeInfo
+  readonly operations: { cancel: (operationId: string) => Promise<IPCResult<void>> }
   readonly connection: {
     list: () => Promise<IPCResult<SafeConnection[]>>
     organize: (items: ConnectionOrganizationItem[]) => Promise<IPCResult<SafeConnection[]>>
@@ -89,25 +92,28 @@ export interface AppAPI {
     listSchemas: (connectionId: string, database: string) => Promise<IPCResult<string[]>>
     getDatabaseInfo: (connectionId: string, database: string) => Promise<IPCResult<DatabaseInfo>>
     listTables: (connectionId: string, database: string, schema?: string) => Promise<IPCResult<string[]>>
-    queryRows: (req: QueryRowsRequest) => Promise<IPCResult<QueryRowsResult>>
+    scanRedisKeys: (connectionId: string, database: string, cursor?: string, pattern?: string, operationId?: string) => Promise<IPCResult<{ keys: string[]; nextCursor: string; complete: boolean }>>
+    queryRows: (req: QueryRowsRequest, operationId?: string) => Promise<IPCResult<QueryRowsResult>>
     insertRow: (req: InsertRowRequest) => Promise<IPCResult>
     updateRow: (req: UpdateRowRequest) => Promise<IPCResult>
     deleteRows: (req: DeleteRowsRequest) => Promise<IPCResult>
-    executeSQL: (connectionId: string, sql: string, database?: string) => Promise<IPCResult>
-    explainSQL: (req: ExplainSQLRequest) => Promise<IPCResult<ExplainSQLResult>>
+    executeSQL: (connectionId: string, sql: string, database?: string, operationId?: string) => Promise<IPCResult>
+    explainSQL: (req: ExplainSQLRequest, operationId?: string) => Promise<IPCResult<ExplainSQLResult>>
     renameTable: (req: RenameTableRequest) => Promise<IPCResult<{ table: string }>>
     copyTable: (req: CopyTableRequest) => Promise<IPCResult<{ table: string }>>
     dropDatabase: (req: DropDatabaseRequest) => Promise<IPCResult<void>>
     dropTable: (req: DropTableRequest) => Promise<IPCResult<void>>
     truncateTable: (req: TruncateTableRequest) => Promise<IPCResult<void>>
-    exportTable: (req: ExportTableRequest) => Promise<IPCResult<ExportTableResult>>
-    exportDatabase: (req: ExportDatabaseRequest) => Promise<IPCResult<ExportDatabaseResult>>
-    importTable: (req: ImportTableRequest) => Promise<IPCResult<ImportTableResult>>
+    exportTable: (req: ExportTableRequest, operationId?: string) => Promise<IPCResult<ExportTableResult>>
+    exportDatabase: (req: ExportDatabaseRequest, operationId?: string) => Promise<IPCResult<ExportDatabaseResult>>
+    importTable: (req: ImportTableRequest, operationId?: string) => Promise<IPCResult<ImportTableResult>>
   }
   readonly schema: {
     getTable: (connectionId: string, database: string, table: string) => Promise<IPCResult<TableSchema>>
   }
   readonly ssh: {
+    listHostKeys: () => Promise<IPCResult<TrustedHostKey[]>>
+    forgetHostKey: (host: string, port: number, fingerprint: string) => Promise<IPCResult<boolean>>
     listFiles: (req: SSHListFilesRequest) => Promise<IPCResult<SSHListFilesResult>>
     uploadFile: (req: SSHUploadFileRequest) => Promise<IPCResult<SSHFileOperationResult>>
     uploadDirectory: (req: SSHUploadDirectoryRequest) => Promise<IPCResult<SSHFileOperationResult>>
@@ -130,12 +136,12 @@ export interface AppAPI {
     getPathForFile: (file: File) => string
   }
   readonly diff: {
-    databases: (req: DiffRequest) => Promise<IPCResult<DatabaseDiff>>
-    table: (req: TableDiffRequest) => Promise<IPCResult<TableComparisonResult>>
+    databases: (req: DiffRequest, operationId?: string) => Promise<IPCResult<DatabaseDiff>>
+    table: (req: TableDiffRequest, operationId?: string) => Promise<IPCResult<TableComparisonResult>>
   }
   readonly sync: {
-    buildPlan: (req: SyncRequest) => Promise<IPCResult<SyncPlan>>
-    execute: (req: SyncRequest) => Promise<IPCResult<{ executed: number; errors: number }>>
+    buildPlan: (req: SyncRequest, operationId?: string) => Promise<IPCResult<SyncPlan>>
+    execute: (req: SyncRequest, operationId?: string) => Promise<IPCResult<{ executed: number; errors: number }>>
     onProgress: (cb: (event: SyncProgressEvent) => void) => () => void
   }
 }

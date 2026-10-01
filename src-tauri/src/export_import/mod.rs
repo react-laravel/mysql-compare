@@ -1,3 +1,5 @@
+pub mod sql_script;
+mod mysqldump;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -19,11 +21,10 @@ impl ExportFile {
   fn new(target: &str) -> Result<Self, String> {
     let target = PathBuf::from(target);
     let path = target.with_file_name(format!(".mysql-compare-{}.part", uuid::Uuid::new_v4()));
-    let file = std::fs::OpenOptions::new()
-      .write(true)
-      .create_new(true)
-      .open(&path)
-      .map_err(|e| e.to_string())?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)] { use std::os::unix::fs::OpenOptionsExt; options.mode(0o600); }
+    let file = options.open(&path).map_err(|e| e.to_string())?;
     Ok(Self {
       path,
       target,
@@ -33,6 +34,7 @@ impl ExportFile {
   fn finish(mut self) -> Result<(), String> {
     if let Some(mut writer) = self.writer.take() {
       writer.flush().map_err(|e| e.to_string())?;
+      writer.get_ref().sync_all().map_err(|e| e.to_string())?;
     }
     std::fs::rename(&self.path, &self.target).map_err(|e| e.to_string())
   }
@@ -155,6 +157,7 @@ async fn write_table(
     .columns
     .iter()
     .filter(|c| !c.is_generated)
+    .filter(|c| req.scope != "selected" || req.selected_rows.as_deref().unwrap_or_default().iter().all(|row| row.contains_key(&c.name)))
     .map(|c| c.name.clone())
     .collect();
   let separator = if req.format == "csv" { ',' } else { '\t' };
@@ -173,12 +176,14 @@ async fn write_table(
   if let Some(sql) = query {
     let mut batches = driver.read_batches(&req.database, sql, 200).await?;
     while let Some(rows) = batches.recv().await {
+      crate::operations::check()?;
       let rows = rows?;
       write_export_rows(writer, req, &columns, &rows, dialect, separator)?;
       rows_exported += rows.len() as i64;
     }
   } else {
     for rows in req.selected_rows.as_deref().unwrap_or_default().chunks(200) {
+      crate::operations::check()?;
       write_export_rows(writer, req, &columns, rows, dialect, separator)?;
       rows_exported += rows.len() as i64;
     }
@@ -265,72 +270,15 @@ pub async fn export_database(
   file_path: &str,
   conn_host: &str,
   conn_port: u16,
-  conn_user: &str,
-  conn_password: &str,
+  _conn_user: &str,
+  _conn_password: &str,
+  conn: &crate::types::ConnectionConfig,
 ) -> Result<ExportDatabaseResult, String> {
   let backend = req.backend.as_deref().unwrap_or("builtin");
-  if backend == "mysqldump" || backend == "mysqldump-ssh" {
-    if driver.dialect()? != SqlDialect::Mysql
-      || export_dialect(SqlDialect::Mysql, req.sql_dialect.as_deref())? != SqlDialect::Mysql
-    {
-      return Err("mysqldump requires MySQL input and output".into());
-    }
-    let req = req.clone();
-    let host = conn_host.to_string();
-    let user = conn_user.to_string();
-    let password = conn_password.to_string();
-    let destination = file_path.to_string();
-    let backend = backend.to_string();
-    return tokio::task::spawn_blocking(move || {
-      let file = ExportFile::new(&destination)?;
-      let output_file = file
-        .writer
-        .as_ref()
-        .unwrap()
-        .get_ref()
-        .try_clone()
-        .map_err(|e| e.to_string())?;
-      let mut cmd = std::process::Command::new("mysqldump");
-      cmd
-        .arg("-h")
-        .arg(host)
-        .arg("-P")
-        .arg(conn_port.to_string())
-        .arg("-u")
-        .arg(user)
-        .arg("--single-transaction")
-        .arg("--hex-blob")
-        .arg("--complete-insert");
-      if !req.include_data.unwrap_or(true) {
-        cmd.arg("--no-data");
-      }
-      if !req.include_create_table.unwrap_or(true) {
-        cmd.arg("--no-create-info");
-      }
-      cmd
-        .arg("--")
-        .arg(&req.database)
-        .stdout(output_file)
-        .stderr(std::process::Stdio::piped());
-      if !password.is_empty() {
-        cmd.env("MYSQL_PWD", password);
-      }
-      let output = cmd.output().map_err(|e| e.to_string())?;
-      if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).into_owned());
-      }
-      file.finish()?;
-      Ok(ExportDatabaseResult {
-        canceled: false,
-        file_path: Some(destination),
-        tables_exported: 0,
-        rows_exported: 0,
-        backend: Some(backend),
-        rows_count_accurate: Some(false),
-      })
-    })
-    .await
-    .map_err(|e| e.to_string())?;
+  if backend == "mysqldump-ssh" { return Err("Remote mysqldump execution is not supported; select local mysqldump over the SSH tunnel".into()); }
+  if backend == "mysqldump" {
+    if driver.dialect()? != SqlDialect::Mysql || export_dialect(SqlDialect::Mysql, req.sql_dialect.as_deref())? != SqlDialect::Mysql { return Err("mysqldump requires MySQL input and output".into()); }
+    return mysqldump::export(req, file_path, conn_host, conn_port, conn).await;
   }
   if backend != "builtin" {
     return Err("Unsupported export backend".into());
@@ -339,6 +287,7 @@ pub async fn export_database(
   let mut file = ExportFile::new(file_path)?;
   let mut total_rows = 0;
   for table in &tables {
+      crate::operations::check()?;
     total_rows += write_table(
       driver.clone(),
       &ExportTableRequest {
@@ -379,8 +328,11 @@ pub async fn import_table(
 ) -> Result<ImportTableResult, String> {
   let content = if let Some(c) = &req.file_content {
     c.clone()
-  } else if let Some(path) = file_path.or(req.file_name.as_deref()) {
-    std::fs::read_to_string(path).map_err(|e| e.to_string())?
+  } else if let Some(path) = file_path {
+    use std::io::Read;
+    let mut content = String::new();
+    std::fs::File::open(path).map_err(|e| e.to_string())?.take(64 * 1024 * 1024 + 1).read_to_string(&mut content).map_err(|e| e.to_string())?;
+    content
   } else {
     return Ok(ImportTableResult {
       canceled: true,
@@ -390,9 +342,11 @@ pub async fn import_table(
     });
   };
 
+  if content.len() > 64 * 1024 * 1024 { return Err("Import exceeds the 64 MiB limit; split it into smaller files".into()); }
+
   if req.format == "sql" {
-    driver.execute_sql(&content, Some(&req.database)).await?;
-    let statements = content.matches(';').count() as i64;
+    let script = sql_script::statements(&content, driver.dialect()?)?;
+    let statements = driver.import_sql(&req.database, &script).await?;
     return Ok(ImportTableResult {
       canceled: false,
       file_path: file_path.map(str::to_string),

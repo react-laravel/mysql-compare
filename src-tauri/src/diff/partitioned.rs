@@ -88,6 +88,7 @@ fn compare_partition(
   columns: &[String],
   depth: usize,
 ) -> Result<TableDataDiff, String> {
+  crate::operations::check()?;
   let bytes = source.metadata().map_err(|e| e.to_string())?.len()
     + target.metadata().map_err(|e| e.to_string())?.len();
   if bytes <= PARTITION_BYTES {
@@ -108,6 +109,7 @@ fn compare_partition(
   for (name, path) in [("source", source), ("target", target)] {
     let mut outputs = writers(&directory, name)?;
     for line in BufReader::new(File::open(path).map_err(|e| e.to_string())?).lines() {
+      crate::operations::check()?;
       let row =
         serde_json::from_str(&line.map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
       write_row(&mut outputs, &row, keys, depth)?;
@@ -153,15 +155,18 @@ pub async fn compare(
     let sql = read_rows_sql(driver.dialect()?, database, table, &[], None, None, None)?;
     let mut batches = driver.read_batches(database, sql, 200).await?;
     while let Some(batch) = batches.recv().await {
+      crate::operations::check()?;
       for row in batch? {
         write_row(&mut output, &row, &keys, 0)?;
       }
     }
     flush(&mut output)?;
   }
-  tokio::task::spawn_blocking(move || {
+  let cancellation=crate::operations::current();
+  tokio::task::spawn_blocking(move || crate::operations::with_cancellation(cancellation, || {
     let mut result = diff_rows(&[], &[], keys.clone(), columns.clone(), None);
     for index in 0..PARTITIONS {
+      crate::operations::check()?;
       merge(
         &mut result,
         compare_partition(
@@ -174,7 +179,7 @@ pub async fn compare(
       );
     }
     Ok(result)
-  })
+  }))
   .await
   .map_err(|e| e.to_string())?
 }

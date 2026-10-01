@@ -62,6 +62,15 @@ describe('TableDataPagination', () => {
     expect((nextButton as HTMLButtonElement).disabled).toBe(true)
   })
 
+  it('uses hasMore and does not present an unknown total as a last page', () => {
+    const { rerender } = render(<TableDataPagination {...createProps({ page: 2, totalPages: 2, totalRows: 201, totalIsExact: false, totalIsEstimate: false, hasMore: true })} />)
+    expect((screen.getByRole('button', { name: 'Next' }) as HTMLButtonElement).disabled).toBe(false)
+    expect(screen.getByLabelText('Page number').getAttribute('max')).toBeNull()
+    expect(screen.queryByText('/ 2')).toBeNull()
+    rerender(<TableDataPagination {...createProps({ page: 2, totalPages: 5, totalIsExact: false, hasMore: false })} />)
+    expect((screen.getByRole('button', { name: 'Next' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
   it('cancels a focused page draft without submitting it on blur', () => {
     const props = createProps({ pageDraft: '4' })
     render(<TableDataPagination {...props} />)

@@ -368,7 +368,8 @@ export function SSHFileManager({ connectionId, connectionName, active = true }: 
         onFilterChange={setFilter}
       />
 
-      <div className="min-h-0 flex-1 overflow-auto">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        {listing?.truncated ? <p role="status" className="shrink-0 border-b border-border bg-warning-quiet px-3 py-2 text-xs text-warning-text">{t('sshFiles.filesTruncated')}</p> : null}
         <SSHFileTable
           entries={visibleEntries}
           selectedPath={selected?.path}

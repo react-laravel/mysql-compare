@@ -42,6 +42,8 @@ export function ImportTableDialog({
   const [selectedFile, setSelectedFile] = useState<SelectedImportFile | null>(null)
   const [dragActive, setDragActive] = useState(false)
   const [busy, setBusy] = useState(false)
+  const operationRef = useRef<string | null>(null)
+  const cancelledRef = useRef(false)
   const inputRef = useRef<HTMLInputElement | null>(null)
 
   const fileAccept = format === 'sql' ? '.sql' : format === 'csv' ? '.csv' : '.txt,.tsv'
@@ -67,6 +69,7 @@ export function ImportTableDialog({
 
   const readImportFile = async (file: File) => {
     try {
+      if (file.size > 64 * 1024 * 1024) { showToast(t('importDialog.sizeLimit'), 'error'); return }
       setSelectedFile({ name: file.name, content: await file.text() })
     } catch {
       showToast(t('importDialog.fileReadFailed'), 'error')
@@ -98,9 +101,12 @@ export function ImportTableDialog({
     }
 
     setBusy(true)
+    cancelledRef.current = false
+    const operationId = crypto.randomUUID()
+    operationRef.current = operationId
     try {
-      const result = await unwrap<ImportTableResult>(api.db.importTable(request))
-      if (!result.canceled) {
+      const result = await unwrap<ImportTableResult>(api.db.importTable(request, operationId))
+      if (!result.canceled && !cancelledRef.current) {
         const message =
           format === 'sql'
             ? t('importDialog.importedStatements', { count: result.statementsExecuted })
@@ -110,8 +116,9 @@ export function ImportTableDialog({
         onOpenChange(false)
       }
     } catch (error) {
-      showToast((error as Error).message, 'error')
+      if (!cancelledRef.current) showToast((error as Error).message, 'error')
     } finally {
+      operationRef.current = null
       setBusy(false)
     }
   }
@@ -124,7 +131,10 @@ export function ImportTableDialog({
       description={`${database}.${tableDisplayName(table)}`}
       footer={
         <>
-          <Button variant="secondary" onClick={() => onOpenChange(false)} disabled={busy}>
+          <Button variant="secondary" onClick={() => {
+            if (operationRef.current) { cancelledRef.current = true; void api.operations?.cancel(operationRef.current) }
+            else onOpenChange(false)
+          }}>
             {t('common.cancel')}
           </Button>
           <Button variant="primary" onClick={submit} disabled={busy || !selectedFile}>
@@ -147,6 +157,8 @@ export function ImportTableDialog({
           />
         </div>
 
+        {format === 'sql' && <p className="text-sm text-warning">{t('importDialog.sqlWarning')}</p>}
+        {format === 'sql' && selectedFile && <pre className="max-h-48 overflow-auto rounded border border-border bg-canvas p-2 text-xs whitespace-pre-wrap">{selectedFile.content.slice(0, 8000)}{selectedFile.content.length > 8000 ? '\n…' : ''}</pre>}
         <div>
           <Label className="block mb-1">{t('importDialog.file')}</Label>
           <input

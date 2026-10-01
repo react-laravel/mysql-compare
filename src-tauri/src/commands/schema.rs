@@ -15,8 +15,8 @@ pub async fn schema_get_table(
   match state.get_driver(&app, &connection_id).await {
     Ok(d) => match d.get_table_schema(&database, &table).await {
       Ok(v) => Ok(IpcResult::ok(v)),
-      Err(e) => Ok(IpcResult::err(e)),
+      Err(e) => Ok(IpcResult::err(state.connection_error(&connection_id, e))),
     },
-    Err(e) => Ok(IpcResult::err(e)),
+    Err(e) => Ok(IpcResult::err(state.connection_error(&connection_id, e))),
   }
 }

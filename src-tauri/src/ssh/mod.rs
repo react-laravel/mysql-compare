@@ -1,5 +1,6 @@
 pub mod host_verify;
 pub mod sftp;
+mod sftp_atomic;
 pub mod terminal;
 pub mod tunnel;
 

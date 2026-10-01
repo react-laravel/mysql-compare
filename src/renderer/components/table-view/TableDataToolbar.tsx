@@ -64,6 +64,7 @@ export interface TableDataToolbarProps {
   onApplyWhere: () => void
   onClearWhere: () => void
   onRefresh: () => void
+  onCancel?: () => void
   onOpenExport: () => void
   onOpenColumnPanel: () => void
   onToggleWrapCells: () => void
@@ -103,6 +104,7 @@ export function TableDataToolbar({
   onApplyWhere,
   onClearWhere,
   onRefresh,
+  onCancel,
   onOpenExport,
   onOpenColumnPanel,
   onToggleWrapCells,
@@ -245,6 +247,7 @@ export function TableDataToolbar({
       progress={loading ? { status: 'running', label: t('common.loading') } : null}
       actions={
         <>
+          {loading && onCancel ? <Button size="sm" variant="secondary" onClick={onCancel}>{t('common.cancel')}</Button> : null}
           <IconButton
             icon={RefreshCw}
             label={t('common.refresh')}

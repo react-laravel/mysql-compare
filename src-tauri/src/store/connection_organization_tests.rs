@@ -13,7 +13,7 @@ fn fixture() -> ConnectionStore {
       "databaseCredentials": { "app": { "username": "custom", "passwordCipher": "preserve-db-cipher" } }
     })).unwrap()
   }).collect();
-  let store = ConnectionStore { path: directory.join("connections.json"), inner: Mutex::new(Schema { connections }) };
+  let store = ConnectionStore { path: directory.join("connections.json"), inner: Mutex::new(Schema { connections }), startup_error: None };
   store.persist(&store.inner.lock()).unwrap();
   store
 }
@@ -63,4 +63,47 @@ fn organization_keeps_memory_unchanged_if_persistence_fails() {
   assert_eq!(store.list_safe()[0].id, "first");
   assert_eq!(store.list_safe()[0].group.as_deref(), Some("old"));
   fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn migration_covers_database_and_all_ssh_credentials_without_exposing_current_ciphertexts() {
+  let store = fixture();
+  let mut schema = store.inner.lock().clone();
+  schema.connections[0].ssh_password_cipher = Some("legacy-ssh-password".into());
+  schema.connections[0].ssh_passphrase_cipher = Some("legacy-passphrase".into());
+  schema.connections[1].password_cipher = Some("enc:v2:already-current".into());
+  let mut migrated = Vec::new();
+  assert!(migrate_stored_secrets(&mut schema, |value| {
+    let plain = value.unwrap();
+    migrated.push(plain.to_string());
+    Ok(Some(format!("enc:v2:migrated-{plain}")))
+  }).unwrap());
+  for expected in ["legacy-ssh-password", "legacy-passphrase", "preserve-key-cipher", "preserve-db-cipher", "preserve-password-cipher"] {
+    assert!(migrated.iter().any(|plain| plain == expected));
+  }
+  assert_eq!(schema.connections[1].password_cipher.as_deref(), Some("enc:v2:already-current"));
+  assert!(!migrate_stored_secrets(&mut schema, |_| panic!("current ciphertext must not be treated as plaintext")).unwrap());
+  fs::remove_dir_all(store.path.parent().unwrap()).unwrap();
+}
+
+#[test]
+fn connection_removal_keeps_memory_unchanged_if_persistence_fails() {
+  let mut store = fixture();
+  let directory = store.path.parent().unwrap().to_path_buf();
+  store.path = directory.join("missing").join("connections.json");
+  assert!(store.remove("first").is_err());
+  assert_eq!(store.list_safe().len(), 2);
+  fs::remove_dir_all(directory).unwrap();
+}
+#[test]
+fn unavailable_credential_migration_preserves_safe_listing_and_refuses_persistence() {
+  let mut store = fixture();
+  let original = fs::read(&store.path).unwrap();
+  store.startup_error = Some("System credential store locked; migration stopped".into());
+  assert_eq!(store.list_safe().len(), 2);
+  assert!(store.organize(vec![item("second", "new"), item("first", "new")]).is_err());
+  assert!(store.remove("first").is_err());
+  assert_eq!(fs::read(&store.path).unwrap(), original);
+  assert_eq!(store.list_safe()[0].id, "first");
+  fs::remove_dir_all(store.path.parent().unwrap()).unwrap();
 }

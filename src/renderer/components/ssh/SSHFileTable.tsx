@@ -46,6 +46,7 @@ export function SSHFileTable({
     () => [
       {
         id: 'name',
+        minWidth: 280,
         header: t('common.name'),
         cell: (entry) => (
           <span className="flex min-w-0 items-center gap-2">
@@ -129,6 +130,8 @@ export function SSHFileTable({
   return (
     <DataTable<SSHFileEntry>
       aria-label={t('sshFiles.title')}
+      className="min-h-0 flex-1"
+      virtualized={{ rowHeight: 28 }}
       columns={columns}
       rows={entries}
       rowKey={(entry) => entry.path}

@@ -1,8 +1,30 @@
 import { api, unwrap } from '@renderer/lib/api'
-import type { QueryRowsResult } from '../../../shared/types'
+import type { QueryRowsRequest, QueryRowsResult } from '../../../shared/types'
 
 const comparedTableDataCache = new Map<string, QueryRowsResult>()
-const pendingComparedTableRequests = new Map<string, Promise<QueryRowsResult>>()
+const pendingComparedTableRequests = new Map<string, { scope: string; promise: Promise<QueryRowsResult> }>()
+const operations = new Map<string, { scope: string; cancelled: boolean }>()
+
+export async function queryComparedRows(scope: string, request: QueryRowsRequest): Promise<QueryRowsResult> {
+  const id = crypto.randomUUID()
+  const operation = { scope, cancelled: false }
+  operations.set(id, operation)
+  try {
+    const data = await unwrap<QueryRowsResult>(api.db.queryRows(request, id))
+    if (operation.cancelled) throw new Error('Operation cancelled')
+    return data
+  } finally { operations.delete(id) }
+}
+
+/** Cancel reads, including prefetches and unmatched-key lookups, for one tab. */
+export function cancelComparedTableCacheScope(scope: string): void {
+  for (const [id, operation] of operations) if (operation.scope === scope) {
+    operation.cancelled = true
+    void api.operations?.cancel(id).catch(() => undefined)
+  }
+  for (const [key, pending] of pendingComparedTableRequests) if (pending.scope === scope) pendingComparedTableRequests.delete(key)
+  clearComparedTableCacheScope(scope)
+}
 
 const MAX_CACHED_RESULTS = 96
 const MAX_CACHED_BYTES = 32 * 1024 * 1024
@@ -59,11 +81,10 @@ export async function fetchComparedTableData(query: ComparedTableRowsQuery): Pro
   if (cached) return cached
 
   const pending = pendingComparedTableRequests.get(cacheKey)
-  if (pending) return pending
+  if (pending) return pending.promise
 
   const version = scopeVersions.get(query.cacheScopeKey) ?? 0
-  const request = unwrap<QueryRowsResult>(
-    api.db.queryRows({
+  const request = queryComparedRows(query.cacheScopeKey, {
       connectionId: query.connectionId,
       database: query.database,
       table: query.table,
@@ -71,7 +92,6 @@ export async function fetchComparedTableData(query: ComparedTableRowsQuery): Pro
       pageSize: query.pageSize,
       orderBy: query.orderBy
     })
-  )
     .then((data) => {
       if (version === (scopeVersions.get(query.cacheScopeKey) ?? 0)) {
         const bytes = JSON.stringify(data).length * 2
@@ -85,10 +105,10 @@ export async function fetchComparedTableData(query: ComparedTableRowsQuery): Pro
       return data
     })
     .finally(() => {
-      pendingComparedTableRequests.delete(cacheKey)
+      if (pendingComparedTableRequests.get(cacheKey)?.promise === request) pendingComparedTableRequests.delete(cacheKey)
     })
 
-  pendingComparedTableRequests.set(cacheKey, request)
+  pendingComparedTableRequests.set(cacheKey, { scope: query.cacheScopeKey, promise: request })
   return request
 }
 

@@ -16,8 +16,16 @@ pub struct AppState {
   pub host_keys: HostKeyStore,
   pub tunnels: TunnelManager,
   pub terminals: TerminalManager,
+  pub operations: crate::operations::Operations,
+  pub file_grants: crate::file_grants::FileGrants,
   drivers: Mutex<HashMap<String, Arc<EngineDriver>>>,
 }
+struct PendingTunnelWork(Option<crate::operations::Cancellation>);
+impl Drop for PendingTunnelWork {
+  fn drop(&mut self) { if let Some(cancellation) = self.0.take() { cancellation.cancel(); } }
+}
+struct TestTunnelCleanup { manager: TunnelManager, id: String }
+impl Drop for TestTunnelCleanup { fn drop(&mut self) { self.manager.close(&self.id); } }
 
 impl AppState {
   pub fn new(app: &AppHandle) -> Result<Self, String> {
@@ -26,8 +34,31 @@ impl AppState {
       host_keys: HostKeyStore::load(app)?,
       tunnels: TunnelManager::new(),
       terminals: TerminalManager::new(),
+      operations: crate::operations::Operations::default(),
+      file_grants: crate::file_grants::FileGrants::default(),
       drivers: Mutex::new(HashMap::new()),
     })
+  }
+
+  /// SSH's native handshake and authentication are blocking. Keep them off
+  /// async workers and preserve the owning operation's cancellation signal.
+  pub async fn ensure_tunnel(&self, app: &AppHandle, conn: &ConnectionConfig) -> Result<u16, String> {
+    let cancellation = crate::operations::current().unwrap_or_else(crate::operations::Cancellation::new);
+    let mut pending = PendingTunnelWork(Some(cancellation.clone()));
+    let app = app.clone(); let conn = conn.clone();
+    let manager = self.tunnels.clone(); let keys = self.host_keys.clone();
+    let result = tokio::task::spawn_blocking(move || crate::operations::with_cancellation(Some(cancellation), || {
+      let result = manager.ensure(&app, &keys, &conn);
+      if let Err(error) = crate::operations::check() {
+        // Test listeners belong to this one request. Shared connection caches
+        // remain available to other tabs until the connection is closed.
+        if conn.id.contains("::test::") { manager.close(&conn.id); }
+        return Err(error);
+      }
+      result
+    })).await.map_err(|e| format!("SSH connection task failed: {e}"))?;
+    pending.0 = None;
+    result
   }
 
   pub async fn get_driver(
@@ -35,6 +66,7 @@ impl AppState {
     app: &AppHandle,
     connection_id: &str,
   ) -> Result<Arc<EngineDriver>, String> {
+    if let Some(error) = self.tunnels.host_key_error(connection_id) { return Err(error); }
     {
       let drivers = self.drivers.lock();
       if let Some(d) = drivers.get(connection_id).cloned() {
@@ -46,7 +78,7 @@ impl AppState {
       .get_full(app, connection_id)?
       .ok_or_else(|| format!("Connection {connection_id} not found"))?;
     let local_port = if conn.use_ssh {
-      Some(self.tunnels.ensure(app, &self.host_keys, &conn)?)
+      Some(self.ensure_tunnel(app, &conn).await?)
     } else {
       None
     };
@@ -88,15 +120,21 @@ impl AppState {
       }
     }
     let test_id = format!("{}::test::{}", resolved.id, uuid::Uuid::new_v4());
+    let _cleanup = TestTunnelCleanup { manager: self.tunnels.clone(), id: test_id.clone() };
     resolved.id = test_id.clone();
     let local_port = if resolved.use_ssh {
-      Some(self.tunnels.ensure(app, &self.host_keys, &resolved)?)
+      Some(self.ensure_tunnel(app, &resolved).await?)
     } else {
       None
     };
     let result = EngineDriver::test_connection(&resolved, local_port).await;
-    self.tunnels.close(&test_id);
     result
+  }
+
+  pub fn connection_error(&self, connection_id: &str, error: String) -> String {
+    if let Some(identity_error) = self.tunnels.host_key_error(connection_id) {
+      if error.contains(identity_error.as_str()) { error } else { format!("{identity_error}\n{error}") }
+    } else { error }
   }
 
   pub async fn close_connection(&self, connection_id: &str) {
@@ -121,10 +159,10 @@ impl AppState {
     let mut resolved = conn.clone();
     self.connections.resolve_ssh_source(app, &mut resolved)?;
     let test_id = format!("{}::test::{}", resolved.id, uuid::Uuid::new_v4());
+    let _cleanup = TestTunnelCleanup { manager: self.tunnels.clone(), id: test_id.clone() };
     resolved.id = test_id.clone();
-    let port = if resolved.use_ssh { Some(self.tunnels.ensure(app, &self.host_keys, &resolved)?) } else { None };
+    let port = if resolved.use_ssh { Some(self.ensure_tunnel(app, &resolved).await?) } else { None };
     let result = EngineDriver::test_database_connection(&resolved, port).await;
-    self.tunnels.close(&test_id);
     result
   }
 }

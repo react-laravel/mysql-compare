@@ -149,6 +149,20 @@ describe('useTableDataRowActions', () => {
     expect(showToast).toHaveBeenCalledWith('tableData.copiedRows:2', 'success')
   })
 
+  it('copies only visible fields and keeps hidden data available for edits', async () => {
+    const data = createQueryRowsResult()
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    getNavigatorWithClipboard().clipboard = { writeText }
+    const { result } = renderHook(() => useTableDataRowActions({
+      connectionId: 'conn-1', database: 'db_main', table: 'users', data,
+      visibleColumnNames: ['id'], showToast: vi.fn(), t, refresh: vi.fn()
+    }))
+    act(() => result.current.onToggleSelect(0, false))
+    await act(async () => result.current.onCopySelectedRows())
+    expect(JSON.parse(writeText.mock.calls[0]![0])).toEqual([{ id: testRows[0]!.id }])
+    expect(result.current.selectedRows).toEqual([testRows[0]])
+  })
+
   it('refuses deletes when the table has no primary key', async () => {
     const data = createNoPrimaryKeyQueryRowsResult()
     const showToast = vi.fn()

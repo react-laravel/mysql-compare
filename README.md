@@ -15,7 +15,7 @@ Tauri shell (Rust)
      ├─ drivers/      mysql / postgres / redis (sqlx + redis)
      ├─ ssh/          tunnel / sftp / terminal / host keys
      ├─ diff/ + sync/ schema & data compare, FK-ordered sync
-     └─ store/        AES-GCM encrypted connection secrets
+     └─ store/        AES-GCM secrets with an OS credential-store master key
 ```
 
 ## Run
@@ -28,6 +28,10 @@ cargo check --manifest-path src-tauri/Cargo.toml
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
+Linux builds also need `libdbus-1-dev`. Saving or unlocking credentials requires an unlocked OS credential service: macOS Keychain, Windows Credential Manager, or a Linux Secret Service provider such as GNOME Keyring. The app reports an error if that service is unavailable and preserves existing records.
+
+TLS, SSH fingerprint confirmation, credential migration, pagination and cancellation behavior are documented in [the reviewed fixes](docs/grok-review-2026-10-01.md).
+
 On Unix, the Rust SSH regression tests require `ssh-keygen` and `/usr/sbin/sshd`
 (install `openssh-server` on Linux). They use loopback sockets and temporary keys,
 without changing your SSH configuration or saved host keys.
@@ -35,7 +39,7 @@ without changing your SSH configuration or saved host keys.
 ## Features
 
 - Connection CRUD with encrypted secret storage
-- MySQL / PostgreSQL / Redis + SSH tunnel
+- MySQL / PostgreSQL / Redis with certificate-verified TLS or a verified SSH tunnel
 - Browse / row CRUD / SQL console / EXPLAIN
 - Schema + row-level data diff; sync plan + execute with progress
 - SSH file manager + terminal
@@ -44,7 +48,7 @@ without changing your SSH configuration or saved host keys.
 ## Notes
 
 - Old Electron / Web deployments: use the `electron` branch.
-- First-time SSH hosts use TOFU (trust on first use) host-key storage.
+- Unknown or changed SSH host fingerprints require native user confirmation before authentication; legacy TOFU records require confirmation once after upgrade.
 - Each SSH forwarding connection verifies its host key before authentication against the key trusted by the tunnel's initial probe; a changed key is rejected.
 - Re-enter passwords when migrating from Electron `safeStorage` (new key file format).
 

@@ -50,15 +50,101 @@ pub fn assert_pg_table(table: &str) -> Result<(), String> {
   } else { Ok(()) }
 }
 
+/// WHERE is an advanced SQL expression, not a parameterized filter language.
+/// This lexer prevents escaping that expression into another statement/clause;
+/// quoted strings and legitimate nested subqueries remain supported.
 pub fn assert_safe_where(where_sql: Option<&str>) -> Result<(), String> {
-  let Some(w) = where_sql.map(str::trim).filter(|s| !s.is_empty()) else {
-    return Ok(());
-  };
-  let lower = w.to_lowercase();
-  if w.contains(';') || lower.contains("--") || lower.contains("/*") {
-    return Err("Unsafe WHERE clause rejected".into());
+  let Some(w) = where_sql.map(str::trim).filter(|s| !s.is_empty()) else { return Ok(()); };
+  if w.len() > 64 * 1024 || w.contains('\0') { return Err("Invalid WHERE expression".into()); }
+  let chars: Vec<char> = w.chars().collect();
+  let mut i = 0;
+  let mut depth = 0usize;
+  while i < chars.len() {
+    let c = chars[i];
+    if matches!(c, '\'' | '"' | '`') {
+      let quote = c;
+      i += 1;
+      let mut closed = false;
+      while i < chars.len() {
+        if chars[i] == '\\' {
+          if i + 1 < chars.len() && chars[i + 1] == quote { return Err("Use doubled quotes in WHERE literals instead of ambiguous backslash escapes".into()); }
+          i += 2; continue;
+        }
+        if chars[i] == quote {
+          i += 1;
+          if i < chars.len() && chars[i] == quote { i += 1; continue; }
+          closed = true;
+          break;
+        }
+        i += 1;
+      }
+      if !closed { return Err("Unterminated quote in WHERE expression".into()); }
+      continue;
+    }
+    if c == ';' || c == '#' || (i + 1 < chars.len() && ((c == '-' && chars[i + 1] == '-') || (c == '/' && chars[i + 1] == '*'))) {
+      return Err("WHERE accepts one SQL expression without comments or statement separators".into());
+    }
+    if c == '(' { depth += 1; }
+    if c == ')' { depth = depth.checked_sub(1).ok_or("Unbalanced parentheses in WHERE expression")?; }
+    if c.is_ascii_alphabetic() || c == '_' {
+      let begin = i;
+      i += 1;
+      while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '_' || chars[i] == '$') { i += 1; }
+      let word: String = chars[begin..i].iter().collect::<String>().to_ascii_uppercase();
+      if word == "UNION" || (depth == 0 && matches!(word.as_str(), "ORDER" | "GROUP" | "LIMIT" | "OFFSET" | "RETURNING" | "INTO" | "FOR" | "SELECT" | "WITH")) {
+        return Err("WHERE accepts a SQL expression; use the SQL editor for complete queries".into());
+      }
+      continue;
+    }
+    i += 1;
   }
+  if depth != 0 { return Err("Unbalanced parentheses in WHERE expression".into()); }
   Ok(())
+}
+
+/// Validate a selected projection and keep the keys needed to edit/page rows.
+pub fn browse_projection(schema: &crate::types::TableSchema, requested: Option<&[String]>, dialect: SqlDialect) -> Result<String, String> {
+  let Some(requested) = requested else { return Ok("*".into()); };
+  let mut names = Vec::new();
+  for name in requested {
+    if !schema.columns.iter().any(|column| column.name == *name) { return Err(format!("Unknown selected column: {name}")); }
+    if !names.contains(name) { names.push(name.clone()); }
+  }
+  for name in &schema.primary_key { if !names.contains(name) { names.push(name.clone()); } }
+  if names.is_empty() {
+    names.push(schema.columns.first().ok_or("Table has no selectable columns")?.name.clone());
+  }
+  Ok(names.iter().map(|name| dialect.quote_ident(name)).collect::<Vec<_>>().join(", "))
+}
+
+/// Keyset pagination follows the default complete primary-key ASC order.
+pub fn browse_cursor_filter(schema: &crate::types::TableSchema, request: &crate::types::QueryRowsRequest, dialect: SqlDialect) -> Result<Option<String>, String> {
+  let Some(after) = request.after.as_ref() else { return Ok(None); };
+  if request.order_by.is_some() || request.key_rows.is_some() || schema.primary_key.is_empty() {
+    return Err("A pagination cursor requires the default primary-key order".into());
+  }
+  if after.len() != schema.primary_key.len() || schema.primary_key.iter().any(|name| after.get(name).map_or(true, serde_json::Value::is_null)) {
+    return Err("A pagination cursor requires every non-null primary-key value".into());
+  }
+  let names = schema.primary_key.iter().map(|name| dialect.quote_ident(name)).collect::<Vec<_>>().join(", ");
+  let values = schema.primary_key.iter().map(|name| dialect.literal(after.get(name))).collect::<Vec<_>>().join(", ");
+  Ok(Some(format!("({names}) > ({values})")))
+}
+
+pub fn next_browse_cursor(schema: &crate::types::TableSchema, request: &crate::types::QueryRowsRequest, rows: &[std::collections::HashMap<String, serde_json::Value>], has_more: bool) -> Option<std::collections::HashMap<String, serde_json::Value>> {
+  if !has_more || request.order_by.is_some() || request.key_rows.is_some() || schema.primary_key.is_empty() { return None; }
+  let row = rows.last()?;
+  let mut cursor = std::collections::HashMap::new();
+  for name in &schema.primary_key {
+    let value = row.get(name).filter(|value| !value.is_null())?;
+    cursor.insert(name.clone(), value.clone());
+  }
+  Some(cursor)
+}
+
+pub fn browse_select_sql(table: &str, projection: &str, where_clause: &str, order_clause: &str, limit: u32, offset: u64, keyset: bool) -> String {
+  let sql = format!("SELECT {projection} FROM {table} {where_clause} {order_clause} LIMIT {limit}");
+  if keyset { sql } else { format!("{sql} OFFSET {offset}") }
 }
 
 pub fn assert_ident(name: &str, label: &str) -> Result<(), String> {
@@ -230,6 +316,24 @@ pub fn read_rows_sql(
 mod tests {
   use super::*;
   use serde_json::json;
+
+  #[test]
+  fn keyset_sql_omits_offset_and_projection_keeps_only_requested_fields_and_keys() {
+    let schema: crate::types::TableSchema = serde_json::from_value(serde_json::json!({"name":"items","columns":[{"name":"id","type":"int","nullable":false,"isPrimaryKey":true,"isAutoIncrement":false,"comment":"","columnKey":"PRI"},{"name":"public","type":"text","nullable":true,"isPrimaryKey":false,"isAutoIncrement":false,"comment":"","columnKey":""},{"name":"private","type":"text","nullable":true,"isPrimaryKey":false,"isAutoIncrement":false,"comment":"","columnKey":""}],"indexes":[],"primaryKey":["id"],"createSQL":""})).unwrap();
+    for dialect in [SqlDialect::Mysql, SqlDialect::Postgres] {
+      let projection = browse_projection(&schema, Some(&["public".into()]), dialect).unwrap();
+      assert!(projection.contains("public") && projection.contains("id") && !projection.contains("private"));
+      let sql = browse_select_sql("items", &projection, "WHERE id > 5", "ORDER BY id ASC", 51, 100000, true);
+      assert!(!sql.contains("OFFSET")); assert!(!sql.contains("SELECT *"));
+      assert!(browse_select_sql("items", &projection, "", "", 51, 100000, false).contains("OFFSET 100000"));
+    }
+  }
+
+  #[test]
+  fn where_lexer_preserves_literals_but_rejects_statement_escape() {
+    for expression in ["id = 1; SELECT 2", "id=1 # comment", "id=1 -- comment", "id=1 /*comment*/", "id=1 UNION SELECT 2", "id=1 ORDER BY id", "id='unfinished", "id IN (1,2", "id=1)"] { assert!(assert_safe_where(Some(expression)).is_err(), "{expression}"); }
+    for expression in ["label = 'a;#--/* UNION'", "id IN (SELECT id FROM items WHERE label = 'ok')", "label='it''s ok'", "(id = 1 OR id=2)", "`odd#column` = 2"] { assert!(assert_safe_where(Some(expression)).is_ok(), "{expression}"); }
+  }
 
   #[test]
   fn values_keep_dialect_and_binary_semantics() {

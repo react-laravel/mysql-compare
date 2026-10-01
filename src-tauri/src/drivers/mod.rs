@@ -1,13 +1,14 @@
 pub mod dialect;
 pub mod connection_options;
 pub mod mysql;
+pub mod maintenance;
 pub mod pg;
 pub mod redis;
 pub mod util;
 
 use crate::types::{
   ConnectionConfig, CopyTableRequest, DatabaseInfo, DeleteRowsRequest, DropDatabaseRequest,
-  DropTableRequest, ExplainSQLResult, InsertRowRequest, QueryRowsRequest, QueryRowsResult,
+  DropTableRequest, ExplainSQLResult, InsertRowRequest, QueryRowsRequest, QueryRowsResult, RedisScanResult,
   RenameTableRequest, TableSchema, TruncateTableRequest, UpdateRowRequest,
 };
 
@@ -58,7 +59,7 @@ impl EngineDriver {
     let batch_size = batch_size.clamp(1, 1000);
     macro_rules! start_reader {
       ($driver:expr, $decode:path) => {{
-        let mut connection = $driver.acquire(database).await?;
+        let mut connection = $driver.acquire_active(database).await?;
         tokio::spawn(async move {
           let mut stream = sqlx::query(&sql).fetch(&mut *connection);
           let mut batch = Vec::with_capacity(batch_size);
@@ -66,7 +67,10 @@ impl EngineDriver {
           loop {
             let next = tokio::select! {
               _ = sender.closed() => return,
-              next = stream.next() => next,
+              next = tokio::time::timeout(std::time::Duration::from_secs(60), stream.next()) => match next {
+                Ok(next) => next,
+                Err(_) => { let _ = sender.send(Err("Row streaming timed out after 60 seconds".into())).await; return; }
+              },
             };
             match next {
               Some(row) => {
@@ -89,6 +93,8 @@ impl EngineDriver {
                 }
               }
               None => {
+                drop(stream);
+                connection.complete();
                 if !batch.is_empty() {
                   let _ = sender.send(Ok(batch)).await;
                 }
@@ -105,6 +111,41 @@ impl EngineDriver {
       Self::Redis(_) => return Err("Redis does not support SQL row streaming".into()),
     }
     Ok(receiver)
+  }
+
+  /// SQL files are parsed and previewed before reaching this method. Every
+  /// statement uses the same transaction and socket. MySQL DDL still follows
+  /// the server's implicit-commit semantics, which the preview must disclose.
+  pub async fn import_sql(&self, database: &str, statements: &[String]) -> Result<i64, String> {
+    use sqlx::{Acquire, Executor};
+    if matches!(self, Self::Mysql(_)) {
+      for statement in statements { maintenance::assert_safe_mysql_cancellation(statement)?; }
+    }
+    macro_rules! import {
+      ($driver:expr) => {{
+        $driver.invalidate_schema_cache();
+        let mut connection = $driver.acquire_active(database).await?;
+        let mut transaction = connection.begin().await.map_err(|e| e.to_string())?;
+        for (index, statement) in statements.iter().enumerate() {
+          crate::operations::check()?;
+          $driver.validate_import_session(&mut *transaction).await?;
+          tokio::time::timeout(std::time::Duration::from_secs(60), (&mut *transaction).execute(statement.as_str()))
+            .await.map_err(|_| format!("Import statement {} timed out", index + 1))?
+            .map_err(|error| format!("Import statement {} failed: {error}", index + 1))?;
+        }
+        crate::operations::check()?;
+        $driver.validate_import_session(&mut *transaction).await?;
+        transaction.commit().await.map_err(|e| e.to_string())?;
+        $driver.invalidate_schema_cache();
+        connection.complete();
+        Ok(statements.len() as i64)
+      }};
+    }
+    match self {
+      Self::Mysql(driver) => import!(driver),
+      Self::Postgres(driver) => import!(driver),
+      Self::Redis(_) => Err("SQL import requires MySQL or PostgreSQL".into()),
+    }
   }
 
   pub async fn open(conn: ConnectionConfig, local_port: Option<u16>) -> Result<Self, String> {
@@ -192,6 +233,11 @@ impl EngineDriver {
       Self::Postgres(d) => d.get_database_info(database).await,
       Self::Redis(d) => d.get_database_info(database).await,
     }
+  }
+
+  pub async fn scan_redis_keys(&self, database: &str, cursor: &str, pattern: Option<&str>) -> Result<RedisScanResult, String> {
+    match self { Self::Redis(driver) => driver.scan_keys(database, cursor, pattern).await,
+      _ => Err("Key scanning requires a Redis connection".into()) }
   }
 
   pub async fn list_tables(&self, database: &str) -> Result<Vec<String>, String> {

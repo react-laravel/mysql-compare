@@ -31,28 +31,30 @@ interface Props {
 
 export function RowEditDialog({ mode, columns, primaryKey, row, onClose, onSubmit }: Props) {
   const { t } = useI18n()
+  const loadedColumns = useMemo(() => mode === 'edit' ? columns.filter((column) => Object.hasOwn(row ?? {}, column.name)) : columns, [columns, mode, row])
+  const unloadedColumnCount = mode === 'edit' ? columns.length - loadedColumns.length : 0
   const [values, setValues] = useState<Record<string, unknown>>({})
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    setValues(prepareRowEditValues(mode, columns, row))
+    setValues(prepareRowEditValues(mode, loadedColumns, row))
     setBusy(false)
     setError(null)
-  }, [columns, mode, row])
+  }, [loadedColumns, mode, row])
 
   const hasChanges = useMemo(() => {
     if (mode === 'insert') {
-      return columns.some((column) => {
+      return loadedColumns.some((column) => {
         if (column.isGenerated || column.isAutoIncrement) return false
         return values[column.name] !== createInitialValue(column)
       })
     }
     if (!row) return false
-    return columns.some((column) =>
+    return loadedColumns.some((column) =>
       !column.isGenerated && !isRowEditValueEqual(column, row[column.name], values[column.name])
     )
-  }, [columns, mode, row, values])
+  }, [loadedColumns, mode, row, values])
 
   // 只提交真正改动过的字段（编辑场景下）
   const handleSubmit = async () => {
@@ -61,7 +63,7 @@ export function RowEditDialog({ mode, columns, primaryKey, row, onClose, onSubmi
     try {
       const changes: Record<string, unknown> = {}
       if (mode === 'insert') {
-        for (const column of columns.filter((column) => !column.isGenerated)) {
+        for (const column of loadedColumns.filter((column) => !column.isGenerated)) {
           const normalized = normalizeColumnValue(column, values[column.name], mode, t)
           if (column.isAutoIncrement && normalized == null) continue
           validateColumnValue(column, normalized, mode, t)
@@ -69,7 +71,7 @@ export function RowEditDialog({ mode, columns, primaryKey, row, onClose, onSubmi
         }
         await onSubmit(changes)
       } else {
-        for (const column of columns.filter((column) => !column.isGenerated)) {
+        for (const column of loadedColumns.filter((column) => !column.isGenerated)) {
           const normalized = normalizeColumnValue(column, values[column.name], mode, t)
           validateColumnValue(column, normalized, mode, t)
           if (row && !isRowEditValueEqual(column, row[column.name], normalized)) {
@@ -105,8 +107,9 @@ export function RowEditDialog({ mode, columns, primaryKey, row, onClose, onSubmi
         </>
       }
     >
+      {unloadedColumnCount > 0 ? <p role="status" className="mb-3 text-xs text-fg-muted">{t('rowEdit.unloadedColumnsHint', { count: unloadedColumnCount })}</p> : null}
       <div className="grid max-h-[70vh] grid-cols-1 gap-3 overflow-y-auto pr-1 md:grid-cols-2">
-        {columns.filter((column) => !column.isGenerated).map((column) => (
+        {loadedColumns.filter((column) => !column.isGenerated).map((column) => (
           <div key={column.name}>
             <Label className="mb-1 block">
               <div className="flex flex-wrap items-center gap-1.5">

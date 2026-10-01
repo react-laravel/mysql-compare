@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { ConnectionConfig, SafeConnection } from '../../../shared/types'
 import {
   buildPayload,
+  connectionTransport,
   createInitialForm,
   DEFAULT_PORT,
   getInitialSSHAuthMethod,
@@ -46,6 +47,8 @@ describe('connection-dialog-utils', () => {
       username: 'root',
       password: '',
       database: '',
+      tlsMode: 'auto',
+      tlsCaPem: '',
       useSSH: false,
       sshHost: '',
       sshPort: 22,
@@ -113,6 +116,8 @@ describe('connection-dialog-utils', () => {
       port: savedConnection.port,
       username: savedConnection.username,
       database: savedConnection.database,
+      tlsMode: 'auto',
+      tlsCaPem: '',
       useSSH: savedConnection.useSSH,
       sshHost: savedConnection.sshHost,
       sshPort: savedConnection.sshPort,
@@ -363,5 +368,20 @@ describe('connection-dialog-utils', () => {
     expect(parsePortValue('', DEFAULT_PORT.mysql)).toBe(DEFAULT_PORT.mysql)
     expect(parsePortValue('33.5', DEFAULT_PORT.mysql)).toBe(DEFAULT_PORT.mysql)
     expect(parsePortValue('abc', DEFAULT_PORT.mysql)).toBe(DEFAULT_PORT.mysql)
+  })
+})
+
+describe('connection transport policy', () => {
+  it('requires verified TLS for remote hosts and preserves an explicit disable', () => {
+    expect(connectionTransport(createForm({ host: 'db.example.com' }))).toBe('tls')
+    expect(connectionTransport(createForm({ host: 'db.example.com', tlsMode: 'disabled' }))).toBe('plaintext')
+    expect(connectionTransport(createForm({ host: '127.0.0.1' }))).toBe('plaintext')
+    expect(connectionTransport(createForm({ host: '[::1]' }))).toBe('plaintext')
+    expect(connectionTransport(createForm({ host: 'localhost.example.com' }))).toBe('tls')
+    expect(connectionTransport(createForm({ useSSH: true }))).toBe('ssh')
+  })
+  it('refuses to misrepresent SSH loopback certificate identity validation', () => {
+    expect(validateConnectionForm(createForm({ useSSH: true, tlsMode: 'verify-full' }))).toContain('through SSH')
+    expect(createInitialForm({ ...createForm(), databaseCredentials: undefined, hasPassword: false, hasSSHPassword: false, hasSSHPrivateKey: false, tlsMode: 'verify-full', tlsCaPem: 'CA' }).tlsCaPem).toBe('CA')
   })
 })

@@ -51,7 +51,7 @@ export interface TrProps extends React.HTMLAttributes<HTMLTableRowElement> {
   selected?: boolean
 }
 
-export function Tr({ className, selected, ...p }: TrProps) {
+export const Tr = React.forwardRef<HTMLTableRowElement, TrProps>(function Tr({ className, selected, ...p }, ref) {
   const { variant, density } = React.useContext(TableContext)
   const height =
     variant === 'grid'
@@ -61,6 +61,7 @@ export function Tr({ className, selected, ...p }: TrProps) {
       : 'h-row-table'
   return (
     <tr
+      ref={ref}
       aria-selected={selected || undefined}
       className={cn(
         height,
@@ -71,7 +72,7 @@ export function Tr({ className, selected, ...p }: TrProps) {
       {...p}
     />
   )
-}
+})
 
 export interface ThProps extends React.ThHTMLAttributes<HTMLTableCellElement> {
   align?: 'left' | 'right'

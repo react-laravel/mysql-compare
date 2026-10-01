@@ -12,7 +12,7 @@ const editor = vi.hoisted(() => ({ commands: [] as Array<() => void> }))
 vi.mock('@monaco-editor/react', () => ({
   default: ({ value, onChange, onMount }: { value: string; onChange: (value: string) => void; onMount: OnMount }) => {
     useEffect(() => {
-      onMount({ getSelection: () => null, getModel: () => null, onDidChangeCursorSelection: () => {}, addCommand: (_key: number, run: () => void) => editor.commands.push(run) } as unknown as Parameters<OnMount>[0],
+      onMount({ getSelection: () => null, getModel: () => null, onDidChangeCursorSelection: () => {}, onDidScrollChange: () => {}, saveViewState: () => null, restoreViewState: () => {}, addCommand: (_key: number, run: () => void) => editor.commands.push(run) } as unknown as Parameters<OnMount>[0],
         { KeyMod: { CtrlCmd: 1, Shift: 2 }, KeyCode: { Enter: 3 } } as unknown as Parameters<OnMount>[1])
     }, [])
     return <input aria-label="SQL draft" value={value} onChange={(event) => onChange(event.target.value)} />

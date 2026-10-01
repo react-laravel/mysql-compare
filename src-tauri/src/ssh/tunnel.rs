@@ -1,9 +1,9 @@
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::net::{TcpListener, TcpStream, ToSocketAddrs};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Weak};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use ssh2::Session;
@@ -17,16 +17,21 @@ use crate::types::{ConnectionConfig, DbEngine};
 struct TunnelHandle {
   port: u16,
   shutdown: Arc<AtomicBool>,
+  host_key_error: Arc<Mutex<Option<String>>>,
 }
 
+struct Connecting { lock: Mutex<()>, generation: AtomicU64 }
+#[derive(Clone)]
 pub struct TunnelManager {
-  tunnels: Mutex<std::collections::HashMap<String, TunnelHandle>>,
+  tunnels: Arc<Mutex<std::collections::HashMap<String, TunnelHandle>>>,
+  connecting: Arc<Mutex<std::collections::HashMap<String, Weak<Connecting>>>>,
 }
 
 impl TunnelManager {
   pub fn new() -> Self {
     Self {
-      tunnels: Mutex::new(std::collections::HashMap::new()),
+      tunnels: Arc::new(Mutex::new(std::collections::HashMap::new())),
+      connecting: Arc::new(Mutex::new(std::collections::HashMap::new())),
     }
   }
 
@@ -36,19 +41,45 @@ impl TunnelManager {
     host_keys: &HostKeyStore,
     conn: &ConnectionConfig,
   ) -> Result<u16, String> {
+    let connecting = {
+      let mut pending = self.connecting.lock();
+      pending.retain(|_, weak| weak.strong_count() > 0);
+      if let Some(connecting) = pending.get(&conn.id).and_then(Weak::upgrade) { connecting }
+      else {
+        let connecting = Arc::new(Connecting { lock: Mutex::new(()), generation: AtomicU64::new(0) });
+        pending.insert(conn.id.clone(), Arc::downgrade(&connecting));
+        connecting
+      }
+    };
+    // Serialize creation for this connection only, so concurrent tabs share
+    // one listener without holding the manager's global lock during network I/O.
+    let _creation = connecting.lock.lock();
+    crate::operations::check()?;
+    let generation = connecting.generation.load(Ordering::SeqCst);
     if let Some(handle) = self.tunnels.lock().get(&conn.id) {
       return Ok(handle.port);
     }
     let handle = spawn_tunnel(app, host_keys, conn)?;
     let port = handle.port;
-    self.tunnels.lock().insert(conn.id.clone(), handle);
+    let mut tunnels = self.tunnels.lock();
+    if generation != connecting.generation.load(Ordering::SeqCst) {
+      handle.shutdown.store(true, Ordering::Relaxed);
+      return Err("SSH connection was closed or changed while connecting".into());
+    }
+    tunnels.insert(conn.id.clone(), handle);
     Ok(port)
   }
 
   pub fn close(&self, connection_id: &str) {
+    if let Some(connecting) = self.connecting.lock().get(connection_id).and_then(Weak::upgrade) {
+      connecting.generation.fetch_add(1, Ordering::SeqCst);
+    }
     if let Some(handle) = self.tunnels.lock().remove(connection_id) {
       handle.shutdown.store(true, Ordering::Relaxed);
     }
+  }
+  pub fn host_key_error(&self, connection_id: &str) -> Option<String> {
+    self.tunnels.lock().get(connection_id).and_then(|handle| handle.host_key_error.lock().clone())
   }
 }
 
@@ -65,7 +96,9 @@ fn spawn_tunnel_with_session(
   conn: &ConnectionConfig,
   mut probe_session: Session,
 ) -> Result<TunnelHandle, String> {
+  crate::operations::check()?;
   probe_remote_database(&mut probe_session, conn)?;
+  crate::operations::check()?;
   // Pin the verified key for this tunnel. Every independent forwarding session
   // must prove the same host identity before receiving any credentials.
   let verified_host_key = Arc::new(
@@ -84,6 +117,8 @@ fn spawn_tunnel_with_session(
   listener.set_nonblocking(true).map_err(|e| e.to_string())?;
   let shutdown = Arc::new(AtomicBool::new(false));
   let shutdown_flag = shutdown.clone();
+  let host_key_error = Arc::new(Mutex::new(None));
+  let reported_error = host_key_error.clone();
 
   thread::spawn(move || {
     loop {
@@ -105,14 +140,19 @@ fn spawn_tunnel_with_session(
       let verified_host_key = verified_host_key.clone();
       let conn = conn.clone();
       let remote_host = remote_host.clone();
+      let reported_error = reported_error.clone();
       thread::spawn(move || {
         let sess = match connect_forward_session(&conn, &verified_host_key) {
           Ok(sess) => sess,
           Err(error) => {
+            if error.starts_with("SSH host key mismatch") {
+              *reported_error.lock() = Some(format!("{error}. Close this connection and reconnect to verify the current SSH fingerprint. / 请关闭此连接并重新连接，以核对此主机当前的 SSH 指纹。"));
+            }
             log::warn!("SSH forwarding connection rejected: {error}");
             return;
           }
         };
+        *reported_error.lock() = None;
         let Ok(mut channel) = sess.channel_direct_tcpip(&remote_host, remote_port, None) else {
           return;
         };
@@ -202,6 +242,7 @@ fn spawn_tunnel_with_session(
   Ok(TunnelHandle {
     port: local_port,
     shutdown,
+    host_key_error,
   })
 }
 
@@ -314,16 +355,39 @@ fn connect_session_with_verifier(
   verify: impl FnOnce(&str, u16, &[u8]) -> Result<(), String>,
 ) -> Result<Session, String> {
   ssh_auth_ok(conn)?;
+  crate::operations::check()?;
   let ssh_host = conn.ssh_host.clone().ok_or("sshHost required")?;
   let ssh_port = conn.ssh_port.unwrap_or(22);
-  let tcp = TcpStream::connect(format!("{ssh_host}:{ssh_port}"))
-    .map_err(|e| format!("SSH connect failed: {e}"))?;
+  let deadline = Instant::now() + Duration::from_secs(15);
+  let addresses = (ssh_host.as_str(), ssh_port).to_socket_addrs().map_err(|e| format!("SSH address resolution failed: {e}"))?;
+  let mut tcp = None;
+  let mut last_error = "No SSH address was resolved".to_string();
+  for address in addresses {
+    crate::operations::check()?;
+    let remaining = deadline.checked_duration_since(Instant::now()).filter(|remaining| !remaining.is_zero()).ok_or("SSH connection timed out after 15 seconds")?;
+    match TcpStream::connect_timeout(&address, remaining) {
+      Ok(stream) => { tcp = Some(stream); break; },
+      Err(error) => last_error = error.to_string(),
+    }
+  }
+  let tcp = tcp.ok_or_else(|| format!("SSH connect failed: {last_error}"))?;
+  crate::operations::check()?;
   let mut sess = Session::new().map_err(|e| e.to_string())?;
+  // Bound libssh2 handshake, authentication and each blocking SFTP request.
+  // Streaming large files still works as a sequence of bounded requests.
+  let handshake_timeout = deadline.checked_duration_since(Instant::now()).filter(|remaining| !remaining.is_zero()).ok_or("SSH connection timed out after 15 seconds")?;
+  sess.set_timeout(handshake_timeout.as_millis().max(1).min(u32::MAX as u128) as u32);
   sess.set_tcp_stream(tcp);
   sess.handshake().map_err(|e| e.to_string())?;
+  crate::operations::check()?;
   let host_key = sess.host_key().ok_or("missing SSH host key")?;
   verify(&ssh_host, ssh_port, host_key.0)?;
+  crate::operations::check()?;
+  let authentication_timeout = deadline.checked_duration_since(Instant::now()).filter(|remaining| !remaining.is_zero()).ok_or("SSH connection timed out after 15 seconds")?;
+  sess.set_timeout(authentication_timeout.as_millis().max(1).min(u32::MAX as u128) as u32);
   authenticate(&mut sess, conn)?;
+  crate::operations::check()?;
+  sess.set_timeout(30_000);
   Ok(sess)
 }
 

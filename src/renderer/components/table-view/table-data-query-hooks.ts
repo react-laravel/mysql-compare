@@ -23,6 +23,8 @@ interface UseTableDataQueryArgs {
 interface UseTableDataQueryResult {
   data: QueryRowsResult | null
   loading: boolean
+  cancelled: boolean
+  usesKeyset: boolean
   /** Can coexist with data when a refresh of the same query fails. */
   error: Error | null
   page: number
@@ -45,6 +47,7 @@ interface UseTableDataQueryResult {
   setDensity: Dispatch<SetStateAction<'compact' | 'comfortable'>>
   setVisibleColumns: Dispatch<SetStateAction<Set<string>>>
   refresh: () => void
+  cancel: () => void
   applyWhere: () => void
   clearWhere: () => void
   goToPage: (nextPage: number) => void
@@ -66,6 +69,7 @@ export function useTableDataQuery({
     data: QueryRowsResult | null
     error: Error | null
     loading: boolean
+    cancelled?: boolean
   } | null>(null)
   const [page, setPage] = useState(1)
   const [pageDraft, setPageDraft] = useState('1')
@@ -81,6 +85,15 @@ export function useTableDataQuery({
   const [density, setDensity] = useState<'compact' | 'comfortable'>(settings.density)
   const [reloadToken, setReloadToken] = useState(0)
   const showToastRef = useRef(showToast)
+  const endpointKey = JSON.stringify([connectionId, database, table])
+  const schemaColumnsRef = useRef<{ endpoint: string; columns: ColumnInfo[] } | null>(null)
+  const allColumns = schemaColumnsRef.current?.endpoint === endpointKey ? schemaColumnsRef.current.columns : []
+  const projectedColumns = visibleColumns.size > 0 && visibleColumns.size < allColumns.length ? [...visibleColumns].sort() : undefined
+  const projectionRequestKey = JSON.stringify(projectedColumns ?? null)
+  const cursorScopeKey = JSON.stringify([endpointKey, pageSize, orderBy, appliedWhere, projectionRequestKey, reloadToken, tableReloadToken])
+  const cursorCache = useRef<{ scope: string; pages: Map<number, Record<string, unknown>> }>({ scope: cursorScopeKey, pages: new Map() })
+  if (cursorCache.current.scope !== cursorScopeKey) cursorCache.current = { scope: cursorScopeKey, pages: new Map() }
+  const after = !orderBy && page > 1 ? cursorCache.current.pages.get(page) : undefined
   const request = useMemo(() => ({
     connectionId,
     database,
@@ -88,8 +101,10 @@ export function useTableDataQuery({
     page,
     pageSize,
     orderBy,
-    where: appliedWhere || undefined
-  }), [connectionId, database, table, page, pageSize, orderBy, appliedWhere])
+    where: appliedWhere || undefined,
+    ...(projectedColumns ? { columns: projectedColumns } : {}),
+    ...(after ? { after } : {})
+  }), [connectionId, database, table, page, pageSize, orderBy, appliedWhere, projectionRequestKey, after])
   const queryKey = JSON.stringify(request)
   // Rows belong to the exact query that loaded them, including its page. A new
   // query must never expose those rows before its effect has started loading.
@@ -97,9 +112,25 @@ export function useTableDataQuery({
   const data = currentQueryState?.data ?? null
   const error = currentQueryState?.error ?? null
   const loading = currentQueryState?.loading ?? true
+  const cancelled = currentQueryState?.cancelled ?? false
   const hiddenColumnsStorageKey = getHiddenColumnsStorageKey(connectionId, database, table)
 
+  const operationRef = useRef<{ id: string; cancelled: boolean; cancelling?: boolean } | null>(null)
   const refresh = () => setReloadToken((current) => current + 1)
+  const cancel = () => {
+    const operation = operationRef.current
+    if (!operation || operation.cancelled || operation.cancelling) return
+    operation.cancelling = true
+    void (async () => {
+      try {
+        await unwrap(api.operations.cancel(operation.id))
+        operation.cancelled = true
+        setQueryState((current) => current?.key === queryKey ? { ...current, loading: false, cancelled: true } : current)
+      } catch (error) {
+        showToastRef.current((error as Error).message, 'error')
+      } finally { operation.cancelling = false }
+    })()
+  }
 
   useEffect(() => {
     showToastRef.current = showToast
@@ -116,6 +147,8 @@ export function useTableDataQuery({
 
   useEffect(() => {
     let active = true
+    const operation = { id: crypto.randomUUID(), cancelled: false }
+    operationRef.current = operation
     setQueryState((current) => ({
       key: queryKey,
       data: current?.key === queryKey ? current.data : null,
@@ -125,11 +158,21 @@ export function useTableDataQuery({
 
     void (async () => {
       try {
-        const result = await unwrap<QueryRowsResult>(api.db.queryRows(request))
-        if (!active) return
+        let effectiveRequest = request
+        const hidden = readHiddenColumns(hiddenColumnsStorageKey)
+        if (!request.columns && hidden.size > 0 && api.schema?.getTable) {
+          const schema = await unwrap(api.schema.getTable(connectionId, database, table))
+          if (!active || operation.cancelled) return
+          const names = schema.columns.map((column) => column.name).filter((name) => !hidden.has(name))
+          effectiveRequest = { ...request, columns: names.length > 0 ? names : [schema.columns[0]?.name].filter((name): name is string => Boolean(name)) }
+        }
+        const result = await unwrap<QueryRowsResult>(api.db.queryRows(effectiveRequest, operation.id))
+        if (!active || operation.cancelled) return
+        schemaColumnsRef.current = { endpoint: endpointKey, columns: result.columns }
+        if (result.nextCursor && !request.orderBy && cursorCache.current.scope === cursorScopeKey) cursorCache.current.pages.set(page + 1, result.nextCursor)
         setQueryState({ key: queryKey, data: result, error: null, loading: false })
       } catch (caught) {
-        if (!active) return
+        if (!active || operation.cancelled) return
         const error = caught instanceof Error ? caught : new Error(String(caught))
         setQueryState((current) => ({
           key: queryKey,
@@ -138,20 +181,25 @@ export function useTableDataQuery({
           loading: false
         }))
         showToastRef.current(error.message, 'error')
+      } finally {
+        if (operationRef.current === operation) operationRef.current = null
       }
     })()
-    // The API has no cancellation channel. Ignore both results and toast side
-    // effects after a newer request or unmount makes this request irrelevant.
-    return () => { active = false }
+    return () => {
+      active = false
+      operation.cancelled = true
+      if (operationRef.current === operation) operationRef.current = null
+      void api.operations?.cancel(operation.id).catch(() => undefined)
+    }
   }, [request, queryKey, reloadToken, tableReloadToken])
 
   const totalPages = useMemo(
-    () => (data ? Math.max(1, Math.ceil(data.total / pageSize)) : 1),
-    [data, pageSize]
+    () => (data ? data.totalIsExact === false ? Math.max(page, Math.ceil(data.total / pageSize)) : Math.max(1, Math.ceil(data.total / pageSize)) : page),
+    [data, page, pageSize]
   )
 
   useEffect(() => {
-    if (data && page > totalPages) {
+    if (data && data.totalIsExact !== false && page > totalPages) {
       setPage(totalPages)
     }
   }, [data, page, totalPages])
@@ -171,10 +219,10 @@ export function useTableDataQuery({
   }, [data, hiddenColumnsStorageKey])
 
   const visibleDataColumns = useMemo(
-    () => (data ? data.columns.filter((column) => visibleColumns.has(column.name)) : []),
-    [data, visibleColumns]
+    () => (data?.columns ?? allColumns).filter((column) => visibleColumns.has(column.name)),
+    [data, allColumns, visibleColumns]
   )
-  const hiddenColumnCount = data ? data.columns.length - visibleDataColumns.length : 0
+  const hiddenColumnCount = (data?.columns ?? allColumns).length - visibleDataColumns.length
   const hasPendingWhere = where.trim() !== appliedWhere
   const effectiveOrderBy = useMemo<TableDataSortOrder>(() => {
     if (orderBy) return orderBy
@@ -204,7 +252,7 @@ export function useTableDataQuery({
       setPageDraft(String(page))
       return
     }
-    const safePage = Math.max(1, Math.min(totalPages, nextPage))
+    const safePage = Math.max(1, data?.totalIsExact === false ? Math.min(nextPage, 1_000_000) : Math.min(totalPages, nextPage))
     setPage(safePage)
     setPageDraft(String(safePage))
   }
@@ -237,6 +285,7 @@ export function useTableDataQuery({
   const setVisibleColumns: Dispatch<SetStateAction<Set<string>>> = (value) => {
     setVisibleColumnsState((current) => {
       const next = typeof value === 'function' ? value(current) : value
+      if ([...next].sort().join('\0') !== [...current].sort().join('\0')) { setPage(1); setPageDraft('1') }
       if (data) {
         const hiddenColumns = data.columns
           .map((column) => column.name)
@@ -263,6 +312,8 @@ export function useTableDataQuery({
   return {
     data,
     loading,
+    cancelled,
+    usesKeyset: Boolean(request.after),
     error,
     page,
     pageDraft,
@@ -284,6 +335,7 @@ export function useTableDataQuery({
     setDensity,
     setVisibleColumns,
     refresh,
+    cancel,
     applyWhere,
     clearWhere,
     goToPage,

@@ -10,24 +10,13 @@ pub fn fingerprint_sha256(key: &[u8]) -> String {
   format!("SHA256:{}", b64.trim_end_matches('='))
 }
 
-/// TOFU: accept first seen host key and persist; reject mismatch.
+/// Unknown and changed keys are challenged before any authentication.
 pub fn verify_host_key(
-  app: &AppHandle,
+  _app: &AppHandle,
   store: &HostKeyStore,
   host: &str,
   port: u16,
   key: &[u8],
 ) -> Result<(), String> {
-  let fp = fingerprint_sha256(key);
-  if let Some(existing) = store.get(host, port) {
-    if existing == fp {
-      return Ok(());
-    }
-    return Err(format!(
-      "SSH host key mismatch for {host}:{port}. Expected {existing}, got {fp}"
-    ));
-  }
-  store.set(host, port, &fp)?;
-  let _ = app;
-  Ok(())
+  store.verify(host, port, &fingerprint_sha256(key))
 }

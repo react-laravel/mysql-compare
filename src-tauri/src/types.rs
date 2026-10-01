@@ -37,6 +37,12 @@ pub struct SafeDatabaseCredential {
   pub has_password: bool,
 }
 
+/// Auto verifies TLS for remote direct connections; loopback and SSH rely on
+/// their local/encrypted transport. There is no insecure TLS mode.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum TlsMode { Auto, VerifyFull, Disabled }
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionConfig {
@@ -53,6 +59,8 @@ pub struct ConnectionConfig {
   pub database: Option<String>,
   pub databases: Option<Vec<String>>,
   pub show_all_databases: Option<bool>,
+  pub tls_mode: Option<TlsMode>,
+  pub tls_ca_pem: Option<String>,
   #[serde(rename = "useSSH", default)]
   pub use_ssh: bool,
   pub ssh_host: Option<String>,
@@ -81,6 +89,8 @@ pub struct SafeConnection {
   pub database: Option<String>,
   pub databases: Option<Vec<String>>,
   pub show_all_databases: Option<bool>,
+  pub tls_mode: Option<TlsMode>,
+  pub tls_ca_pem: Option<String>,
   #[serde(rename = "useSSH")]
   pub use_ssh: bool,
   pub ssh_host: Option<String>,
@@ -207,6 +217,10 @@ pub struct OrderBy {
 pub struct QueryRowsRequest {
   #[serde(default)]
   pub key_rows: Option<Vec<HashMap<String, Value>>>,
+  #[serde(default)]
+  pub after: Option<HashMap<String, Value>>,
+  #[serde(default)]
+  pub columns: Option<Vec<String>>,
   pub connection_id: String,
   pub database: String,
   pub table: String,
@@ -233,9 +247,21 @@ impl QueryRowsRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RedisScanResult {
+  pub keys: Vec<String>,
+  pub next_cursor: String,
+  pub complete: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct QueryRowsResult {
   pub rows: Vec<HashMap<String, Value>>,
   pub total: i64,
+  pub has_more: bool,
+  pub total_is_exact: bool,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub next_cursor: Option<HashMap<String, Value>>,
   pub has_primary_key: bool,
   pub primary_key: Vec<String>,
   pub columns: Vec<ColumnInfo>,
@@ -609,6 +635,8 @@ pub struct SSHFileEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SSHListFilesResult {
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub truncated: Option<bool>,
   pub path: String,
   pub parent_path: Option<String>,
   pub entries: Vec<SSHFileEntry>,

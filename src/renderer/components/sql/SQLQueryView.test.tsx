@@ -5,19 +5,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useI18nStore } from '@renderer/i18n'
 import { resetAppActions, runAppAction } from '@renderer/lib/app-actions'
 import type { AppAPI } from '../../../shared/app-api'
-import { migrateStoredEditorRatio, SQLQueryView } from './SQLQueryView'
+import { clearSessionSQLHistory, migrateStoredEditorRatio, SQLQueryView } from './SQLQueryView'
 
 // Monaco needs a real worker + layout engine; the console's behaviour under
 // test is the toolbar, the split and the result states, not the editor itself.
 vi.mock('@monaco-editor/react', () => ({
-  default: ({ value }: { value: string }) => <textarea readOnly data-testid="editor" value={value} />
+  default: ({ value, onChange }: { value: string; onChange: (value: string) => void }) => <textarea data-testid="editor" value={value} onChange={(event) => onChange(event.target.value)} />
 }))
 
 const executeSQL = vi.fn()
+const cancelOperation = vi.fn()
 
 function installApi(): void {
   ;(window as unknown as { api: AppAPI }).api = {
-    db: { executeSQL }
+    db: { executeSQL }, operations: { cancel: cancelOperation }
   } as unknown as AppAPI
 }
 
@@ -52,11 +53,51 @@ afterEach(() => {
 beforeEach(() => {
   useI18nStore.getState().setLocale('en')
   window.localStorage.clear()
+  clearSessionSQLHistory()
   executeSQL.mockReset()
+  cancelOperation.mockReset().mockResolvedValue({ ok: true, data: { cancelled: true } })
   installApi()
 })
 
 describe('SQLQueryView', () => {
+  it('removes legacy disk history and keeps new history only in session memory', async () => {
+    window.localStorage.setItem('mysql-compare:sql-history:c1:shop', JSON.stringify([{ id: '1', sql: 'secret', ranAt: 1 }]))
+    window.localStorage.setItem('mysql-compare:sql-history:other:db', 'another secret')
+    const view = renderConsole()
+    expect(window.localStorage.getItem('mysql-compare:sql-history:c1:shop')).toBeNull()
+    expect(window.localStorage.getItem('mysql-compare:sql-history:other:db')).toBeNull()
+    executeSQL.mockResolvedValue({ ok: true, data: { affectedRows: 1 } })
+    fireEvent.click(toolbarRun())
+    await waitFor(() => expect((screen.getByRole('button', { name: 'History' }) as HTMLButtonElement).disabled).toBe(false))
+    expect(Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index)).some((key) => key?.startsWith('mysql-compare:sql-history:'))).toBe(false)
+    view.unmount()
+    renderConsole()
+    expect((screen.getByRole('button', { name: 'History' }) as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('unmounts the inactive Monaco editor while preserving its draft', async () => {
+    const { rerender } = renderConsole()
+    fireEvent.change(await screen.findByTestId('editor'), { target: { value: 'SELECT private_value FROM users' } })
+    rerender(<SQLQueryView connectionId="c1" database="shop" active={false} />)
+    expect(screen.queryByTestId('editor')).toBeNull()
+    rerender(<SQLQueryView connectionId="c1" database="shop" active />)
+    expect((await screen.findByTestId('editor') as HTMLTextAreaElement).value).toBe('SELECT private_value FROM users')
+  })
+
+  it('cancels the running SQL operation and ignores its late result', async () => {
+    let resolve!: (value: unknown) => void
+    executeSQL.mockReturnValueOnce(new Promise((done) => { resolve = done }))
+    renderConsole()
+    fireEvent.click(toolbarRun())
+    const id = executeSQL.mock.calls[0]![3]
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(cancelOperation).toHaveBeenCalledWith(id))
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Cancel' }) as HTMLButtonElement).disabled).toBe(false))
+    resolve({ ok: true, data: [{ value: 'late-cancelled-row' }] })
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull())
+    expect(screen.queryByText('late-cancelled-row')).toBeNull()
+  })
+
   it('renders a toolbar carrying the endpoint and the two primary actions', () => {
     renderConsole()
 

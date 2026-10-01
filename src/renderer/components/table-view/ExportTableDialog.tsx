@@ -1,5 +1,5 @@
 import { tableDisplayName } from '../../../shared/table-reference'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Dialog } from '@renderer/components/ui/dialog'
 import { Button } from '@renderer/components/ui/button'
 import { Checkbox } from '@renderer/components/ui/checkbox'
@@ -59,6 +59,8 @@ export function ExportTableDialog({
   const [includeData, setIncludeData] = useState(true)
   const [includeHeaders, setIncludeHeaders] = useState(true)
   const [busy, setBusy] = useState(false)
+  const operationRef = useRef<string | null>(null)
+  const cancelledRef = useRef(false)
 
   const scopeOptions = useMemo(
     () =>
@@ -112,9 +114,12 @@ export function ExportTableDialog({
     }
 
     setBusy(true)
+    cancelledRef.current = false
+    const operationId = crypto.randomUUID()
+    operationRef.current = operationId
     try {
-      const result = await unwrap<ExportTableResult>(api.db.exportTable(request))
-      if (!result.canceled) {
+      const result = await unwrap<ExportTableResult>(api.db.exportTable(request, operationId))
+      if (!result.canceled && !cancelledRef.current) {
         const message =
           format === 'sql' && includeCreateTable && !includeData
             ? t('exportDialog.exportedStructure')
@@ -123,8 +128,9 @@ export function ExportTableDialog({
         onOpenChange(false)
       }
     } catch (error) {
-      showToast((error as Error).message, 'error')
+      if (!cancelledRef.current) showToast((error as Error).message, 'error')
     } finally {
+      operationRef.current = null
       setBusy(false)
     }
   }
@@ -137,7 +143,10 @@ export function ExportTableDialog({
       description={`${database}.${tableDisplayName(table)}`}
       footer={
         <>
-          <Button variant="secondary" onClick={() => onOpenChange(false)} disabled={busy}>
+          <Button variant="secondary" onClick={() => {
+            if (operationRef.current) { cancelledRef.current = true; void api.operations?.cancel(operationRef.current) }
+            else onOpenChange(false)
+          }}>
             {t('common.cancel')}
           </Button>
           <Button variant="primary" onClick={submit} disabled={busy || !canExport}>

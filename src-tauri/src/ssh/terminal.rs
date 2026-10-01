@@ -19,14 +19,15 @@ struct TerminalSession {
   channel: Channel,
 }
 
+#[derive(Clone)]
 pub struct TerminalManager {
-  sessions: Mutex<HashMap<String, Arc<Mutex<TerminalSession>>>>,
+  sessions: Arc<Mutex<HashMap<String, Arc<Mutex<TerminalSession>>>>>,
 }
 
 impl TerminalManager {
   pub fn new() -> Self {
     Self {
-      sessions: Mutex::new(HashMap::new()),
+      sessions: Arc::new(Mutex::new(HashMap::new())),
     }
   }
 
@@ -63,7 +64,9 @@ impl TerminalManager {
 
     let app2 = app.clone();
     let sid = session_id.clone();
+    let sessions = self.sessions.clone();
     thread::spawn(move || {
+      let mut text = Utf8Stream::default();
       let mut buf = [0u8; 4096];
       loop {
         let read_result = {
@@ -82,7 +85,7 @@ impl TerminalManager {
             break;
           }
           Ok(n) => {
-            let data = String::from_utf8_lossy(&buf[..n]).to_string();
+            let data = text.push(&buf[..n]);
             let _ = app2.emit(
               "ssh-terminal:data",
               SSHTerminalDataEvent {
@@ -92,7 +95,7 @@ impl TerminalManager {
             );
           }
           Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-            thread::sleep(std::time::Duration::from_millis(20));
+            wait_for_socket(&shared);
           }
           Err(_) => {
             let _ = app2.emit(
@@ -106,6 +109,7 @@ impl TerminalManager {
           }
         }
       }
+      sessions.lock().remove(&sid);
     });
 
     Ok(SSHTerminalCreateResult { session_id })
@@ -164,5 +168,53 @@ impl TerminalManager {
       let _ = guard.session.disconnect(None, "", None);
     }
     Ok(())
+  }
+}
+
+// Idle terminals wait for kernel socket readiness, with a bounded wakeup for shutdown.
+fn wait_for_socket(shared: &Mutex<TerminalSession>) {
+  #[cfg(unix)] {
+    use std::os::fd::AsRawFd;
+    let (fd, events) = {
+      let session=shared.lock();
+      let events=match session.session.block_directions() {
+        ssh2::BlockDirections::Outbound => libc::POLLOUT,
+        ssh2::BlockDirections::Both => libc::POLLIN | libc::POLLOUT,
+        _ => libc::POLLIN,
+      };
+      (session.session.as_raw_fd(), events)
+    };
+    let mut descriptor=libc::pollfd {fd,events,revents:0};
+    // Session remains owned by the reader's Arc while poll uses its socket FD.
+    unsafe { libc::poll(&mut descriptor, 1, 500); }
+  }
+  #[cfg(not(unix))] { let _=shared; thread::sleep(std::time::Duration::from_millis(100)); }
+}
+#[derive(Default)]
+struct Utf8Stream(Vec<u8>);
+impl Utf8Stream {
+  fn push(&mut self, bytes:&[u8])->String {
+    self.0.extend_from_slice(bytes); let mut text=String::new();
+    loop {
+      match std::str::from_utf8(&self.0) {
+        Ok(valid)=>{ text.push_str(valid); self.0.clear(); break; }
+        Err(error)=>{
+          let valid=error.valid_up_to();
+          text.push_str(std::str::from_utf8(&self.0[..valid]).unwrap());
+          if let Some(invalid)=error.error_len() {text.push('�'); self.0.drain(..valid+invalid);}
+          else {self.0.drain(..valid); break;}
+        }
+      }
+    }
+    text
+  }
+}
+#[cfg(test)] mod tests {
+  use super::*;
+  #[test] fn streaming_multibyte_terminal_output_preserves_split_characters() {
+    let mut stream=Utf8Stream::default(); let bytes="你好🦀".as_bytes(); let mut text=String::new();
+    for byte in bytes {text.push_str(&stream.push(&[*byte]));}
+    assert_eq!(text,"你好🦀");
+    assert_eq!(stream.push(&[0xff]),"�");
   }
 }

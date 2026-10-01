@@ -2,6 +2,11 @@
 identifier = "allow-commands"
 description = "Allow all MySQL Compare desktop commands"
 commands.allow = [
+  "operation_cancel",
+  "file_pick",
+  "ssh_host_key_confirm",
+  "ssh_host_key_list",
+  "ssh_host_key_forget",
   "connection_list",
   "connection_organize",
   "connection_update_database_browsing",
@@ -16,6 +21,7 @@ commands.allow = [
   "db_list_databases",
   "db_get_database_info",
   "db_list_tables",
+  "db_scan_redis_keys",
   "db_query_rows",
   "db_insert_row",
   "db_update_row",

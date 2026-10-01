@@ -8,8 +8,7 @@ import { tableDisplayName } from '../../../shared/table-reference'
 //     cannot hide a job that is writing to a database;
 //   · the run registers in `job-store`, which is what puts it on the status bar
 //     and the Diff tab's dot when the user navigates away (§2.10).
-// It does NOT expose Cancel: `sync.execute` has no cancel channel (blueprint
-// risk 6), and a Cancel that only stops the UI listening would be a lie.
+// Cancel stops pending backend work; earlier committed changes are retained.
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Badge } from '@renderer/components/ui/badge'
 import { Button } from '@renderer/components/ui/button'
@@ -22,7 +21,7 @@ import { ProgressBar } from '@renderer/components/ui/progress-bar'
 import { ScrollArea } from '@renderer/components/ui/scroll-area'
 import { Select } from '@renderer/components/ui/select'
 import { api, unwrap } from '@renderer/lib/api'
-import { jobs } from '@renderer/store/job-store'
+import { jobs, useJobStore } from '@renderer/store/job-store'
 import { DIFF_TAB_ID, useUIStore } from '@renderer/store/ui-store'
 import { useI18n } from '@renderer/i18n'
 import type {
@@ -69,12 +68,15 @@ export function SyncPanel({
   const [previewing, setPreviewing] = useState(false)
   const previewRunRef = useRef(0)
   const runningRef = useRef(false)
-  const [outcome, setOutcome] = useState<'done' | 'error' | null>(null)
+  const [outcome, setOutcome] = useState<'done' | 'error' | 'cancelled' | null>(null)
   const [logs, setLogs] = useState<string[]>([])
   const [running, setRunning] = useState(false)
   const [progress, setProgress] = useState<{ done: number; total?: number; step: string } | null>(null)
   const [confirming, setConfirming] = useState(false)
   const jobIdRef = useRef<string | null>(null)
+  const operationIdRef = useRef<string | null>(null)
+  const previewOperationRef = useRef<string | null>(null)
+  const cancelledRef = useRef(false)
 
   useEffect(() => {
     const off = api.sync.onProgress((event: SyncProgressEvent) => {
@@ -131,10 +133,16 @@ export function SyncPanel({
 
   useEffect(() => {
     previewRunRef.current += 1
+    if (previewOperationRef.current) void api.operations?.cancel(previewOperationRef.current)
+    previewOperationRef.current = null
     setPreview(null)
     setPreviewing(false)
     setConfirming(false)
-    return () => { previewRunRef.current += 1 }
+    return () => {
+      previewRunRef.current += 1
+      if (previewOperationRef.current) void api.operations?.cancel(previewOperationRef.current)
+      previewOperationRef.current = null
+    }
   }, [requestKey, open])
 
   const targetLabel = [targetConnectionName, target.database].filter(Boolean).join(' / ')
@@ -146,13 +154,16 @@ export function SyncPanel({
     const runId = ++previewRunRef.current
     setPreview(null)
     setPreviewing(true)
+    const operationId = crypto.randomUUID()
+    previewOperationRef.current = operationId
     try {
-      const next = await unwrap<SyncPlan>(submitSyncRequest(api.sync, { ...request, dryRun: true }))
+      const next = await unwrap<SyncPlan>(submitSyncRequest(api.sync, { ...request, dryRun: true }, operationId))
       if (runId !== previewRunRef.current || key !== currentRequestKeyRef.current) return
       setPreview({ plan: next, request, key })
     } catch (err) {
       if (runId === previewRunRef.current) showToast((err as Error).message, 'error')
     } finally {
+      if (previewOperationRef.current === operationId) previewOperationRef.current = null
       if (runId === previewRunRef.current) setPreviewing(false)
     }
   }
@@ -168,16 +179,21 @@ export function SyncPanel({
     setOutcome(null)
     setLogs([])
     setProgress(null)
+    cancelledRef.current = false
+    const operationId = crypto.randomUUID()
+    operationIdRef.current = operationId
     const jobId = jobs.start({
       kind: 'sync',
       tabId: DIFF_TAB_ID,
-      label: t('diff.job.syncing', { target: targetLabel || target.database })
+      label: t('diff.job.syncing', { target: targetLabel || target.database }),
+      onCancel: () => { cancelledRef.current = true; void api.operations?.cancel(operationId); setOutcome('cancelled') }
     })
     jobIdRef.current = jobId
     try {
       const result = await unwrap<{ executed: number; errors: number }>(
-        submitSyncRequest(api.sync, { ...preview.request, dryRun: false, taskId: jobId, planId: preview.plan.planId })
+        submitSyncRequest(api.sync, { ...preview.request, dryRun: false, taskId: jobId, planId: preview.plan.planId }, operationId)
       )
+      if (cancelledRef.current) return
       const message = t('diff.sync.executeResult', {
         executed: result.executed,
         errors: result.errors
@@ -189,11 +205,13 @@ export function SyncPanel({
         detail: message
       })
     } catch (err) {
+      if (cancelledRef.current) { setOutcome('cancelled'); return }
       showToast((err as Error).message, 'error')
       setOutcome('error')
       jobs.finish(jobId, { status: 'error', detail: (err as Error).message })
     } finally {
       jobIdRef.current = null
+      operationIdRef.current = null
       runningRef.current = false
       setRunning(false)
       setPreview(null)
@@ -300,12 +318,14 @@ export function SyncPanel({
               </Button>
             </div>
 
+            {(running || outcome === 'cancelled') && <p className="text-xs text-fg-muted">{t('diff.sync.cancelHint')}</p>}
             {running || progress ? (
               <ProgressBar
                 status={running ? 'running' : outcome ?? 'done'}
-                label={running ? t('diff.sync.running') : t(outcome === 'error' ? 'statusbar.status.error' : 'statusbar.status.done')}
+                label={running ? t('diff.sync.running') : t(outcome === 'cancelled' ? 'common.cancelled' : outcome === 'error' ? 'statusbar.status.error' : 'statusbar.status.done')}
                 detail={progress?.step}
                 count={progress ? { done: progress.done, total: progress.total } : undefined}
+                onCancel={running ? () => { if (jobIdRef.current) useJobStore.getState().cancel(jobIdRef.current) } : undefined}
               />
             ) : null}
           </div>

@@ -5,12 +5,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { normalizeWhereClauseInput, useTableDataQuery } from './table-data-query-hooks'
 import { createQueryRowsResult } from './table-data-test-helpers'
 
-const { queryRowsMock } = vi.hoisted(() => ({
-  queryRowsMock: vi.fn()
+const { queryRowsMock, cancelOperationMock, schemaMock } = vi.hoisted(() => ({
+  queryRowsMock: vi.fn(),
+  cancelOperationMock: vi.fn(), schemaMock: vi.fn()
 }))
 
 vi.mock('@renderer/lib/api', () => ({
   api: {
+    operations: { cancel: cancelOperationMock },
+    schema: { getTable: schemaMock },
     db: {
       queryRows: queryRowsMock
     }
@@ -43,7 +46,67 @@ function queryArgs() {
 describe('useTableDataQuery', () => {
   beforeEach(() => {
     queryRowsMock.mockReset()
+    cancelOperationMock.mockReset().mockResolvedValue({ cancelled: true })
+    schemaMock.mockReset().mockResolvedValue({ columns: createQueryRowsResult().columns })
     window.localStorage.clear()
+  })
+
+  it('cancels an obsolete query and does not clamp pages to a lower-bound total', async () => {
+    const first = deferred<ReturnType<typeof createQueryRowsResult>>()
+    queryRowsMock.mockReturnValueOnce(first.promise).mockResolvedValue(createQueryRowsResult({ total: 101, totalIsExact: false, hasMore: true }))
+    const { result, unmount } = renderHook(() => useTableDataQuery(queryArgs()))
+    const firstId = queryRowsMock.mock.calls[0]![1]
+    expect(firstId).toEqual(expect.any(String))
+    act(() => result.current.refresh())
+    await waitFor(() => expect(result.current.data?.totalIsExact).toBe(false))
+    expect(cancelOperationMock).toHaveBeenCalledWith(firstId)
+    await act(async () => first.resolve(createQueryRowsResult({ total: 9999 })))
+    expect(result.current.data?.total).toBe(101)
+    act(() => result.current.goToPage(15))
+    await waitFor(() => expect(result.current.page).toBe(15))
+    expect(queryRowsMock.mock.calls.at(-1)?.[0].page).toBe(15)
+    unmount()
+  })
+
+  it('uses the cancellation channel and suppresses a cancelled query result', async () => {
+    const pending = deferred<ReturnType<typeof createQueryRowsResult>>()
+    queryRowsMock.mockReturnValueOnce(pending.promise)
+    const args = queryArgs()
+    const { result } = renderHook(() => useTableDataQuery(args))
+    await act(async () => result.current.cancel())
+    expect(cancelOperationMock).toHaveBeenCalledWith(queryRowsMock.mock.calls[0]![1])
+    expect(result.current.loading).toBe(false)
+    await act(async () => pending.resolve(createQueryRowsResult()))
+    expect(result.current.data).toBeNull()
+    expect(args.showToast).not.toHaveBeenCalled()
+  })
+
+  it('uses remembered primary-key cursors for forward/back paging and resets them after sorting', async () => {
+    queryRowsMock.mockImplementation(async (request) => createQueryRowsResult({ total: request.page * 100 + 1, totalIsExact: false, hasMore: true, nextCursor: { id: request.page * 100 } }))
+    const { result } = renderHook(() => useTableDataQuery(queryArgs()))
+    await waitFor(() => expect(result.current.data?.nextCursor).toEqual({ id: 100 }))
+    act(() => result.current.goToPage(2))
+    await waitFor(() => expect(queryRowsMock.mock.calls.at(-1)?.[0].after).toEqual({ id: 100 }))
+    await waitFor(() => expect(result.current.data?.nextCursor).toEqual({ id: 200 }))
+    act(() => result.current.goToPage(3))
+    await waitFor(() => expect(queryRowsMock.mock.calls.at(-1)?.[0].after).toEqual({ id: 200 }))
+    act(() => result.current.goToPage(2))
+    await waitFor(() => expect(queryRowsMock.mock.calls.at(-1)?.[0].after).toEqual({ id: 100 }))
+    act(() => result.current.onSort('name'))
+    await waitFor(() => expect(queryRowsMock.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({ page: 1, orderBy: { column: 'name', dir: 'ASC' } })))
+    expect(queryRowsMock.mock.calls.at(-1)?.[0].after).toBeUndefined()
+  })
+
+  it('requests a projection before any stored hidden column is downloaded', async () => {
+    localStorage.setItem('mysql-compare:table-hidden-columns:v1:conn-1:db_main:users', JSON.stringify(['name']))
+    queryRowsMock.mockResolvedValue(createQueryRowsResult())
+    const { result } = renderHook(() => useTableDataQuery(queryArgs()))
+    await waitFor(() => expect(result.current.data).not.toBeNull())
+    expect(schemaMock).toHaveBeenCalledWith('conn-1', 'db_main', 'users')
+    expect(queryRowsMock.mock.calls[0]![0].columns).toEqual(['id', 'active'])
+    expect(queryRowsMock.mock.calls.every((call) => !call[0].columns.includes('name'))).toBe(true)
+    act(() => result.current.setColumnVisibility('active', false))
+    await waitFor(() => expect(queryRowsMock.mock.calls.at(-1)?.[0].columns).toEqual(['id']))
   })
 
   it('loads rows and initializes all columns as visible', async () => {
@@ -62,7 +125,7 @@ describe('useTableDataQuery', () => {
 
     await waitFor(() => expect(result.current.data?.rows).toHaveLength(3))
 
-    expect(queryRowsMock).toHaveBeenLastCalledWith({
+    expect(queryRowsMock.mock.calls.at(-1)?.[0]).toEqual({
       connectionId: 'conn-1',
       database: 'db_main',
       table: 'users',
@@ -110,7 +173,7 @@ describe('useTableDataQuery', () => {
     })
 
     await waitFor(() =>
-      expect(queryRowsMock).toHaveBeenLastCalledWith(
+      expect(queryRowsMock.mock.calls.at(-1)?.[0]).toEqual(
         expect.objectContaining({ page: 1, where: 'id > 10' })
       )
     )
@@ -121,7 +184,7 @@ describe('useTableDataQuery', () => {
     })
 
     await waitFor(() =>
-      expect(queryRowsMock).toHaveBeenLastCalledWith(
+      expect(queryRowsMock.mock.calls.at(-1)?.[0]).toEqual(
         expect.objectContaining({ page: 1, where: undefined })
       )
     )
@@ -152,7 +215,7 @@ describe('useTableDataQuery', () => {
     })
 
     await waitFor(() =>
-      expect(queryRowsMock).toHaveBeenLastCalledWith(
+      expect(queryRowsMock.mock.calls.at(-1)?.[0]).toEqual(
         expect.objectContaining({ where: "name = '小火球'" })
       )
     )
@@ -293,7 +356,7 @@ describe('useTableDataQuery', () => {
       result.current.onSort('name')
     })
     await waitFor(() =>
-      expect(queryRowsMock).toHaveBeenLastCalledWith(
+      expect(queryRowsMock.mock.calls.at(-1)?.[0]).toEqual(
         expect.objectContaining({ page: 1, orderBy: { column: 'name', dir: 'ASC' } })
       )
     )
@@ -302,7 +365,7 @@ describe('useTableDataQuery', () => {
       result.current.onSort('name')
     })
     await waitFor(() =>
-      expect(queryRowsMock).toHaveBeenLastCalledWith(
+      expect(queryRowsMock.mock.calls.at(-1)?.[0]).toEqual(
         expect.objectContaining({ orderBy: { column: 'name', dir: 'DESC' } })
       )
     )
@@ -311,7 +374,7 @@ describe('useTableDataQuery', () => {
       result.current.onSort('name')
     })
     await waitFor(() =>
-      expect(queryRowsMock).toHaveBeenLastCalledWith(
+      expect(queryRowsMock.mock.calls.at(-1)?.[0]).toEqual(
         expect.objectContaining({ orderBy: undefined })
       )
     )
@@ -328,7 +391,7 @@ describe('useTableDataQuery', () => {
       result.current.onPageSizeChange(50)
     })
     await waitFor(() =>
-      expect(queryRowsMock).toHaveBeenLastCalledWith(
+      expect(queryRowsMock.mock.calls.at(-1)?.[0]).toEqual(
         expect.objectContaining({ page: 1, pageSize: 50 })
       )
     )

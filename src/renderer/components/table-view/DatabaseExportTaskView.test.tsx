@@ -8,10 +8,10 @@ import { useUIStore } from '@renderer/store/ui-store'
 import type { ExportDatabaseRequest } from '../../../shared/types'
 import { DatabaseExportTaskView } from './DatabaseExportTaskView'
 
-const { exportDatabaseMock } = vi.hoisted(() => ({ exportDatabaseMock: vi.fn() }))
+const { exportDatabaseMock, cancelMock } = vi.hoisted(() => ({ exportDatabaseMock: vi.fn(), cancelMock: vi.fn() }))
 
 vi.mock('@renderer/lib/api', () => ({
-  api: { db: { exportDatabase: exportDatabaseMock } },
+  api: { db: { exportDatabase: exportDatabaseMock }, operations: { cancel: cancelMock } },
   unwrap: async <T,>(value: Promise<T> | T): Promise<T> => await value
 }))
 
@@ -36,6 +36,7 @@ describe('DatabaseExportTaskView', () => {
   beforeEach(() => {
     useI18nStore.getState().setLocale('en')
     exportDatabaseMock.mockReset()
+    cancelMock.mockReset().mockResolvedValue({ ok: true })
     useJobStore.setState({ jobs: new Map() })
 
     originalShowToast = useUIStore.getState().showToast
@@ -56,9 +57,23 @@ describe('DatabaseExportTaskView', () => {
     expect(job.kind).toBe('export')
     expect(job.tabId).toBe('database-export:task-job')
     expect(job.status).toBe('running')
-    // `db.exportDatabase` has no cancel channel, so the status bar must not
-    // grow a Cancel button that would lie (blueprint risk 6).
-    expect(job.onCancel).toBeUndefined()
+    expect(job.onCancel).toBeTypeOf('function')
+    const operationId = exportDatabaseMock.mock.calls[0]?.[1]
+    act(() => useJobStore.getState().cancel(job.id))
+    expect(cancelMock).toHaveBeenCalledWith(operationId)
+    expect(useJobStore.getState().jobs.get(job.id)?.status).toBe('cancelled')
+  })
+
+  it('keeps a canceled export canceled when its old response arrives', async () => {
+    let resolve!: (result: unknown) => void
+    exportDatabaseMock.mockReturnValue(new Promise((r) => { resolve = r }))
+    render(<DatabaseExportTaskView taskId="task-cancel-late" request={request} />)
+    await waitFor(() => expect(useJobStore.getState().jobs.size).toBe(1))
+    const job = Array.from(useJobStore.getState().jobs.values())[0]!
+    act(() => useJobStore.getState().cancel(job.id))
+    await act(async () => resolve({ canceled: false, filePath: '/tmp/old.sql', tablesExported: 1, rowsExported: 2 }))
+    expect(useJobStore.getState().jobs.get(job.id)?.status).toBe('cancelled')
+    expect(screen.queryByText('/tmp/old.sql')).toBeNull()
   })
 
   it('guards closing a running export with a ConfirmDialog, not window.confirm', async () => {

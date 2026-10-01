@@ -7,10 +7,10 @@
 import type { SafeConnection } from '../../../shared/types'
 import { buildRedisKeyTree, type RedisKeyTreeNode } from './redis-key-tree'
 import { getDatabaseKey, isRedisKeyListTruncated } from './sidebar-actions'
-import type { NodeState } from './sidebar-types'
+import type { NodeState, RedisScanState } from './sidebar-types'
 import { tableDisplayName, tableReference } from '../../../shared/table-reference'
 
-export type SidebarRowMessage = 'noTables' | 'noTablesMatch' | 'noKeys' | 'noKeysMatch' | 'noVisibleTables' | 'noSchemas' | 'noDatabases'
+export type SidebarRowMessage = 'noTables' | 'noTablesMatch' | 'noKeys' | 'noKeysMatch' | 'noVisibleTables' | 'noSchemas' | 'noDatabases' | 'redisNoScannedMatches'
 
 interface RowBase {
   key: string
@@ -56,6 +56,7 @@ export type SidebarRow = RowBase &
         keyName: string
         label: string
       }
+    | { type: 'redis-scan'; connection: SafeConnection; database: string; scan: RedisScanState; shown: number }
     | { type: 'message'; message: SidebarRowMessage }
     | { type: 'truncated'; shown: number; total: number }
   )
@@ -234,14 +235,14 @@ export function buildSidebarRows({
           type: 'schema-picker', key: `schema:${connection.id}:${database}`, depth: 2,
           connection, database, schemas, schema: node.activeSchemas?.[database] ?? ''
         })
-        if (node.databaseLoading?.[database]) {
+        if (!isRedis && node.databaseLoading?.[database]) {
           rows.push({ type: 'loading', key: `loading:${connection.id}:${database}`, depth: 2 })
           return
         }
         const error = node.databaseErrors?.[database]
         if (error) {
           rows.push({ type: 'browse-error', key: `error:${connection.id}:${database}`, depth: 2, connection, database, message: error })
-          return
+          if (!isRedis) return
         }
         if (connection.engine === 'postgres' && schemas?.length === 0) {
           rows.push({ type: 'message', key: `empty:${connection.id}:${database}`, depth: 2, message: 'noSchemas' })
@@ -259,8 +260,9 @@ export function buildSidebarRows({
         })
 
         const tables = node.tables[database]
+        const scan = isRedis ? node.redisScans?.[database] : undefined
         const query = filterValue.toLowerCase()
-        const visible = (tables ?? []).filter(
+        const visible = scan ? tables ?? [] : (tables ?? []).filter(
           (table) => !query || tableDisplayName(table).toLowerCase().includes(query)
         )
 
@@ -281,12 +283,12 @@ export function buildSidebarRows({
           })
         }
 
-        if (tables && visible.length === 0) {
+        if (tables && visible.length === 0 && !scan?.loading && !error) {
           rows.push({
             type: 'message',
             key: `empty:${connection.id}:${database}`,
             depth: 2,
-            message: filterValue
+            message: scan && !scan.complete ? 'redisNoScannedMatches' : filterValue
               ? isRedis
                 ? 'noKeysMatch'
                 : 'noTablesMatch'
@@ -298,7 +300,8 @@ export function buildSidebarRows({
 
         // The truncation warning is a row, not a toast: the old 3s toast left
         // the list looking complete (blueprint §2.10).
-        if (isRedis && tables && isRedisKeyListTruncated(tables.length, keyCount)) {
+        if (scan) rows.push({ type: 'redis-scan', key: `scan:${connection.id}:${database}`, depth: 2, connection, database, scan, shown: tables?.length ?? 0 })
+        if (isRedis && !scan && tables && isRedisKeyListTruncated(tables.length, keyCount)) {
           rows.push({
             type: 'truncated',
             key: `truncated:${connection.id}:${database}`,

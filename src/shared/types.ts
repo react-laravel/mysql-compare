@@ -35,6 +35,10 @@ export interface ConnectionConfig {
   database?: string
   databases?: string[]
   showAllDatabases?: boolean
+  /** Auto requires verified TLS for remote direct hosts. SSH and loopback use their own transport. */
+  tlsMode?: 'auto' | 'verify-full' | 'disabled'
+  /** Optional private CA, as PEM certificate content. */
+  tlsCaPem?: string
   // SSH Tunnel
   useSSH: boolean
   sshHost?: string
@@ -125,16 +129,31 @@ export interface QueryRowsRequest {
   pageSize: number
   orderBy?: { column: string; dir: 'ASC' | 'DESC' }
   where?: string              // 简单 where 片段（不含 'WHERE'）
-  /** API 层注入，用于无主键排序时的稳定默认顺序 */
+  /** API 层注入的主键信息；无主键时不进行隐式全列排序 */
   primaryKey?: string[]
   columnNames?: string[]
   /** Exact lookup by complete primary keys; independent of the current page. */
   keyRows?: Record<string, unknown>[]
+  /** Full primary key of the preceding page; only for the default primary-key sort. */
+  after?: Record<string, unknown>
+  /** Selected fields. The backend always includes the primary key required for editing and paging. */
+  columns?: string[]
+}
+
+/** One SCAN batch; COUNT is a hint, and empty batches may be incomplete. */
+export interface RedisScanResult {
+  keys: string[]
+  nextCursor: string
+  complete: boolean
 }
 
 export interface QueryRowsResult {
   rows: Record<string, unknown>[]
+  /** Exact total at the end, otherwise a lower bound. */
   total: number
+  hasMore?: boolean
+  totalIsExact?: boolean
+  nextCursor?: Record<string, unknown>
   hasPrimaryKey: boolean
   primaryKey: string[]
   columns: ColumnInfo[]
@@ -353,6 +372,7 @@ export interface SSHListFilesRequest {
 }
 
 export interface SSHListFilesResult {
+  truncated?: boolean
   path: string
   parentPath: string | null
   entries: SSHFileEntry[]

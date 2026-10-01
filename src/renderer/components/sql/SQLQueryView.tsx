@@ -21,6 +21,7 @@ import {
   RotateCcw,
   Rows3,
   ScanSearch,
+  Square,
   Trash2
 } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
@@ -85,34 +86,32 @@ export function migrateStoredEditorRatio(): void {
 
 migrateStoredEditorRatio()
 
-function getHistoryStorageKey(connectionId: string, database: string): string {
-  return `mysql-compare:sql-history:${connectionId}:${database}`
+const sessionHistory = new Map<string, SQLHistoryEntry[]>()
+
+/** Remove the previous plaintext disk history; SQL may contain credentials. */
+export function removeLegacySQLHistory(): void {
+  if (typeof window === 'undefined') return
+  try {
+    const keys = Array.from({ length: window.localStorage.length }, (_, index) => window.localStorage.key(index))
+    for (const key of keys) if (key?.startsWith('mysql-compare:sql-history:')) window.localStorage.removeItem(key)
+  } catch { /* restricted storage must not prevent opening the console */ }
 }
 
+removeLegacySQLHistory()
+
+function getHistoryStorageKey(connectionId: string, database: string): string {
+  return JSON.stringify([connectionId, database])
+}
+
+export function clearSessionSQLHistory(): void { sessionHistory.clear() }
+
 function readSQLHistory(connectionId: string, database: string): SQLHistoryEntry[] {
-  if (typeof window === 'undefined') return []
-  try {
-    const raw = window.localStorage.getItem(getHistoryStorageKey(connectionId, database))
-    if (!raw) return []
-    const parsed = JSON.parse(raw) as SQLHistoryEntry[]
-    return Array.isArray(parsed)
-      ? parsed.filter((entry) => entry?.id && entry.sql).slice(0, MAX_SQL_HISTORY)
-      : []
-  } catch {
-    return []
-  }
+  removeLegacySQLHistory()
+  return sessionHistory.get(getHistoryStorageKey(connectionId, database)) ?? []
 }
 
 function writeSQLHistory(connectionId: string, database: string, history: SQLHistoryEntry[]): void {
-  if (typeof window === 'undefined') return
-  try {
-    window.localStorage.setItem(
-      getHistoryStorageKey(connectionId, database),
-      JSON.stringify(history)
-    )
-  } catch {
-    /* ignore */
-  }
+  sessionHistory.set(getHistoryStorageKey(connectionId, database), history)
 }
 
 export function SQLQueryView({
@@ -148,7 +147,38 @@ export function SQLQueryView({
   )
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const runningRef = useRef(false)
+  const operationRef = useRef<{ id: string; cancelled: boolean; cancelling?: boolean } | null>(null)
+  const [cancelling, setCancelling] = useState(false)
+  useEffect(() => {
+    runningRef.current = false
+    setRunning(false)
+    return () => {
+      const operation = operationRef.current
+      if (operation) {
+        operation.cancelled = true
+        operationRef.current = null
+        void api.operations?.cancel(operation.id).catch(() => undefined)
+      }
+    }
+  }, [connectionId, database])
+  const cancelOperation = async () => {
+    const operation = operationRef.current
+    if (!operation || operation.cancelling) return
+    operation.cancelling = true
+    setCancelling(true)
+    try {
+      await unwrap(api.operations.cancel(operation.id))
+      operation.cancelled = true
+    } catch (error) {
+      showToast((error as Error).message, 'error')
+    } finally {
+      operation.cancelling = false
+      setCancelling(false)
+    }
+  }
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null)
+  const editorViewState = useRef<MonacoEditor.ICodeEditorViewState | null>(null)
+  useEffect(() => { if (!active) editorRef.current = null }, [active])
   const runSQLRef = useRef<(statementOverride?: string) => Promise<void>>(async () => undefined)
   const runSelectionRef = useRef<() => void>(() => undefined)
 
@@ -194,25 +224,32 @@ export function SQLQueryView({
       showToast(t('sql.empty'), 'error')
       return
     }
+    const operation = { id: crypto.randomUUID(), cancelled: false }
+    operationRef.current = operation
     runningRef.current = true
     setRunning(true)
     setError(null)
     // A run always has something to say — never leave the results folded away.
     setResultsCollapsed(false)
     try {
-      const raw = await unwrap(api.db.executeSQL(connectionId, statement, database))
+      const raw = await unwrap(api.db.executeSQL(connectionId, statement, database, operation.id))
+      if (operation.cancelled || operationRef.current !== operation) return
       const normalized = normalizeResult(raw, t)
       setResult(normalized)
       if (normalized.kind === 'rows' && normalized.truncated) showToast(t('sql.truncated'), 'info')
       rememberStatement(statement)
       showToast(t('sql.executed'), 'success')
     } catch (err) {
+      if (operation.cancelled || operationRef.current !== operation) return
       const message = (err as Error).message
       setError(message)
       showToast(message, 'error')
     } finally {
-      runningRef.current = false
-      setRunning(false)
+      if (operationRef.current === operation) {
+        operationRef.current = null
+        runningRef.current = false
+        setRunning(false)
+      }
     }
   }
 
@@ -229,9 +266,12 @@ export function SQLQueryView({
 
   const onEditorMount: OnMount = (editor, monaco) => {
     editorRef.current = editor
+    if (editorViewState.current) editor.restoreViewState(editorViewState.current)
     editor.onDidChangeCursorSelection(() => {
+      editorViewState.current = editor.saveViewState()
       syncSelectedSQL()
     })
+    editor.onDidScrollChange(() => { editorViewState.current = editor.saveViewState() })
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => {
       void runSQLRef.current()
     })
@@ -248,22 +288,29 @@ export function SQLQueryView({
       showToast(t('sql.empty'), 'error')
       return
     }
+    const operation = { id: crypto.randomUUID(), cancelled: false }
+    operationRef.current = operation
     runningRef.current = true
     setRunning(true)
     setError(null)
     setResultsCollapsed(false)
     try {
-      const explain = await unwrap(api.db.explainSQL({ connectionId, database, sql: statement }))
+      const explain = await unwrap(api.db.explainSQL({ connectionId, database, sql: statement }, operation.id))
+      if (operation.cancelled || operationRef.current !== operation) return
       setResult({ kind: 'explain', result: explain })
       rememberStatement(statement)
       showToast(t('sql.explained'), 'success')
     } catch (err) {
+      if (operation.cancelled || operationRef.current !== operation) return
       const message = (err as Error).message
       setError(message)
       showToast(message, 'error')
     } finally {
-      runningRef.current = false
-      setRunning(false)
+      if (operationRef.current === operation) {
+        operationRef.current = null
+        runningRef.current = false
+        setRunning(false)
+      }
     }
   }
 
@@ -398,6 +445,7 @@ export function SQLQueryView({
         progress={running ? { status: 'running', label: t('sql.running') } : null}
         actions={
           <>
+            {running ? <Button size="sm" variant="secondary" icon={Square} disabled={cancelling} onClick={() => void cancelOperation()}>{t('common.cancel')}</Button> : null}
             <Button
               size="sm"
               variant="secondary"
@@ -469,7 +517,7 @@ export function SQLQueryView({
             }}
           />
           <div className="min-h-0 flex-1 overflow-hidden rounded-md border border-border">
-            <Editor
+            {active ? <Editor
               height="100%"
               language="sql"
               theme={theme === 'dark' ? 'vs-dark' : 'light'}
@@ -490,7 +538,7 @@ export function SQLQueryView({
                 renderLineHighlight: 'line',
                 padding: { top: 12, bottom: 12 }
               }}
-            />
+            /> : null}
           </div>
         </div>
 
@@ -514,7 +562,7 @@ export function SQLQueryView({
           open
           onOpenChange={setHistoryOpen}
           title={t('sql.history')}
-          description={t('sql.historyDescription')}
+          description={t('sql.historySessionDescription')}
           size="lg"
           footer={
             <>

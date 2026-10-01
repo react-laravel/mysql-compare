@@ -9,6 +9,7 @@ import { cn } from '@renderer/lib/utils'
 import type { ConnectionConfig, DbEngine, SafeConnection } from '../../../shared/types'
 import {
   DEFAULT_PORT,
+  connectionTransport,
   parsePortValue,
   type SSHAuthMethod
 } from './connection-dialog-utils'
@@ -115,6 +116,28 @@ export function ConnectionDialogForm({
         />
       </Field>
       <div />
+
+      <Field label={t('connection.form.transport')} className="col-span-2">
+        <select
+          aria-label={t('connection.form.transport')}
+          value={form.tlsMode || 'auto'}
+          onChange={(event) => onChange('tlsMode', event.target.value as ConnectionConfig['tlsMode'])}
+          className="h-9 w-full rounded-md border border-border bg-canvas px-3 text-sm"
+        >
+          <option value="auto">{t('connection.form.tlsAuto')}</option>
+          <option value="verify-full" disabled={form.useSSH}>{t('connection.form.tlsVerify')}</option>
+          <option value="disabled">{t('connection.form.tlsDisabled')}</option>
+        </select>
+        <p className="mt-2 text-xs text-fg-muted">{t('connection.form.tlsHint')}</p>
+        <p className="mt-1 text-xs font-medium">{t(`connection.form.transport_${connectionTransport(form)}`)}</p>
+      </Field>
+      {form.tlsMode !== 'disabled' && !form.useSSH && (
+        <Field label={t('connection.form.tlsCa')} className="col-span-2">
+          <Textarea mono value={form.tlsCaPem || ''} rows={3}
+            placeholder="-----BEGIN CERTIFICATE-----"
+            onChange={(event) => onChange('tlsCaPem', event.target.value)} />
+        </Field>
+      )}
 
       <div className="col-span-2 mt-2 flex items-center gap-2">
         <Checkbox

@@ -6,7 +6,7 @@
 // with no tree semantics and no keyboard reachability at all. Hover-gated
 // icons are gone: each row carries a persistent `⋯` whose items come from the
 // same builders the right-click menu uses.
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   Database,
   EllipsisVertical,
@@ -29,9 +29,11 @@ import { ScrollArea } from '@renderer/components/ui/scroll-area'
 import { SearchInput } from '@renderer/components/ui/search-input'
 import { Select } from '@renderer/components/ui/select'
 import { databaseErrorKind } from '../connection/database-browsing'
+import { connectionTransport } from '../connection/connection-dialog-utils'
 import { tableDisplayName, tableReference } from '../../../shared/table-reference'
 import { Skeleton } from '@renderer/components/ui/skeleton'
 import { TreeRow } from '@renderer/components/ui/tree-row'
+import { useVirtualRows } from '@renderer/components/ui/use-virtual-rows'
 import { useI18n } from '@renderer/i18n'
 import { useAppAction } from '@renderer/lib/app-actions'
 import { formatNumber } from '@renderer/lib/format'
@@ -60,7 +62,8 @@ const MESSAGE_KEY: Record<SidebarRowMessage, string> = {
   noKeysMatch: 'sidebar.noKeysMatch',
   noVisibleTables: 'sidebar.browsing.noVisibleTables',
   noSchemas: 'sidebar.browsing.noSchemas',
-  noDatabases: 'sidebar.explorer.noDatabases'
+  noDatabases: 'sidebar.explorer.noDatabases',
+  redisNoScannedMatches: 'sidebar.redisNoScannedMatches'
 }
 
 export function SidebarTree() {
@@ -88,7 +91,8 @@ export function SidebarTree() {
   const searchRef = useRef<HTMLInputElement>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const rowRefs = useRef<(HTMLDivElement | null)[]>([])
-  const databaseRowRefs = useRef<Record<string, { element: HTMLElement; connectionName: string; database: string }>>({})
+  const pendingFocus = useRef<number | null>(null)
+  const [pinnedKey, setPinnedKey] = useState<string | null>(null)
   const typeahead = useRef({ query: '', at: 0 })
 
   // ⌘⇧F. The shell dispatches through `app-actions` because it cannot know
@@ -115,6 +119,29 @@ export function SidebarTree() {
   )
 
   const activeIndex = Math.max(0, focusables.findIndex(({ row }) => row.key === activeKey))
+  const rowHeights = useMemo(() => rows.map((row) => {
+    switch (row.type) {
+      case 'filter': case 'schema-picker': return 36
+      case 'browse-error': return 132
+      case 'loading': return 84
+      case 'truncated': return 76
+      case 'redis-scan': return 96
+      case 'message': return 36
+      case 'group': case 'add-database': return 28
+      default: return 24
+    }
+  }), [rows])
+  const window = useVirtualRows({
+    viewportRef: scrollRef,
+    count: rows.length,
+    rowHeight: rowHeights,
+    pinnedIndexes: [rows.findIndex((row) => row.key === pinnedKey), rows.findIndex((row) => row.key === focusables[activeIndex]?.row.key)]
+  })
+  useLayoutEffect(() => {
+    if (pendingFocus.current == null) return
+    rowRefs.current[pendingFocus.current]?.focus()
+    pendingFocus.current = null
+  })
   const previousFocusables = useRef(focusables)
   useEffect(() => {
     const previous = previousFocusables.current
@@ -140,40 +167,33 @@ export function SidebarTree() {
     }
   }, [activeKey, focusables])
 
-  // The sticky database header (a genuinely good touch worth keeping) now lives
-  // with the scroll region that produces it instead of being computed in
-  // `Sidebar` and passed down.
+  // Derive the breadcrumb from row offsets so offscreen databases still count.
   useEffect(() => {
     const container = scrollRef.current
     if (!container) return
-
     const sync = () => {
-      if (container.scrollTop < 12) {
-        setStickyDatabase(null)
-        return
-      }
-      const containerTop = container.getBoundingClientRect().top
       let next: StickyDatabaseContext | null = null
-      let closestTop = Number.NEGATIVE_INFINITY
-      Object.values(databaseRowRefs.current).forEach((entry) => {
-        if (!entry.element.isConnected) return
-        const top = entry.element.getBoundingClientRect().top - containerTop
-        if (top <= 4 && top > closestTop) {
-          closestTop = top
-          next = { connectionName: entry.connectionName, database: entry.database }
+      if (container.scrollTop >= 12) {
+        for (let index = 0; index < rows.length; index++) {
+          if (window.offsets[index]! > container.scrollTop + 4) break
+          const row = rows[index]!
+          if (row.type === 'database') next = { connectionName: row.connection.name, database: row.database }
+          else if (row.type === 'connection' || row.type === 'group') next = null
         }
-      })
+      }
       setStickyDatabase(next)
     }
-
     sync()
-    container.addEventListener('scroll', sync)
+    container.addEventListener('scroll', sync, { passive: true })
     return () => container.removeEventListener('scroll', sync)
-  }, [rows, setStickyDatabase])
+  }, [rows, setStickyDatabase, window.offsets])
 
   const focusRow = (index: number) => {
     const clamped = Math.min(Math.max(index, 0), Math.max(focusables.length - 1, 0))
-    setActiveKey(focusables[clamped]?.row.key ?? null)
+    const key = focusables[clamped]?.row.key ?? null
+    setActiveKey(key)
+    pendingFocus.current = clamped
+    window.scrollToIndex(rows.findIndex((row) => row.key === key))
     rowRefs.current[clamped]?.focus()
   }
 
@@ -476,7 +496,7 @@ export function SidebarTree() {
               // so they stay inline and — unlike before — always visible.
               row.connection.useSSH ? (
                 <span data-tree-action className="flex shrink-0 items-center gap-0.5">
-                  <Badge tone="warning" size="xs">
+                  <Badge tone="warning" size="xs" title={t('connection.form.transport_ssh')}>
                     SSH
                   </Badge>
                   <IconButton
@@ -494,7 +514,7 @@ export function SidebarTree() {
                     onClick={() => actions.openSSHTerminal(row.connection)}
                   />
                 </span>
-              ) : null
+              ) : <Badge tone={connectionTransport(row.connection) === 'tls' ? 'success' : 'warning'} size="xs" title={t(`connection.form.transport_${connectionTransport(row.connection)}`)}>{connectionTransport(row.connection) === 'tls' ? 'TLS' : t('connection.form.transport_plaintext')}</Badge>
             }
             overflow={overflowFor(row)}
             overflowLabel={t('sidebar.moreActionsFor', { name: row.connection.name })}
@@ -510,17 +530,6 @@ export function SidebarTree() {
           <TreeRow
             {...common}
             key={row.key}
-            ref={(element: HTMLDivElement | null) => {
-              rowRefs.current[index] = element
-              const key = `${row.connection.id}:${row.database}`
-              if (!element) delete databaseRowRefs.current[key]
-              else
-                databaseRowRefs.current[key] = {
-                  element,
-                  connectionName: row.connection.name,
-                  database: row.database
-                }
-            }}
             expandable
             expanded={row.expanded}
             selected={selected}
@@ -580,6 +589,8 @@ export function SidebarTree() {
                   : t('sidebar.filterTables')
               }
               clearLabel={t('common.clear')}
+              title={t(row.connection.engine === 'redis' ? 'sidebar.redisSearchScope' : 'sidebar.filterLoadedTables')}
+              aria-label={t(row.connection.engine === 'redis' ? 'sidebar.redisSearchScope' : 'sidebar.filterLoadedTables')}
             />
           </div>
         )
@@ -653,6 +664,12 @@ export function SidebarTree() {
           </div>
         )
 
+      case 'redis-scan':
+        return <div key={row.key} className="space-y-1 py-1 pr-2 text-2xs text-fg-muted" style={{ paddingLeft: row.depth * 12 + 8 }}>
+          <p role="status">{t(row.scan.loading ? 'sidebar.redisScanLoading' : row.scan.limited ? 'sidebar.redisScanLimit' : row.scan.complete ? 'sidebar.redisScanComplete' : 'sidebar.redisScanProgress', { count: formatNumber(row.shown) })}</p>
+          {!row.scan.complete && !row.scan.limited ? <Button size="xs" variant="secondary" loading={row.scan.loading} disabled={row.scan.loading} onClick={() => void actions.scanMoreRedisKeys(row.connection, row.database)}>{t('sidebar.redisScanMore')}</Button> : null}
+        </div>
+
       case 'truncated':
         return (
           <div
@@ -687,6 +704,7 @@ export function SidebarTree() {
           placeholder={t('sidebar.explorer.searchPlaceholder')}
           aria-label={t('sidebar.explorer.searchLabel')}
           clearLabel={t('common.clear')}
+          title={t('sidebar.explorer.searchLabel')}
           containerClassName="min-w-0 flex-1"
         />
         <DropdownMenu
@@ -706,9 +724,11 @@ export function SidebarTree() {
 
       <ScrollArea viewportRef={scrollRef} className="relative pb-1" stickyShadow>
         {stickyDatabase ? (
-          <div className="pointer-events-none sticky top-0 z-[var(--ds-z-sticky)] mx-1 mb-1 rounded-md border border-border bg-surface/95 px-2 py-1 backdrop-blur">
-            <div className="truncate text-2xs text-fg-subtle">{stickyDatabase.connectionName}</div>
-            <div className="truncate text-xs font-medium text-fg">{stickyDatabase.database}</div>
+          <div className="pointer-events-none sticky top-0 z-[var(--ds-z-sticky)] h-0">
+            <div className="absolute inset-x-1 top-0 rounded-md border border-border bg-surface/95 px-2 py-1 backdrop-blur">
+              <div className="truncate text-2xs text-fg-subtle">{stickyDatabase.connectionName}</div>
+              <div className="truncate text-xs font-medium text-fg">{stickyDatabase.database}</div>
+            </div>
           </div>
         ) : null}
 
@@ -732,8 +752,16 @@ export function SidebarTree() {
             }
           />
         ) : (
-          <div role="tree" aria-label={t('sidebar.treeLabel')}>
-            {rows.map(renderRow)}
+          <div role="tree" aria-label={t('sidebar.treeLabel')} style={window.virtual ? { position: 'relative', height: window.totalHeight } : undefined}>
+            {window.indexes.map((index) => {
+              const row = rows[index]!
+              return <div key={row.key}
+                onFocusCapture={() => setPinnedKey(row.key)}
+                onBlurCapture={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setPinnedKey(null) }}
+                style={window.virtual ? { position: 'absolute', top: window.offsets[index], width: '100%', height: rowHeights[index], overflow: row.type === 'browse-error' ? 'auto' : undefined } : undefined}>
+                {renderRow(row)}
+              </div>
+            })}
           </div>
         )}
       </ScrollArea>

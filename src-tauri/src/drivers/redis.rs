@@ -3,10 +3,9 @@ use std::collections::HashMap;
 use redis::AsyncCommands;
 use serde_json::{json, Value};
 
-use crate::drivers::util::urlencoding;
 use crate::types::{
   ColumnInfo, ConnectionConfig, DatabaseInfo, DeleteRowsRequest, DropTableRequest,
-  InsertRowRequest, QueryRowsRequest, QueryRowsResult, RenameTableRequest, TableSchema,
+  InsertRowRequest, QueryRowsRequest, QueryRowsResult, RedisScanResult, RenameTableRequest, TableSchema,
   UpdateRowRequest,
 };
 
@@ -20,20 +19,8 @@ pub struct RedisDriver {
 
 impl RedisDriver {
   pub async fn open(connection: ConnectionConfig, local_port: Option<u16>) -> Result<Self, String> {
-    let (host, port) = if let Some(p) = local_port {
-      ("127.0.0.1".to_string(), p)
-    } else {
-      (connection.host.clone(), connection.port)
-    };
-    let db: i64 = connection
-      .database
-      .as_deref()
-      .unwrap_or("0")
-      .parse()
-      .unwrap_or(0);
-    let password = connection.password.clone().unwrap_or_default();
-    let url = build_url(&host, port, db, &password);
-    let client = redis::Client::open(url).map_err(|e| e.to_string())?;
+    let db = connection.database.as_deref().unwrap_or("0").parse().map_err(|_| "Redis database must be an integer")?;
+    let client = build_client(&connection, local_port, db)?;
     Ok(Self {
       connection,
       local_port,
@@ -44,7 +31,9 @@ impl RedisDriver {
   async fn conn(&self) -> Result<redis::aio::MultiplexedConnection, String> {
     self
       .client
-      .get_multiplexed_async_connection()
+      .get_multiplexed_async_connection_with_config(&redis::AsyncConnectionConfig::new()
+        .set_connection_timeout(std::time::Duration::from_secs(15))
+        .set_response_timeout(std::time::Duration::from_secs(60)))
       .await
       .map_err(|e| e.to_string())
   }
@@ -102,19 +91,25 @@ impl RedisDriver {
   }
 
   async fn conn_for_db(&self, database: &str) -> Result<redis::aio::MultiplexedConnection, String> {
-    let db: i64 = database.parse().unwrap_or(0);
-    let (host, port) = if let Some(p) = self.local_port {
-      ("127.0.0.1".to_string(), p)
-    } else {
-      (self.connection.host.clone(), self.connection.port)
-    };
-    let password = self.connection.password.clone().unwrap_or_default();
-    let url = build_url(&host, port, db, &password);
-    redis::Client::open(url)
-      .map_err(|e| e.to_string())?
-      .get_multiplexed_async_connection()
-      .await
-      .map_err(|e| e.to_string())
+    let db = database.parse().map_err(|_| "Redis database must be an integer")?;
+    build_client(&self.connection, self.local_port, db)?
+      .get_multiplexed_async_connection_with_config(&redis::AsyncConnectionConfig::new()
+        .set_connection_timeout(std::time::Duration::from_secs(15))
+        .set_response_timeout(std::time::Duration::from_secs(60)))
+      .await.map_err(|e| e.to_string())
+  }
+
+  /// A single cursor batch keeps sidebar expansion responsive. MATCH is sent
+  /// to Redis so searches are not limited to previously loaded keys.
+  pub async fn scan_keys(&self, database: &str, cursor: &str, pattern: Option<&str>) -> Result<RedisScanResult, String> {
+    let cursor: u64 = cursor.parse().map_err(|_| "Invalid Redis SCAN cursor")?;
+    if pattern.is_some_and(|pattern| pattern.len() > 4096) { return Err("Redis key pattern exceeds 4096 bytes".into()); }
+    let mut connection = self.conn_for_db(database).await?;
+    let mut command = redis::cmd("SCAN");
+    command.arg(cursor).arg("COUNT").arg(500);
+    if let Some(pattern) = pattern.filter(|pattern| !pattern.is_empty()) { command.arg("MATCH").arg(pattern); }
+    let (next, keys): (u64, Vec<String>) = command.query_async(&mut connection).await.map_err(|e| e.to_string())?;
+    Ok(RedisScanResult { keys, next_cursor: next.to_string(), complete: next == 0 })
   }
 
   pub async fn list_tables(&self, database: &str) -> Result<Vec<String>, String> {
@@ -233,6 +228,9 @@ impl RedisDriver {
         return Ok(QueryRowsResult {
           rows,
           total: total as i64,
+          has_more: u64::from(req.page) * u64::from(req.page_size) < total as u64,
+          total_is_exact: true,
+          next_cursor: None,
           has_primary_key: true,
           primary_key,
           columns,
@@ -252,6 +250,9 @@ impl RedisDriver {
         return Ok(QueryRowsResult {
           rows,
           total: len as i64,
+          has_more: u64::from(req.page) * u64::from(req.page_size) < len as u64,
+          total_is_exact: true,
+          next_cursor: None,
           has_primary_key: true,
           primary_key: vec!["index".into()],
           columns: vec![col("index", true), col("value", false)],
@@ -269,6 +270,9 @@ impl RedisDriver {
         return Ok(QueryRowsResult {
           rows,
           total: total as i64,
+          has_more: u64::from(req.page) * u64::from(req.page_size) < total as u64,
+          total_is_exact: true,
+          next_cursor: None,
           has_primary_key: true,
           primary_key: vec!["member".into()],
           columns: vec![col("member", true)],
@@ -295,6 +299,9 @@ impl RedisDriver {
         return Ok(QueryRowsResult {
           rows,
           total: card,
+          has_more: u64::from(req.page) * u64::from(req.page_size) < card as u64,
+          total_is_exact: true,
+          next_cursor: None,
           has_primary_key: true,
           primary_key: vec!["member".into()],
           columns: vec![col("member", true), col("score", false)],
@@ -306,6 +313,9 @@ impl RedisDriver {
     Ok(QueryRowsResult {
       rows,
       total,
+      has_more: false,
+      total_is_exact: true,
+      next_cursor: None,
       has_primary_key: true,
       primary_key,
       columns,
@@ -380,13 +390,19 @@ fn col(name: &str, pk: bool) -> ColumnInfo {
   }
 }
 
-fn build_url(host: &str, port: u16, db: i64, password: &str) -> String {
-  if password.is_empty() {
-    format!("redis://{host}:{port}/{db}")
-  } else {
-    format!("redis://:{}@{host}:{port}/{db}", urlencoding(password))
-  }
+fn build_client(connection: &ConnectionConfig, local_port: Option<u16>, db: i64) -> Result<redis::Client, String> {
+  let verified = super::connection_options::verified_tls(connection, local_port)?;
+  let (host, port) = local_port.map_or_else(|| (connection.host.clone(), connection.port), |port| ("127.0.0.1".into(), port));
+  let info = redis::ConnectionInfo {
+    addr: if verified { redis::ConnectionAddr::TcpTls { host, port, insecure: false, tls_params: None } }
+      else { redis::ConnectionAddr::Tcp(host, port) },
+    redis: redis::RedisConnectionInfo { db, username: if connection.username.trim().is_empty() { None } else { Some(connection.username.clone()) }, password: connection.password.clone().filter(|password| !password.is_empty()), protocol: redis::ProtocolVersion::RESP2 },
+  };
+  if verified {
+    redis::Client::build_with_tls(info, redis::TlsCertificates { client_tls: None, root_cert: connection.tls_ca_pem.as_ref().filter(|s| !s.trim().is_empty()).map(|s| s.as_bytes().to_vec()) })
+  } else { redis::Client::open(info) }.map_err(|e| e.to_string())
 }
+
 
 /// 计划好的单条 Redis 写命令（纯数据，便于单测）。
 #[derive(Debug, Clone, PartialEq)]
@@ -604,12 +620,14 @@ mod tests {
   }
 
   #[test]
-  fn build_url_percent_encodes_password() {
-    assert_eq!(
-      build_url("localhost", 6379, 2, "p@ss:w/rd"),
-      "redis://:p%40ss%3Aw%2Frd@localhost:6379/2"
-    );
-    assert_eq!(build_url("localhost", 6379, 0, ""), "redis://localhost:6379/0");
+  fn structured_connection_preserves_credentials_without_url_parsing() {
+    let config: ConnectionConfig = serde_json::from_value(json!({"id":"redis", "engine":"redis", "name":"test", "host":"127.0.0.1", "port":6379, "username":"user@name", "password":"p@ss:w/rd", "createdAt":0,"updatedAt":0})).unwrap();
+    let client = build_client(&config, None, 2).unwrap();
+    assert_eq!(client.get_connection_info().redis.username.as_deref(), Some("user@name"));
+    assert_eq!(client.get_connection_info().redis.password.as_deref(), Some("p@ss:w/rd"));
+    assert_eq!(client.get_connection_info().redis.db, 2);
+    let mut verified = config; verified.tls_mode = Some(crate::types::TlsMode::VerifyFull);
+    assert!(matches!(build_client(&verified, None, 2).unwrap().get_connection_info().addr, redis::ConnectionAddr::TcpTls { insecure:false, .. }));
   }
 
   #[test]

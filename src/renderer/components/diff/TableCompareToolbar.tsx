@@ -39,6 +39,7 @@ export interface TableCompareToolbarProps {
     currentDiffPosition: number | null
     totalDiffTables: number
   }
+  onCancel?: () => void
   onCopySelected: () => void
   onOverwriteTarget: () => void
   onDeleteSelected: (side: 'source' | 'target') => void
@@ -61,6 +62,7 @@ export function TableCompareToolbar({
   pageSize,
   diffNavigation,
   onCopySelected,
+  onCancel,
   onOverwriteTarget,
   onDeleteSelected,
   onReloadBoth,
@@ -150,6 +152,8 @@ export function TableCompareToolbar({
       overflowLabel={t('common.moreActions')}
       overflow={overflow}
       actions={
+        <>
+        {onCancel ? <Button size="sm" variant="secondary" onClick={onCancel}>{t('common.cancel')}</Button> : null}
         <Button
           size="sm"
           variant="primary"
@@ -160,6 +164,7 @@ export function TableCompareToolbar({
         >
           {t('diff.compareView.copyCountToTarget', { count: sourceSelectedCount })}
         </Button>
+        </>
       }
       filters={
         <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1" aria-live="polite">

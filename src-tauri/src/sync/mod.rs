@@ -245,6 +245,7 @@ async fn preflight(
   let target_tables = target.list_tables(&req.target_database).await?;
   let mut signatures = Vec::new();
   for table in &req.tables {
+    crate::operations::check()?;
     let display_table = crate::drivers::dialect::pg_table_display_name(table);
     let source_schema = source.get_table_schema(&req.source_database, table).await?;
     let target_schema = if target_tables.contains(table) {
@@ -328,6 +329,7 @@ pub async fn build_plan(
   let mut steps = Vec::new();
 
   for table in ordered {
+    crate::operations::check()?;
     let exists = target_set.contains(&table);
     if exists && strategy == ExistingTableStrategy::Skip {
       steps.push(SyncStep {
@@ -370,6 +372,7 @@ pub async fn build_plan(
         .await?;
       let mut rows = Vec::new();
       while let Some(batch) = batches.recv().await {
+    crate::operations::check()?;
         rows.extend(batch?);
       }
       let columns: Vec<String> = schema
@@ -422,37 +425,34 @@ pub async fn build_plan(
 /// 目标库写入连接：整个执行阶段固定一个会话，
 /// 这样 MySQL 的 SET FOREIGN_KEY_CHECKS（会话级）才对后续 DDL/INSERT 生效。
 enum TargetConn {
-  Mysql(sqlx::pool::PoolConnection<sqlx::MySql>),
-  Postgres(sqlx::pool::PoolConnection<sqlx::Postgres>),
+  Mysql(crate::drivers::connection_options::ActiveConnection<sqlx::MySql>),
+  Postgres(crate::drivers::connection_options::ActiveConnection<sqlx::Postgres>),
 }
 
 impl TargetConn {
   async fn acquire(target: &EngineDriver, database: &str) -> Result<Self, String> {
     match target {
       EngineDriver::Mysql(d) => {
-        let mut conn = d.acquire(database).await?;
-        conn.close_on_drop();
-        Ok(Self::Mysql(conn))
+        Ok(Self::Mysql(d.acquire_active(database).await?))
       }
-      EngineDriver::Postgres(d) => Ok(Self::Postgres(d.acquire(database).await?)),
+      EngineDriver::Postgres(d) => Ok(Self::Postgres(d.acquire_active(database).await?)),
       EngineDriver::Redis(_) => Err("Sync target must be MySQL or PostgreSQL".into()),
     }
   }
 
+  fn complete(self) { match self { Self::Mysql(connection) => connection.complete(), Self::Postgres(connection) => connection.complete() } }
+
   async fn execute(&mut self, sql: &str) -> Result<(), String> {
-    match self {
-      Self::Mysql(conn) => (&mut **conn)
-        .execute(sql)
-        .await
-        .map(|_| ())
-        .map_err(|e| e.to_string()),
-      Self::Postgres(conn) => (&mut **conn)
-        .execute(sql)
-        .await
-        .map(|_| ())
-        .map_err(|e| e.to_string()),
-    }
+    crate::operations::check()?;
+    let operation = async {
+      match self {
+        Self::Mysql(conn) => (&mut **conn).execute(sql).await.map(|_| ()).map_err(|e| e.to_string()),
+        Self::Postgres(conn) => (&mut **conn).execute(sql).await.map(|_| ()).map_err(|e| e.to_string()),
+      }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(60), operation).await.map_err(|_| "Sync statement exceeded the 60 second limit; earlier committed changes are retained".to_string())?
   }
+
 }
 
 pub async fn execute(
@@ -519,6 +519,7 @@ pub async fn execute_with_progress(
   let total = ordered.len() as i64;
 
   for (idx, table) in ordered.iter().enumerate() {
+    crate::operations::check()?;
     emit(
       progress,
       req.task_id.as_deref(),
@@ -559,6 +560,7 @@ pub async fn execute_with_progress(
         &existing_schemas,
       );
       for sql in &actions.setup_sqls {
+    crate::operations::check()?;
         tconn.execute(sql).await?;
       }
       if actions.insert_data {
@@ -582,6 +584,7 @@ pub async fn execute_with_progress(
           .collect();
         let mut copied = 0;
         while let Some(rows) = batches.recv().await {
+    crate::operations::check()?;
           let rows = rows?;
           for statement in build_insert_statements(
             &dialect.quote_table(&req.target_database, table),
@@ -643,6 +646,7 @@ pub async fn execute_with_progress(
     tconn.execute("SET FOREIGN_KEY_CHECKS=1").await?;
   }
 
+  tconn.complete();
   Ok((executed, errors))
 }
 

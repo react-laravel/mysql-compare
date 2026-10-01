@@ -2,13 +2,13 @@ use std::collections::{HashMap, HashSet};
 
 use parking_lot::Mutex;
 use serde_json::Value;
-use sqlx::mysql::{MySqlPool, MySqlPoolOptions, MySqlRow};
-use sqlx::{Executor, MySql, Row};
+use sqlx::mysql::{MySqlPool, MySqlPoolOptions, MySqlRow, MySqlConnectOptions, MySqlSslMode};
+use sqlx::{Executor, MySql, Row, ConnectOptions, Connection};
 
 use crate::drivers::dialect::{
   assert_ident, assert_safe_where, clamp_page_size, quote_mysql_ident, quote_mysql_table,
 };
-use crate::drivers::util::{json_from_mysql_row, urlencoding};
+use crate::drivers::util::json_from_mysql_row;
 use crate::types::{
   ColumnInfo, ConnectionConfig, CopyTableRequest, DatabaseInfo, DeleteRowsRequest,
   DropDatabaseRequest, DropTableRequest, ExplainPlanMetric, ExplainSQLResult, IndexInfo,
@@ -43,13 +43,20 @@ impl MysqlDriver {
     }
   }
 
-  fn url_for_db(&self, database: Option<&str>) -> String {
+  fn connect_options(&self, database: &str) -> Result<MySqlConnectOptions, String> {
     let (host, port) = self.host_port();
-    let (username, password) = super::connection_options::credentials(&self.connection, database.unwrap_or(""));
-    let user = urlencoding(username);
-    let pass = urlencoding(password);
-    let db = database.unwrap_or("");
-    format!("mysql://{user}:{pass}@{host}:{port}/{}", urlencoding(db))
+    let (username, password) = super::connection_options::credentials(&self.connection, database);
+    let verified = super::connection_options::verified_tls(&self.connection, self.local_port)?;
+    let mut options = MySqlConnectOptions::new().host(&host).port(port).username(username)
+      .ssl_mode(if verified { MySqlSslMode::VerifyIdentity } else { MySqlSslMode::Disabled });
+    if !password.is_empty() { options = options.password(password); }
+    if !database.is_empty() { options = options.database(database); }
+    if verified {
+      if let Some(pem) = self.connection.tls_ca_pem.as_ref().filter(|pem| !pem.trim().is_empty()) {
+        options = options.ssl_ca_from_pem(pem.as_bytes().to_vec());
+      }
+    }
+    Ok(options)
   }
 
   async fn pool(&self, database: &str) -> Result<MySqlPool, String> {
@@ -59,14 +66,58 @@ impl MysqlDriver {
         return Ok(pool.clone());
       }
     }
-    let url = self.url_for_db(Some(database));
+    let options = self.connect_options(database)?;
     let pool = MySqlPoolOptions::new()
       .max_connections(5)
-      .connect(&url)
+      .acquire_timeout(std::time::Duration::from_secs(15))
+      .after_connect(|connection, _| Box::pin(async move {
+        let version: String = sqlx::query_scalar("SELECT VERSION()").fetch_one(&mut *connection).await?;
+        if version.to_ascii_lowercase().contains("mariadb") {
+          sqlx::query("SET SESSION max_statement_time = 60").execute(&mut *connection).await?;
+        } else {
+          let major = version.split('.').next().and_then(|n| n.parse::<u32>().ok()).unwrap_or(0);
+          let minor = version.split('.').nth(1).and_then(|n| n.parse::<u32>().ok()).unwrap_or(0);
+          if major > 5 || (major == 5 && minor >= 7) {
+            sqlx::query("SET SESSION max_execution_time = 60000").execute(&mut *connection).await?;
+          }
+        }
+        Ok(())
+      }))
+      .connect_with(options)
       .await
       .map_err(|e| format!("MySQL connect failed: {e}"))?;
     self.pools.lock().insert(database.to_string(), pool.clone());
     Ok(pool)
+  }
+
+  pub(super) async fn validate_import_session(&self, connection: &mut sqlx::MySqlConnection) -> Result<(), String> {
+    let mode: String = sqlx::query_scalar("SELECT @@SESSION.sql_mode").fetch_one(connection).await.map_err(|e| e.to_string())?;
+    if mode.split(',').any(|part| matches!(part.trim().to_ascii_uppercase().as_str(), "NO_BACKSLASH_ESCAPES" | "ANSI_QUOTES")) {
+      return Err("SQL import does not support NO_BACKSLASH_ESCAPES or ANSI_QUOTES session modes. Use a native database client or restore standard SQL modes first.".into());
+    }
+    Ok(())
+  }
+
+  /// Cancellation uses a separate same-account connection: it must not queue
+  /// behind this pool's busy connections. The data socket is also discarded.
+  pub async fn acquire_active(&self, database: &str) -> Result<super::connection_options::ActiveConnection<MySql>, String> {
+    let mut active = super::connection_options::ActiveConnection::new(self.acquire(database).await?);
+    let session_id: u64 = sqlx::query_scalar("SELECT CONNECTION_ID()").fetch_one(&mut *active).await.map_err(|e| e.to_string())?;
+    let options = self.connect_options(database)?;
+    active.on_cancel(move || {
+      if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+        runtime.spawn(async move {
+          let cancel = async {
+            let mut control = options.connect().await?;
+            let result = sqlx::query(&format!("KILL QUERY {session_id}")).execute(&mut control).await.map(|_| ());
+            let _ = control.close().await;
+            result
+          };
+          let _ = tokio::time::timeout(std::time::Duration::from_secs(5), cancel).await;
+        });
+      }
+    });
+    Ok(active)
   }
 
   async fn server_pool(&self) -> Result<MySqlPool, String> {
@@ -78,6 +129,8 @@ impl MysqlDriver {
     let pool = self.pool(database).await?;
     pool.acquire().await.map_err(|e| e.to_string())
   }
+
+  pub(super) fn invalidate_schema_cache(&self) { self.schemas.lock().clear(); }
 
   pub async fn close(&self) {
     let pools: Vec<_> = self.pools.lock().drain().map(|(_, p)| p).collect();
@@ -366,10 +419,7 @@ impl MysqlDriver {
     }
     let schema = self.get_table_schema(database, table).await?;
     let mut cache = self.schemas.lock();
-    if cache.len() >= 128 {
-      cache.clear();
-    }
-    cache.insert(key, (std::time::Instant::now(), schema.clone()));
+    super::connection_options::cache_schema(&mut cache, key, schema.clone());
     Ok(schema)
   }
 
@@ -377,9 +427,8 @@ impl MysqlDriver {
     assert_ident(&req.table, "table")?;
     assert_safe_where(req.where_fragment())?;
     let schema = self.query_schema(&req.database, &req.table).await?;
-    let pool = self.pool(&req.database).await?;
     let table = quote_mysql_table(&req.database, &req.table);
-    let where_clause = if let Some(keys) = &req.key_rows {
+    let mut where_clause = if let Some(keys) = &req.key_rows {
       format!(
         "WHERE {}",
         crate::drivers::dialect::key_rows_filter(
@@ -394,41 +443,54 @@ impl MysqlDriver {
         .map(|w| format!("WHERE {w}"))
         .unwrap_or_default()
     };
-    let order_clause = build_order_clause(&schema, req.order_by.as_ref());
+    let dialect = crate::drivers::dialect::SqlDialect::Mysql;
+    let projection = crate::drivers::dialect::browse_projection(&schema, req.columns.as_deref(), dialect)?;
+    let cursor = crate::drivers::dialect::browse_cursor_filter(&schema, req, dialect)?;
+    if let Some(cursor) = &cursor {
+      where_clause = if where_clause.is_empty() { format!("WHERE {cursor}") }
+        else { format!("WHERE ({}) AND ({cursor})", where_clause.trim_start_matches("WHERE ")) };
+    }
+    let order_clause = build_order_clause(&schema, req.order_by.as_ref())?;
     let limit = clamp_page_size(req.page_size);
     let offset = if req.key_rows.is_some() {
       0
     } else {
       u64::from(req.page.saturating_sub(1)) * u64::from(limit)
     };
-    let sql =
-      format!("SELECT * FROM {table} {where_clause} {order_clause} LIMIT {limit} OFFSET {offset}");
-    let rows = sqlx::query(&sql)
-      .fetch_all(&pool)
-      .await
+    let fetch_limit = if req.key_rows.is_some() { limit } else { limit + 1 };
+    let sql = crate::drivers::dialect::browse_select_sql(&table, &projection, &where_clause, &order_clause, fetch_limit, offset, cursor.is_some());
+    let mut connection = self.acquire_active(&req.database).await?;
+    let rows = tokio::time::timeout(std::time::Duration::from_secs(60), sqlx::query(&sql).fetch_all(&mut *connection))
+      .await.map_err(|_| "Query timed out after 60 seconds".to_string())?
       .map_err(|e| e.to_string())?;
-    let mapped = rows
+    connection.complete();
+    let mut mapped = rows
       .iter()
       .map(json_from_mysql_row)
       .collect::<Result<Vec<_>, _>>()?;
     if req.key_rows.is_some() {
       return Ok(QueryRowsResult {
         total: mapped.len() as i64,
+        has_more: false,
+        total_is_exact: true,
+        next_cursor: None,
         rows: mapped,
         has_primary_key: !schema.primary_key.is_empty(),
         primary_key: schema.primary_key,
         columns: schema.columns,
       });
     }
-    let count_sql = format!("SELECT COUNT(*) AS c FROM {table} {where_clause}");
-    let count_row = sqlx::query(&count_sql)
-      .fetch_one(&pool)
-      .await
-      .map_err(|e| e.to_string())?;
-    let total: i64 = count_row.try_get("c").unwrap_or(0);
+    let has_more = mapped.len() > limit as usize;
+    mapped.truncate(limit as usize);
+    let next_cursor = crate::drivers::dialect::next_browse_cursor(&schema, req, &mapped, has_more);
+    let observed_offset = if cursor.is_some() { 0 } else { offset };
+    let total = if mapped.is_empty() { 0 } else { (observed_offset + mapped.len() as u64 + u64::from(has_more)).min(i64::MAX as u64) as i64 };
     Ok(QueryRowsResult {
       rows: mapped,
       total,
+      has_more,
+      total_is_exact: cursor.is_none() && !has_more && (offset == 0 || !rows.is_empty()),
+      next_cursor,
       has_primary_key: !schema.primary_key.is_empty(),
       primary_key: schema.primary_key.clone(),
       columns: schema.columns,
@@ -528,11 +590,13 @@ impl MysqlDriver {
   }
 
   pub async fn execute_sql(&self, sql: &str, database: Option<&str>) -> Result<Value, String> {
+    super::maintenance::assert_safe_mysql_cancellation(sql)?;
     use futures::StreamExt;
     self.schemas.lock().clear();
     let database = database.unwrap_or("").to_string();
-    let pool = self.pool(&database).await?;
-    let mut results = pool.fetch_many(sql);
+    let mut connection = self.acquire_active(&database).await?;
+    let operation = async {
+    let mut results = (&mut *connection).fetch_many(sql);
     let mut rows = Vec::new();
     let mut statements = Vec::new();
     let mut row_count = 0usize;
@@ -568,6 +632,11 @@ impl MysqlDriver {
     } else {
       Ok(serde_json::json!({"results": statements}))
     }
+    };
+    let result = tokio::time::timeout(std::time::Duration::from_secs(60), operation).await
+      .map_err(|_| "SQL execution timed out after 60 seconds; the connection was closed".to_string())?;
+    if result.is_ok() { connection.complete(); }
+    result
   }
 
   pub async fn explain_sql(
@@ -576,12 +645,11 @@ impl MysqlDriver {
     database: Option<&str>,
   ) -> Result<ExplainSQLResult, String> {
     let db = database.unwrap_or("");
-    let pool = self.pool(db).await?;
+    let mut connection = self.acquire_active(db).await?;
     let explain_sql = format!("EXPLAIN {sql}");
-    let rows = sqlx::query(&explain_sql)
-      .fetch_all(&pool)
-      .await
-      .map_err(|e| e.to_string())?;
+    let rows = tokio::time::timeout(std::time::Duration::from_secs(60), sqlx::query(&explain_sql).fetch_all(&mut *connection))
+      .await.map_err(|_| "Explain timed out after 60 seconds".to_string())?.map_err(|e| e.to_string())?;
+    connection.complete();
     let mapped = rows
       .iter()
       .map(json_from_mysql_row)
@@ -630,10 +698,14 @@ impl MysqlDriver {
       .execute(&pool)
       .await
       .map_err(|e| e.to_string())?;
-    sqlx::query(&format!("INSERT INTO {dst} SELECT * FROM {src}"))
-      .execute(&pool)
-      .await
-      .map_err(|e| e.to_string())?;
+    if let Err(error) = sqlx::query(&format!("INSERT INTO {dst} SELECT * FROM {src}")).execute(&pool).await {
+      // CREATE above succeeded, so only this operation's newly created target
+      // is removed. Never drop a pre-existing target after a CREATE failure.
+      return match sqlx::query(&format!("DROP TABLE {dst}")).execute(&pool).await {
+        Ok(_) => Err(format!("Copy failed; the newly created target was removed: {error}")),
+        Err(cleanup) => Err(format!("Copy failed: {error}; could not remove the newly created target: {cleanup}")),
+      };
+    }
     Ok(req.target_table.clone())
   }
 
@@ -682,30 +754,19 @@ impl MysqlDriver {
   }
 }
 
-fn build_order_clause(schema: &TableSchema, order_by: Option<&crate::types::OrderBy>) -> String {
+fn build_order_clause(schema: &TableSchema, order_by: Option<&crate::types::OrderBy>) -> Result<String, String> {
   let mut parts = Vec::new();
   let mut seen = HashSet::new();
   if let Some(ob) = order_by {
+    if !matches!(ob.dir.as_str(), "ASC" | "DESC") { return Err("Invalid sort direction: use ASC or DESC".into()); }
+    if !schema.columns.iter().any(|column| column.name == ob.column) { return Err("Unknown sort column".into()); }
     parts.push(format!("{} {}", quote_mysql_ident(&ob.column), ob.dir));
     seen.insert(ob.column.clone());
   }
-  let stable = if schema.primary_key.is_empty() {
-    schema.columns.iter().map(|c| c.name.clone()).collect()
-  } else {
-    schema.primary_key.clone()
-  };
-  for name in stable {
-    if seen.contains(&name) {
-      continue;
-    }
-    parts.push(format!("{} ASC", quote_mysql_ident(&name)));
-    seen.insert(name);
+  for name in &schema.primary_key {
+    if seen.insert(name.clone()) { parts.push(format!("{} ASC", quote_mysql_ident(name))); }
   }
-  if parts.is_empty() {
-    String::new()
-  } else {
-    format!("ORDER BY {}", parts.join(", "))
-  }
+  Ok(if parts.is_empty() { String::new() } else { format!("ORDER BY {}", parts.join(", ")) })
 }
 
 #[allow(dead_code)]
@@ -724,5 +785,31 @@ fn read_mysql_text(row: &MySqlRow, index: usize, field: &str) -> Result<String, 
       })?;
       String::from_utf8(bytes).map_err(|error| format!("decode {field} as UTF-8: {error}"))
     }
+  }
+}
+
+#[cfg(test)]
+mod security_tests {
+  use super::*;
+  fn schema(primary_key: Vec<&str>) -> TableSchema {
+    serde_json::from_value(serde_json::json!({"name":"items", "columns":[{"name":"id","type":"int","nullable":false,"isPrimaryKey":true,"isAutoIncrement":false,"comment":"","columnKey":"PRI"},{"name":"payload","type":"text","nullable":true,"isPrimaryKey":false,"isAutoIncrement":false,"comment":"","columnKey":""}], "indexes":[], "primaryKey":primary_key, "createSQL":""})).unwrap()
+  }
+  #[test]
+  fn ordering_rejects_unstructured_direction_and_avoids_keyless_filesort() {
+    let keyless = schema(vec![]);
+    assert_eq!(build_order_clause(&keyless, None).unwrap(), "");
+    for direction in ["ASC; DROP TABLE items", "DESC --", "ASC NULLS FIRST", ""] {
+      assert!(build_order_clause(&keyless, Some(&crate::types::OrderBy { column:"id".into(), dir:direction.into() })).is_err());
+    }
+    assert!(build_order_clause(&keyless, Some(&crate::types::OrderBy { column:"missing".into(), dir:"ASC".into() })).is_err());
+    assert!(build_order_clause(&schema(vec!["id"]), None).unwrap().contains("ASC"));
+  }
+  #[tokio::test]
+  async fn remote_connect_options_require_identity_validation() {
+    let config: ConnectionConfig = serde_json::from_value(serde_json::json!({"id":"tls", "name":"TLS", "host":"db.example.com", "port":5432, "username":"user", "createdAt":0,"updatedAt":0})).unwrap();
+    let driver = MysqlDriver::open(config.clone(), None).await.unwrap();
+    assert!(matches!(driver.connect_options("db").unwrap().get_ssl_mode(), MySqlSslMode::VerifyIdentity));
+    let driver = MysqlDriver::open(config, Some(1234)).await.unwrap();
+    assert!(matches!(driver.connect_options("db").unwrap().get_ssl_mode(), MySqlSslMode::Disabled));
   }
 }

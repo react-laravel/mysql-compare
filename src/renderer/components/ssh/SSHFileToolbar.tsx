@@ -192,6 +192,8 @@ export function SSHFileToolbar({
             value={filter}
             onValueChange={onFilterChange}
             placeholder={t('sshFiles.filterPlaceholder')}
+            title={t('sshFiles.filterScope')}
+            aria-label={t('sshFiles.filterScope')}
             clearLabel={t('common.clear')}
             containerClassName="ml-auto w-56 shrink-0"
           />

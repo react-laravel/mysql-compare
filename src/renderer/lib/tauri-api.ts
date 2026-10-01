@@ -1,7 +1,9 @@
+import { describeBackendError } from './backend-error'
+import { useI18nStore } from '@renderer/i18n'
 import { tableDisplayName } from '../../shared/table-reference'
-import { invoke } from '@tauri-apps/api/core'
+import { invoke as rawInvoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-import { open, save } from '@tauri-apps/plugin-dialog'
+
 import type { AppAPI } from '../../shared/app-api'
 import type {
   ConnectionConfig,
@@ -60,11 +62,12 @@ import type {
 
 async function wrap<T>(fn: () => Promise<IPCResult<T>>): Promise<IPCResult<T>> {
   try {
-    return await fn()
+    const result = await fn()
+    return result.ok || !result.error ? result : { ...result, error: describeBackendError(result.error, useI18nStore.getState().locale === 'zh-CN') }
   } catch (error) {
     return {
       ok: false,
-      error: error instanceof Error ? error.message : String(error)
+      error: describeBackendError(error instanceof Error ? error.message : String(error), useI18nStore.getState().locale === 'zh-CN')
     }
   }
 }
@@ -88,16 +91,30 @@ function subscribe<T>(event: string, callback: (payload: T) => void): () => void
   }
 }
 
-async function pickLocalPaths(options: {
-  multiple?: boolean
-  directory?: boolean
-}): Promise<string[]> {
-  const selected = await open({
-    multiple: options.multiple ?? false,
-    directory: options.directory ?? false
-  })
-  if (selected == null) return []
-  return Array.isArray(selected) ? selected : [selected]
+type FileSelection = { path: string; grantId: string }
+async function pickFiles(purpose: string, defaultName?: string): Promise<FileSelection[]> {
+  const result = await invoke<IPCResult<FileSelection[]>>('file_pick', { purpose, defaultName })
+  if (!result.ok) throw new Error(result.error || 'Unable to select a local file')
+  return result.data || []
+}
+
+// Backend requires native user confirmation; renderer code cannot silently trust a key.
+const confirmations = new Map<string, Promise<IPCResult<boolean>>>()
+async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  const result = await rawInvoke<T>(command, args)
+  const error = (result as IPCResult)?.error
+  if (!error?.startsWith('SSH_HOST_KEY_CHALLENGE:')) return result
+  const challenge = JSON.parse(error.slice('SSH_HOST_KEY_CHALLENGE:'.length)) as { challengeId: string; fingerprint: string }
+  let confirmation = confirmations.get(challenge.challengeId)
+  if (!confirmation) {
+    confirmation = rawInvoke<IPCResult<boolean>>('ssh_host_key_confirm', { challengeId: challenge.challengeId, fingerprint: challenge.fingerprint })
+    confirmations.set(challenge.challengeId, confirmation)
+  }
+  try {
+    const confirmed = await confirmation
+    if (!confirmed.ok || !confirmed.data) return { ok: false, error: confirmed.error || 'SSH host key was not trusted. Verify the fingerprint and reconnect.' } as T
+    return await rawInvoke<T>(command, args)
+  } finally { confirmations.delete(challenge.challengeId) }
 }
 
 export function createTauriApi(): AppAPI {
@@ -109,6 +126,7 @@ export function createTauriApi(): AppAPI {
       supportsTerminalStreaming: true,
       supportsDownload: true
     },
+    operations: { cancel: (operationId) => wrap(() => invoke<IPCResult<void>>('operation_cancel', { operationId })) },
     connection: {
       list: () => wrap(() => invoke<IPCResult<SafeConnection[]>>('connection_list')),
       organize: (items) => wrap(() => invoke<IPCResult<SafeConnection[]>>('connection_organize', { items })),
@@ -147,16 +165,18 @@ export function createTauriApi(): AppAPI {
         ),
       listTables: (connectionId: string, database: string, schema?: string) =>
         wrap(() => invoke<IPCResult<string[]>>('db_list_tables', { connectionId, database, schema })),
-      queryRows: (req: QueryRowsRequest) =>
-        wrap(() => invoke<IPCResult<QueryRowsResult>>('db_query_rows', { req })),
+      scanRedisKeys: (connectionId, database, cursor, pattern, operationId) =>
+        wrap(() => invoke<IPCResult<{ keys: string[]; nextCursor: string; complete: boolean }>>('db_scan_redis_keys', { connectionId, database, cursor, pattern, operationId })),
+      queryRows: (req: QueryRowsRequest, operationId?: string) =>
+        wrap(() => invoke<IPCResult<QueryRowsResult>>('db_query_rows', { req, operationId })),
       insertRow: (req: InsertRowRequest) => wrap(() => invoke<IPCResult>('db_insert_row', { req })),
       updateRow: (req: UpdateRowRequest) => wrap(() => invoke<IPCResult>('db_update_row', { req })),
       deleteRows: (req: DeleteRowsRequest) =>
         wrap(() => invoke<IPCResult>('db_delete_rows', { req })),
-      executeSQL: (connectionId: string, sql: string, database?: string) =>
-        wrap(() => invoke<IPCResult>('db_execute_sql', { connectionId, sql, database })),
-      explainSQL: (req: ExplainSQLRequest) =>
-        wrap(() => invoke<IPCResult<ExplainSQLResult>>('db_explain_sql', { req })),
+      executeSQL: (connectionId: string, sql: string, database?: string, operationId?: string) =>
+        wrap(() => invoke<IPCResult>('db_execute_sql', { connectionId, sql, database, operationId })),
+      explainSQL: (req: ExplainSQLRequest, operationId?: string) =>
+        wrap(() => invoke<IPCResult<ExplainSQLResult>>('db_explain_sql', { req, operationId })),
       renameTable: (req: RenameTableRequest) =>
         wrap(() => invoke<IPCResult<{ table: string }>>('db_rename_table', { req })),
       copyTable: (req: CopyTableRequest) =>
@@ -167,21 +187,19 @@ export function createTauriApi(): AppAPI {
         wrap(() => invoke<IPCResult<void>>('db_drop_table', { req })),
       truncateTable: (req: TruncateTableRequest) =>
         wrap(() => invoke<IPCResult<void>>('db_truncate_table', { req })),
-      exportTable: async (req: ExportTableRequest) => {
-        const filePath = await save({
-          defaultPath: `${tableDisplayName(req.table).replace(/[\\/]/g, "_")}.${req.format}`
-        })
+      exportTable: async (req: ExportTableRequest, operationId?: string) => {
+        const [selected] = await pickFiles('export_table', `${tableDisplayName(req.table).replace(/[\\/]/g, '_')}.${req.format}`)
+        const filePath = selected?.path
         if (!filePath) {
           return { ok: true, data: { canceled: true, rowsExported: 0 } as ExportTableResult }
         }
         return wrap(() =>
-          invoke<IPCResult<ExportTableResult>>('db_export_table', { req, filePath })
+          invoke<IPCResult<ExportTableResult>>('db_export_table', { req, filePath, fileGrant: selected.grantId, operationId })
         )
       },
-      exportDatabase: async (req: ExportDatabaseRequest) => {
-        const filePath = await save({
-          defaultPath: `${req.database}.sql`
-        })
+      exportDatabase: async (req: ExportDatabaseRequest, operationId?: string) => {
+        const [selected] = await pickFiles('export_database', `${req.database.replace(/[\\/]/g, '_')}.sql`)
+        const filePath = selected?.path
         if (!filePath) {
           return {
             ok: true,
@@ -189,21 +207,21 @@ export function createTauriApi(): AppAPI {
           }
         }
         return wrap(() =>
-          invoke<IPCResult<ExportDatabaseResult>>('db_export_database', { req, filePath })
+          invoke<IPCResult<ExportDatabaseResult>>('db_export_database', { req, filePath, fileGrant: selected.grantId, operationId })
         )
       },
-      importTable: async (req: ImportTableRequest) => {
+      importTable: async (req: ImportTableRequest, operationId?: string) => {
         if (req.fileContent) {
-          return wrap(() => invoke<IPCResult<ImportTableResult>>('db_import_table', { req }))
+          return wrap(() => invoke<IPCResult<ImportTableResult>>('db_import_table', { req, operationId }))
         }
-        const paths = await pickLocalPaths({ multiple: false })
-        if (paths.length === 0) {
+        const selected = await pickFiles('import_table')
+        if (selected.length === 0) {
           return { ok: true, data: { canceled: true, rowsImported: 0, statementsExecuted: 0 } }
         }
         return wrap(() =>
           invoke<IPCResult<ImportTableResult>>('db_import_table', {
-            req: { ...req, fileName: paths[0] },
-            filePath: paths[0]
+            req: { ...req, fileName: selected[0]!.path },
+            filePath: selected[0]!.path, fileGrant: selected[0]!.grantId, operationId
           })
         )
       }
@@ -215,54 +233,61 @@ export function createTauriApi(): AppAPI {
         )
     },
     ssh: {
+      listHostKeys: () => wrap(() => invoke<IPCResult<import('../../shared/app-api').TrustedHostKey[]>>('ssh_host_key_list')),
+      forgetHostKey: (host, port, fingerprint) => wrap(() => invoke<IPCResult<boolean>>('ssh_host_key_forget', { host, port, fingerprint })),
       listFiles: (req: SSHListFilesRequest) =>
         wrap(() => invoke<IPCResult<SSHListFilesResult>>('ssh_list_files', { req })),
       uploadFile: async (req: SSHUploadFileRequest) => {
-        const paths = await pickLocalPaths({ multiple: false })
-        if (paths.length === 0) {
+        const selected = await pickFiles('ssh_upload_file')
+        if (selected.length === 0) {
           return { ok: true, data: { canceled: true } as SSHFileOperationResult }
         }
         return wrap(() =>
           invoke<IPCResult<SSHFileOperationResult>>('ssh_upload_file', {
             req,
-            localPath: paths[0]
+            localPath: selected[0]!.path, fileGrant: selected[0]!.grantId
           })
         )
       },
       uploadDirectory: async (req: SSHUploadDirectoryRequest) => {
-        const paths = await pickLocalPaths({ directory: true })
-        if (paths.length === 0) {
+        const selected = await pickFiles('ssh_upload_directory')
+        if (selected.length === 0) {
           return { ok: true, data: { canceled: true } as SSHFileOperationResult }
         }
         return wrap(() =>
           invoke<IPCResult<SSHFileOperationResult>>('ssh_upload_directory', {
             req,
-            localPath: paths[0]
+            localPath: selected[0]!.path, fileGrant: selected[0]!.grantId
           })
         )
       },
-      uploadEntries: (req: SSHUploadEntriesRequest) =>
-        wrap(() => invoke<IPCResult<SSHFileOperationResult>>('ssh_upload_entries', { req })),
+      uploadEntries: async (req: SSHUploadEntriesRequest) => {
+        const selected = await pickFiles('ssh_upload_entries')
+        if (!selected.length) return { ok: true, data: { canceled: true } }
+        return wrap(() => invoke<IPCResult<SSHFileOperationResult>>('ssh_upload_entries', {
+          req: { ...req, entries: selected.map(({ path }) => ({ type: 'file', localPath: path, relativePath: path.split(/[\\/]/).pop() || 'upload' })) },
+          fileGrants: selected.map(({ grantId }) => grantId)
+        }))
+      },
       downloadFile: async (req: SSHDownloadFileRequest) => {
-        const filePath = await save({
-          defaultPath: req.remotePath.split('/').pop() || 'download'
-        })
+        const [selected] = await pickFiles('ssh_download_file', req.remotePath.split('/').pop() || 'download')
+        const filePath = selected?.path
         if (!filePath) {
           return { ok: true, data: { canceled: true } as SSHFileOperationResult }
         }
         return wrap(() =>
-          invoke<IPCResult<SSHFileOperationResult>>('ssh_download_file', { req, localPath: filePath })
+          invoke<IPCResult<SSHFileOperationResult>>('ssh_download_file', { req, localPath: filePath, fileGrant: selected.grantId })
         )
       },
       downloadDirectory: async (req: SSHDownloadDirectoryRequest) => {
-        const paths = await pickLocalPaths({ directory: true })
-        if (paths.length === 0) {
+        const selected = await pickFiles('ssh_download_directory')
+        if (selected.length === 0) {
           return { ok: true, data: { canceled: true } as SSHFileOperationResult }
         }
         return wrap(() =>
           invoke<IPCResult<SSHFileOperationResult>>('ssh_download_directory', {
             req,
-            localPath: paths[0]
+            localPath: selected[0]!.path, fileGrant: selected[0]!.grantId
           })
         )
       },
@@ -296,17 +321,17 @@ export function createTauriApi(): AppAPI {
       }
     },
     diff: {
-      databases: (req: DiffRequest) =>
-        wrap(() => invoke<IPCResult<DatabaseDiff>>('diff_databases', { req })),
-      table: (req: TableDiffRequest) =>
-        wrap(() => invoke<IPCResult<TableComparisonResult>>('diff_table', { req }))
+      databases: (req: DiffRequest, operationId?: string) =>
+        wrap(() => invoke<IPCResult<DatabaseDiff>>('diff_databases', { req, operationId })),
+      table: (req: TableDiffRequest, operationId?: string) =>
+        wrap(() => invoke<IPCResult<TableComparisonResult>>('diff_table', { req, operationId }))
     },
     sync: {
-      buildPlan: (req: SyncRequest) =>
-        wrap(() => invoke<IPCResult<SyncPlan>>('sync_build_plan', { req })),
-      execute: (req: SyncRequest) =>
+      buildPlan: (req: SyncRequest, operationId?: string) =>
+        wrap(() => invoke<IPCResult<SyncPlan>>('sync_build_plan', { req, operationId })),
+      execute: (req: SyncRequest, operationId?: string) =>
         wrap(() =>
-          invoke<IPCResult<{ executed: number; errors: number }>>('sync_execute', { req })
+          invoke<IPCResult<{ executed: number; errors: number }>>('sync_execute', { req, operationId })
         ),
       onProgress: (cb: (event: SyncProgressEvent) => void) => subscribe('sync:progress', cb)
     }

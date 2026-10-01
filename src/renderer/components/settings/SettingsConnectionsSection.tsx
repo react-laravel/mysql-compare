@@ -5,6 +5,8 @@
 // must not be. Editing still opens the sidebar's connection dialog; only the
 // deletion moves.
 import * as React from 'react'
+import { connectionTransport } from '@renderer/components/connection/connection-dialog-utils'
+import { SSHHostKeys } from './SSHHostKeys'
 import { Plus } from 'lucide-react'
 import { Badge } from '@renderer/components/ui/badge'
 import { Button } from '@renderer/components/ui/button'
@@ -79,11 +81,9 @@ export function SettingsConnectionsSection({ onClose }: { onClose: () => void })
                 {connection.username}@{connection.host}:{connection.port}
               </div>
             </div>
-            {connection.useSSH ? (
-              <Badge size="xs" tone="accent">
-                SSH
-              </Badge>
-            ) : null}
+            <Badge size="xs" tone={connectionTransport(connection) === 'plaintext' ? 'warning' : 'accent'}>
+              {connectionTransport(connection) === 'ssh' ? 'SSH' : connectionTransport(connection) === 'tls' ? 'TLS' : t('connection.form.transport_plaintext')}
+            </Badge>
             <Button size="xs" onClick={() => edit(connection)}>
               {t('common.edit')}
             </Button>
@@ -94,7 +94,8 @@ export function SettingsConnectionsSection({ onClose }: { onClose: () => void })
         ))}
       </ul>
 
-      <div>
+      <div className="flex gap-2 flex-wrap">
+        <SSHHostKeys />
         <Button icon={Plus} size="sm" onClick={create}>
           {t('sidebar.newConnection')}
         </Button>

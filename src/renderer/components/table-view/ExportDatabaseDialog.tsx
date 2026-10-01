@@ -50,9 +50,6 @@ export function ExportDatabaseDialog({ open, onOpenChange, connectionId, databas
         { value: 'mysqldump', label: t('databaseExportDialog.backendMysqldump') } as const
       ]
 
-      if (connection?.useSSH) {
-        options.push({ value: 'mysqldump-ssh', label: t('databaseExportDialog.backendMysqldumpSsh') } as const)
-      }
 
       return options
     },

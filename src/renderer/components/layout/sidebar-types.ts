@@ -1,5 +1,14 @@
 import type { SafeConnection } from '../../../shared/types'
 
+export interface RedisScanState {
+  cursor: string
+  filter: string
+  complete: boolean
+  loading: boolean
+  limited: boolean
+  operationId?: string
+}
+
 export interface NodeState {
   expanded: boolean
   loading: boolean
@@ -12,6 +21,7 @@ export interface NodeState {
   databaseErrors?: Record<string, string | undefined>
   schemas?: Record<string, string[]>
   activeSchemas?: Record<string, string>
+  redisScans?: Record<string, RedisScanState>
 }
 
 export interface TableMenuState {

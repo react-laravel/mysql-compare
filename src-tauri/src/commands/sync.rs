@@ -9,7 +9,9 @@ pub async fn sync_build_plan(
   app: AppHandle,
   state: State<'_, AppState>,
   req: SyncRequest,
+  operation_id: Option<String>,
 ) -> Result<IpcResult<SyncPlan>, String> {
+  let result = state.operations.run(operation_id.as_deref(), async {
   let source = match state.get_driver(&app, &req.source_connection_id).await {
     Ok(d) => d,
     Err(e) => return Ok(IpcResult::err(e)),
@@ -22,6 +24,9 @@ pub async fn sync_build_plan(
     Ok(v) => Ok(IpcResult::ok(v)),
     Err(e) => Ok(IpcResult::err(e)),
   }
+
+  }).await;
+  Ok(result.unwrap_or_else(IpcResult::err))
 }
 
 #[tauri::command]
@@ -29,7 +34,9 @@ pub async fn sync_execute(
   app: AppHandle,
   state: State<'_, AppState>,
   req: SyncRequest,
+  operation_id: Option<String>,
 ) -> Result<IpcResult<serde_json::Value>, String> {
+  let result = state.operations.run(operation_id.as_deref(), async {
   let source = match state.get_driver(&app, &req.source_connection_id).await {
     Ok(d) => d,
     Err(e) => return Ok(IpcResult::err(e)),
@@ -45,4 +52,7 @@ pub async fn sync_execute(
     }))),
     Err(e) => Ok(IpcResult::err(e)),
   }
+
+  }).await;
+  Ok(result.unwrap_or_else(IpcResult::err))
 }

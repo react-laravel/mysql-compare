@@ -24,6 +24,32 @@ type Translate = ReturnType<typeof useI18n>['t']
 // Shared across tree, menus and dialogs so their requests cannot overwrite one another.
 const tableRequests = new Map<string, number>()
 const databaseRequests = new Map<string, number>()
+const redisFilterTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const redisOperations = new Map<string, string>()
+
+/** Redis glob metacharacters are literals in the key-name search box. */
+export function redisSubstringPattern(value: string): string | undefined {
+  return value ? `*${value.replace(/[\\*?\[\]]/g, '\\$&')}*` : undefined
+}
+
+export function cancelSidebarRedisScans(connectionId?: string, database?: string): void {
+  const exact = connectionId && database !== undefined ? getDatabaseKey(connectionId, database) : undefined
+  const matches = (key: string) => exact ? key === exact : !connectionId || key.startsWith(`${connectionId}:`)
+  for (const [key, timer] of redisFilterTimers) if (matches(key)) {
+    clearTimeout(timer)
+    redisFilterTimers.delete(key)
+    tableRequests.set(key, (tableRequests.get(key) ?? 0) + 1)
+  }
+  for (const [key, id] of redisOperations) if (matches(key)) {
+    tableRequests.set(key, (tableRequests.get(key) ?? 0) + 1)
+    redisOperations.delete(key)
+    void api.operations?.cancel(id).catch(() => undefined)
+  }
+  useSidebarStore.getState().setNodes((nodes) => Object.fromEntries(Object.entries(nodes).map(([id, node]) => [id, {
+    ...node,
+    ...(node.redisScans ? { redisScans: Object.fromEntries(Object.entries(node.redisScans).map(([db, scan]) => [db, matches(getDatabaseKey(id, db)) ? { ...scan, loading: false, operationId: undefined } : scan])) } : {})
+  }])))
+}
 
 export function getDatabaseKey(connectionId: string, database: string): string {
   return `${connectionId}:${database}`
@@ -72,6 +98,7 @@ export interface SidebarActions {
   toggleConnection: (connection: SafeConnection) => Promise<void>
   toggleDatabase: (connection: SafeConnection, database: string) => Promise<void>
   refreshDatabase: (connection: SafeConnection, database: string) => Promise<void>
+  scanMoreRedisKeys: (connection: SafeConnection, database: string) => Promise<void>
   setTableFilter: (connectionId: string, database: string, value: string) => void
 
   // ---- connection ---------------------------------------------------------
@@ -180,7 +207,50 @@ export function createSidebarActions(t: Translate): SidebarActions {
     }
   }
 
+  const loadRedisBatch = async (connection: SafeConnection, database: string, reset: boolean) => {
+    const key = getDatabaseKey(connection.id, database)
+    const scan = sidebar().nodes[connection.id]?.redisScans?.[database]
+    if (!reset && (scan?.loading || scan?.complete || scan?.limited)) return
+    if (reset) cancelSidebarRedisScans(connection.id, database)
+    const filter = sidebar().tableFilters[key] ?? ''
+    const cursor = reset ? '0' : scan?.cursor ?? '0'
+    const request = (tableRequests.get(key) ?? 0) + 1
+    tableRequests.set(key, request)
+    const id = crypto.randomUUID()
+    redisOperations.set(key, id)
+    const currentRequest = () => tableRequests.get(key) === request && redisOperations.get(key) === id
+      && Boolean(sidebar().nodes[connection.id]?.expandedDbs.has(database))
+      && (sidebar().tableFilters[key] ?? '') === filter
+    updateNode(connection.id, (node) => ({ ...node,
+      tables: reset ? { ...node.tables, [database]: [] } : node.tables,
+      databaseErrors: { ...node.databaseErrors, [database]: undefined },
+      redisScans: { ...node.redisScans, [database]: { cursor, filter, complete: false, limited: false, loading: true, operationId: id } }
+    }))
+    try {
+      const batch = await unwrap(api.db.scanRedisKeys(connection.id, database, cursor, redisSubstringPattern(filter), id))
+      if (!currentRequest()) return
+      updateNode(connection.id, (node) => {
+        // Keep the entire SCAN batch: COUNT is a hint, and its suffix cannot be recovered from the next cursor.
+        const keys = [...new Set([...(reset ? [] : node.tables[database] ?? []), ...batch.keys])].sort()
+        return { ...node, tables: { ...node.tables, [database]: keys },
+          redisScans: { ...node.redisScans, [database]: { cursor: batch.nextCursor, filter, complete: batch.complete, limited: !batch.complete && keys.length >= REDIS_MAX_LISTED_KEYS, loading: false } }
+        }
+      })
+      if (reset) void loadDatabaseKeyCount(connection.id, database).then((count) => {
+        if (count !== undefined && sidebar().nodes[connection.id]) updateNode(connection.id, (node) => ({ ...node, tableCounts: { ...node.tableCounts, [database]: count } }))
+      })
+    } catch (error) {
+      if (currentRequest()) updateNode(connection.id, (node) => ({ ...node,
+        databaseErrors: { ...node.databaseErrors, [database]: (error as Error).message },
+        redisScans: { ...node.redisScans, [database]: { cursor, filter, complete: false, limited: false, loading: false } }
+      }))
+    } finally {
+      if (redisOperations.get(key) === id) redisOperations.delete(key)
+    }
+  }
+
   const loadTables = async (connection: SafeConnection, database: string, chosenSchema?: string) => {
+    if (connection.engine === 'redis') { await loadRedisBatch(connection, database, true); return }
     const key = getDatabaseKey(connection.id, database)
     const request = (tableRequests.get(key) ?? 0) + 1
     tableRequests.set(key, request)
@@ -205,11 +275,8 @@ export function createSidebarActions(t: Translate): SidebarActions {
           return
         }
       }
-      const [tables, keyCount] = await Promise.all([
-        unwrap(api.db.listTables(connection.id, database, schema)),
-        connection.engine === 'redis' ? loadDatabaseKeyCount(connection.id, database) : Promise.resolve(undefined)
-      ])
-      if (currentRequest()) applyTables(connection.id, database, tables, keyCount)
+      const tables = await unwrap(api.db.listTables(connection.id, database, schema))
+      if (currentRequest()) applyTables(connection.id, database, tables, undefined)
     } catch (error) {
       if (currentRequest()) updateNode(connection.id, (node) => ({ ...node,
         databaseErrors: { ...node.databaseErrors, [database]: (error as Error).message }
@@ -303,6 +370,7 @@ export function createSidebarActions(t: Translate): SidebarActions {
   const deleteConnection = async (connection: SafeConnection): Promise<boolean> => {
     try {
       await connectionStore().remove(connection.id)
+      cancelSidebarRedisScans(connection.id)
       sidebar().setNodes((state) => {
         const { [connection.id]: _removed, ...rest } = state
         return rest
@@ -320,9 +388,10 @@ export function createSidebarActions(t: Translate): SidebarActions {
     toggleConnection: async (connection) => {
       const current = sidebar().nodes[connection.id]
       if (current?.expanded) {
+        if (connection.engine === 'redis') cancelSidebarRedisScans(connection.id)
         sidebar().setNodes((state) => ({
           ...state,
-          [connection.id]: { ...current, expanded: false }
+          [connection.id]: { ...sidebar().nodes[connection.id]!, expanded: false }
         }))
         return
       }
@@ -346,19 +415,20 @@ export function createSidebarActions(t: Translate): SidebarActions {
       if (!node) return
       const nextExpanded = new Set(node.expandedDbs)
       if (nextExpanded.has(database)) {
+        if (connection.engine === 'redis') cancelSidebarRedisScans(connection.id, database)
         nextExpanded.delete(database)
         sidebar().setNodes((state) => ({
           ...state,
-          [connection.id]: { ...node, expandedDbs: nextExpanded }
+          [connection.id]: { ...sidebar().nodes[connection.id]!, expandedDbs: nextExpanded }
         }))
         return
       }
       nextExpanded.add(database)
       sidebar().setNodes((state) => ({
         ...state,
-        [connection.id]: { ...node, expandedDbs: nextExpanded }
+        [connection.id]: { ...sidebar().nodes[connection.id]!, expandedDbs: nextExpanded }
       }))
-      if (node.tables[database]) return
+      if (node.tables[database] && (connection.engine !== 'redis' || node.redisScans?.[database])) return
       try {
         await loadTables(connection, database)
       } catch (error) {
@@ -367,6 +437,7 @@ export function createSidebarActions(t: Translate): SidebarActions {
     },
 
     refreshDatabase,
+    scanMoreRedisKeys: (connection, database) => loadRedisBatch(connection, database, false),
 
     setTableFilter: (connectionId, database, value) => {
       const key = getDatabaseKey(connectionId, database)
@@ -377,6 +448,20 @@ export function createSidebarActions(t: Translate): SidebarActions {
         }
         return { ...current, [key]: value }
       })
+      const connection = connectionStore().connections.find((entry) => entry.id === connectionId)
+      if (connection?.engine === 'redis') {
+        cancelSidebarRedisScans(connectionId, database)
+        updateNode(connectionId, (node) => ({ ...node,
+          tables: { ...node.tables, [database]: [] },
+          databaseErrors: { ...node.databaseErrors, [database]: undefined },
+          redisScans: { ...node.redisScans, [database]: { cursor: '0', filter: value, complete: false, limited: false, loading: true } }
+        }))
+        const timer = setTimeout(() => {
+          redisFilterTimers.delete(key)
+          if (sidebar().nodes[connectionId]?.expandedDbs.has(database)) void loadRedisBatch(connection, database, true)
+        }, 300)
+        redisFilterTimers.set(key, timer)
+      }
     },
 
     createConnection: () => sidebar().setCreating(true),
@@ -403,6 +488,7 @@ export function createSidebarActions(t: Translate): SidebarActions {
     },
 
     closeConnection: async (connection) => {
+      cancelSidebarRedisScans(connection.id)
       sidebar().setNodes((state) => {
         const { [connection.id]: _removed, ...rest } = state
         return rest

@@ -5,7 +5,7 @@
 // `ConfirmDialog`s, and the overflow menu the four header buttons collapsed
 // into.
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useI18nStore } from '@renderer/i18n'
 import { resetAppActions, runAppAction } from '@renderer/lib/app-actions'
@@ -40,11 +40,12 @@ function result(rows: Record<string, unknown>[]): QueryRowsResult {
 const queryRows = vi.fn()
 const deleteRows = vi.fn()
 const syncExecute = vi.fn()
+const cancelOperation = vi.fn()
 
 function installApi(): void {
   ;(window as unknown as { api: AppAPI }).api = {
     db: { queryRows, deleteRows, insertRow: vi.fn() },
-    sync: { execute: syncExecute }
+    sync: { execute: syncExecute }, operations: { cancel: cancelOperation }
   } as unknown as AppAPI
 }
 
@@ -72,6 +73,7 @@ beforeEach(() => {
   useSettingsStore.getState().reset()
   deleteRows.mockReset().mockResolvedValue({ ok: true, data: { affectedRows: 1 } })
   syncExecute.mockReset().mockResolvedValue({ ok: true, data: { executed: 2, errors: 0 } })
+  cancelOperation.mockReset().mockResolvedValue({ ok: true })
   // Source has an extra row (1044) and a changed value on 1042; the target has
   // a row (1099) the source lacks — one of each diff kind.
   queryRows.mockReset().mockImplementation(async ({ connectionId }: { connectionId: string }) =>
@@ -108,6 +110,36 @@ function openOverflow(): void {
 }
 
 describe('TableCompareView', () => {
+  it('cancels both running reads and discards their late rows', async () => {
+    const resolvers: Array<(value: unknown) => void> = []
+    queryRows.mockImplementation(() => new Promise((resolve) => resolvers.push(resolve)))
+    render(<TableCompareView {...PROPS} />)
+    await waitFor(() => expect(queryRows).toHaveBeenCalledTimes(2))
+    const ids = queryRows.mock.calls.map((call) => call[1])
+    expect(new Set(ids).size).toBe(2)
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    for (const id of ids) expect(cancelOperation).toHaveBeenCalledWith(id)
+    await act(async () => { for (const resolve of resolvers) resolve({ ok: true, data: result([{ id: 777, total: 'late' }]) }) })
+    expect(screen.queryByText('late')).toBeNull()
+    expect(screen.getAllByRole('button', { name: 'Retry' })).toHaveLength(2)
+  })
+
+  it('wires the overwrite job cancellation to its SQL operation and preserves cancelled status', async () => {
+    let resolve!: (value: unknown) => void
+    syncExecute.mockReturnValueOnce(new Promise((done) => { resolve = done }))
+    await renderView()
+    openOverflow()
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Overwrite Target Table' }))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Overwrite Target Table' }))
+    await waitFor(() => expect(syncExecute).toHaveBeenCalledOnce())
+    const [job] = useJobStore.getState().jobs.values()
+    expect(job?.onCancel).toEqual(expect.any(Function))
+    act(() => useJobStore.getState().cancel(job!.id))
+    expect(cancelOperation).toHaveBeenCalledWith(syncExecute.mock.calls[0]![1])
+    await act(async () => resolve({ ok: true, data: { executed: 1, errors: 0 } }))
+    expect(useJobStore.getState().jobs.get(job!.id)?.status).toBe('cancelled')
+  })
+
   it('renders a diff sign on every aligned row and the same glyph on both panes', async () => {
     await renderView()
 

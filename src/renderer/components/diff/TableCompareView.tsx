@@ -78,6 +78,7 @@ export function TableCompareView({
   const [pageSize, setPageSize] = useState(defaultPageSize)
   const [copying, setCopying] = useState(false)
   const [overwriting, setOverwriting] = useState(false)
+  const [overwriteJobId, setOverwriteJobId] = useState<string | null>(null)
   const [deletingSide, setDeletingSide] = useState<CompareSide | null>(null)
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null)
 
@@ -108,7 +109,8 @@ export function TableCompareView({
     totalRows,
     reloadSource,
     reloadTarget,
-    reloadBoth
+    reloadBoth,
+    cancelLoading
   } = model
 
   useEffect(() => {
@@ -116,25 +118,28 @@ export function TableCompareView({
     setPageDraft('1')
   }, [sourceConnectionId, sourceDatabase, targetConnectionId, targetDatabase, table])
 
-  const totalPages = useMemo(() => Math.max(1, Math.ceil(totalRows / pageSize)), [pageSize, totalRows])
+  const totalIsExact = [sourceState.data, targetState.data].every((data) => data && data.totalIsExact !== false)
+  const hasMore = [sourceState.data, targetState.data].some((data) => data && (data.hasMore ?? data.total > page * pageSize))
+  const totalPages = useMemo(() => Math.max(totalIsExact ? 1 : page, Math.ceil(totalRows / pageSize)), [page, pageSize, totalRows, totalIsExact])
 
   useEffect(() => {
-    if (page > totalPages) {
+    if (totalIsExact && page > totalPages) {
       setPage(totalPages)
     }
-  }, [page, totalPages])
+  }, [page, totalPages, totalIsExact])
 
   useEffect(() => {
     setPageDraft(String(page))
   }, [page])
 
   const goToPage = (nextPage: number) => {
-    setPage(Math.max(1, Math.min(totalPages, nextPage)))
+    if (!Number.isSafeInteger(nextPage)) { setPageDraft(String(page)); return }
+    setPage(Math.max(1, Math.min(totalIsExact ? totalPages : 1_000_000, nextPage)))
   }
 
   const submitPageDraft = () => {
-    const parsed = Number.parseInt(pageDraft, 10)
-    if (Number.isFinite(parsed)) {
+    const parsed = Number(pageDraft.trim())
+    if (/^\d+$/.test(pageDraft.trim()) && Number.isSafeInteger(parsed)) {
       goToPage(parsed)
       return
     }
@@ -323,14 +328,22 @@ export function TableCompareView({
     if (!sourceState.data) return
 
     setOverwriting(true)
-    // `sync.execute` has no cancel channel (blueprint risk 6), so the job is
-    // registered without `onCancel` — visible progress, no fake Cancel.
+    const operationId = crypto.randomUUID()
+    let cancelled = false
     const jobId = jobs.start({
+      id: operationId,
+      onCancel: () => {
+        cancelled = true
+        void api.operations.cancel(operationId).catch((error) => {
+          jobs.finish(jobId, { status: 'error', detail: (error as Error).message })
+        })
+      },
       kind: 'sync',
       label: t('diff.compareView.overwriteJobLabel', { table: tableDisplayName(table) }),
       tabId: `table-compare:${compareSessionId}`
     })
 
+    setOverwriteJobId(jobId)
     const unsubscribe = api.sync.onProgress?.((event) => {
       if (event.taskId !== jobId) return
       jobs.update(jobId, { detail: `${tableDisplayName(event.table)} · ${event.message ?? event.step}`, ...(event.total > 0 ? { count: { done: event.done, total: event.total } } : {}) })
@@ -345,13 +358,15 @@ export function TableCompareView({
             targetConnectionId,
             targetDatabase,
             table
-          })
+          }),
+          operationId
         )
       )
 
       sourceSelection.clearSelection()
       targetSelection.clearSelection()
       reloadTarget()
+      if (cancelled) { jobs.finish(jobId, { status: 'cancelled' }); return }
 
       jobs.finish(jobId, { status: result.errors === 0 ? 'done' : 'error' })
       showToast(
@@ -361,10 +376,12 @@ export function TableCompareView({
         result.errors === 0 ? 'success' : 'error'
       )
     } catch (err) {
-      jobs.finish(jobId, { status: 'error', detail: (err as Error).message })
-      showToast((err as Error).message, 'error')
+      jobs.finish(jobId, { status: cancelled ? 'cancelled' : 'error', detail: (err as Error).message })
+      if (!cancelled) showToast((err as Error).message, 'error')
+      else reloadTarget()
     } finally {
       unsubscribe?.()
+      setOverwriteJobId(null)
       setOverwriting(false)
     }
   }
@@ -395,6 +412,7 @@ export function TableCompareView({
               ? { status: 'running', label: t('diff.compareView.actionRunning') }
               : null
         }
+        onCancel={overwriteJobId ? () => jobs.cancel(overwriteJobId) : loading && !actionBusy ? cancelLoading : undefined}
         sourceSelectedCount={sourceSelection.selectedCount}
         targetSelectedCount={targetSelection.selectedCount}
         copyEnabled={
@@ -448,6 +466,9 @@ export function TableCompareView({
       {(sourceState.data || targetState.data) && (
         <TableDataPagination
           totalRows={totalRows}
+          totalIsExact={totalIsExact}
+          totalIsEstimate={false}
+          hasMore={hasMore}
           pageSize={pageSize}
           page={page}
           totalPages={totalPages}
@@ -494,7 +515,14 @@ export function TableCompareView({
             ? t('diff.compareView.overwriteTargetTable')
             : t('diff.compareView.deleteSelectedRows', { count: pendingConfirm?.count ?? 0 })
         }
-        onConfirm={runPendingConfirm}
+        onConfirm={() => {
+          if (pendingConfirm?.kind === 'overwrite-target') {
+            setPendingConfirm(null)
+            void overwriteTargetTable()
+            return
+          }
+          return runPendingConfirm()
+        }}
       />
     </div>
   )

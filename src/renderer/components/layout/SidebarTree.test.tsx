@@ -4,7 +4,7 @@
  * and database rows had none), a persistent `⋯` instead of hover-gated icons,
  * and inline rename for both engines.
  */
-import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useI18nStore } from '@renderer/i18n'
 import { useConnectionStore } from '@renderer/store/connection-store'
@@ -13,10 +13,11 @@ import { useUIStore } from '@renderer/store/ui-store'
 import type { SafeConnection } from '../../../shared/types'
 import { SidebarTree } from './SidebarTree'
 import { tableKey } from '../../../shared/table-reference'
+import { cancelSidebarRedisScans, redisSubstringPattern } from './sidebar-actions'
 
-const { renameTableMock, listTablesMock } = vi.hoisted(() => ({
+const { renameTableMock, listTablesMock, scanRedisKeysMock, cancelOperationMock } = vi.hoisted(() => ({
   renameTableMock: vi.fn(),
-  listTablesMock: vi.fn()
+  listTablesMock: vi.fn(), scanRedisKeysMock: vi.fn(), cancelOperationMock: vi.fn()
 }))
 
 vi.mock('@renderer/lib/api', () => ({
@@ -24,9 +25,10 @@ vi.mock('@renderer/lib/api', () => ({
     db: {
       renameTable: renameTableMock,
       listTables: listTablesMock,
+      scanRedisKeys: scanRedisKeysMock,
       getDatabaseInfo: vi.fn()
     },
-    connection: { list: vi.fn() }
+    connection: { list: vi.fn() }, operations: { cancel: cancelOperationMock }
   },
   unwrap: async <T,>(value: Promise<T> | T): Promise<T> => await value
 }))
@@ -83,9 +85,127 @@ describe('SidebarTree', () => {
     renameTableMock.mockResolvedValue({ table: 'members' })
     listTablesMock.mockReset()
     listTablesMock.mockResolvedValue(['members'])
+    scanRedisKeysMock.mockReset()
+    cancelOperationMock.mockReset().mockResolvedValue(undefined)
   })
 
-  afterEach(cleanup)
+  afterEach(() => { cleanup(); cancelSidebarRedisScans(); vi.useRealTimers() })
+
+  it('loads one Redis batch, keeps duplicates out, and scans further only on request', async () => {
+    seed(redisConnection, '0', [])
+    useSidebarStore.setState(({ nodes }) => ({ nodes: { 'conn-redis': { ...nodes['conn-redis']!, expandedDbs: new Set(), tables: {} } } }))
+    scanRedisKeysMock.mockResolvedValueOnce({ keys: ['alpha', 'alpha', 'beta'], nextCursor: '7', complete: false })
+      .mockResolvedValueOnce({ keys: ['beta', 'gamma'], nextCursor: '0', complete: true })
+    render(<SidebarTree />)
+    fireEvent.click(screen.getAllByRole('treeitem')[1]!)
+    await screen.findByText('alpha')
+    expect(scanRedisKeysMock).toHaveBeenCalledOnce()
+    expect(listTablesMock).not.toHaveBeenCalled()
+    expect(scanRedisKeysMock.mock.calls[0]?.slice(0, 4)).toEqual(['conn-redis', '0', '0', undefined])
+    fireEvent.click(screen.getByRole('button', { name: 'Scan more keys' }))
+    await screen.findByText('gamma')
+    expect(scanRedisKeysMock.mock.calls[1]?.[2]).toBe('7')
+    expect(useSidebarStore.getState().nodes['conn-redis']?.tables['0']).toEqual(['alpha', 'beta', 'gamma'])
+    expect(screen.queryByRole('button', { name: 'Scan more keys' })).toBeNull()
+    expect(screen.getByText('Scan complete; 3 matching key(s)')).toBeTruthy()
+  })
+
+  it('does not claim a missing key after an empty Redis batch with a remaining cursor', async () => {
+    seed(redisConnection, '0', [])
+    useSidebarStore.setState(({ nodes }) => ({ nodes: { 'conn-redis': { ...nodes['conn-redis']!, expandedDbs: new Set(), tables: {} } } }))
+    scanRedisKeysMock.mockResolvedValue({ keys: [], nextCursor: '42', complete: false })
+    render(<SidebarTree />)
+    fireEvent.click(screen.getAllByRole('treeitem')[1]!)
+    await screen.findByText('No matches in scanned batches yet; continue scanning')
+    expect(screen.getByRole('button', { name: 'Scan more keys' })).toBeTruthy()
+    expect(screen.queryByText('No keys')).toBeNull()
+  })
+
+  it('cancels an obsolete Redis refresh and leaves collapsed scans resumable', async () => {
+    seed(redisConnection, '0', [])
+    useSidebarStore.setState(({ nodes }) => ({ nodes: { 'conn-redis': { ...nodes['conn-redis']!, expandedDbs: new Set(), tables: {} } } }))
+    let resolveOld!: (value: unknown) => void
+    let resolveRefresh!: (value: unknown) => void
+    scanRedisKeysMock.mockReturnValueOnce(new Promise((resolve) => { resolveOld = resolve }))
+      .mockReturnValueOnce(new Promise((resolve) => { resolveRefresh = resolve }))
+    render(<SidebarTree />)
+    const database = screen.getAllByRole('treeitem')[1]!
+    fireEvent.click(database)
+    const oldId = scanRedisKeysMock.mock.calls[0]![4]
+    fireEvent.click(within(database).getByRole('button', { name: 'Refresh' }))
+    expect(scanRedisKeysMock).toHaveBeenCalledTimes(2)
+    expect(cancelOperationMock).toHaveBeenCalledWith(oldId)
+    await act(async () => resolveOld({ keys: ['old-key'], nextCursor: '3', complete: false }))
+    expect(useSidebarStore.getState().nodes['conn-redis']?.tables['0']).toEqual([])
+    fireEvent.click(database)
+    expect(cancelOperationMock).toHaveBeenCalledWith(scanRedisKeysMock.mock.calls[1]![4])
+    expect(useSidebarStore.getState().nodes['conn-redis']?.redisScans?.['0']?.loading).toBe(false)
+    await act(async () => resolveRefresh({ keys: ['late-refresh'], nextCursor: '0', complete: true }))
+    fireEvent.click(database)
+    expect(screen.queryByText('late-refresh')).toBeNull()
+    expect((screen.getByRole('button', { name: 'Scan more keys' }) as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('debounces a literal server search, cancels the old scan, and rejects late results', async () => {
+    vi.useFakeTimers()
+    seed(redisConnection, '0', [])
+    useSidebarStore.setState(({ nodes }) => ({ nodes: { 'conn-redis': { ...nodes['conn-redis']!, expandedDbs: new Set(), tables: {} } } }))
+    let resolveOld!: (value: unknown) => void
+    scanRedisKeysMock.mockReturnValueOnce(new Promise((resolve) => { resolveOld = resolve }))
+      .mockResolvedValueOnce({ keys: ['rare[*]?\\'], nextCursor: '0', complete: true })
+    render(<SidebarTree />)
+    fireEvent.click(screen.getAllByRole('treeitem')[1]!)
+    const oldId = scanRedisKeysMock.mock.calls[0]![4]
+    fireEvent.change(screen.getByPlaceholderText('Filter keys'), { target: { value: 'ra' } })
+    fireEvent.change(screen.getByPlaceholderText('Filter keys'), { target: { value: 'rare[*]?\\' } })
+    expect(cancelOperationMock).toHaveBeenCalledWith(oldId)
+    await act(async () => vi.advanceTimersByTimeAsync(299))
+    expect(scanRedisKeysMock).toHaveBeenCalledOnce()
+    await act(async () => vi.advanceTimersByTimeAsync(1))
+    expect(scanRedisKeysMock).toHaveBeenCalledTimes(2)
+    expect(scanRedisKeysMock.mock.calls[1]?.[3]).toBe(redisSubstringPattern('rare[*]?\\'))
+    expect(scanRedisKeysMock.mock.calls[1]?.[3]).toBe('*rare\\[\\*\\]\\?\\\\*')
+    await act(async () => resolveOld({ keys: ['stale-key'], nextCursor: '123', complete: false }))
+    expect(useSidebarStore.getState().nodes['conn-redis']?.tables['0']).toEqual(['rare[*]?\\'])
+    expect(screen.queryByText('stale-key')).toBeNull()
+  })
+
+  it('keeps the entire final batch past the session limit and lets a narrower search start again', async () => {
+    seed(redisConnection, '0', ['existing'])
+    const prefix = Array.from({ length: 9999 }, (_, index) => `key_${index}`)
+    useSidebarStore.setState(({ nodes }) => ({ nodes: { 'conn-redis': { ...nodes['conn-redis']!, tables: { '0': prefix }, redisScans: { '0': { cursor: '7', filter: '', complete: false, limited: false, loading: false } } } } }))
+    scanRedisKeysMock.mockResolvedValueOnce({ keys: ['suffix-a', 'suffix-b', 'suffix-c'], nextCursor: '8', complete: false })
+    render(<SidebarTree />)
+    fireEvent.keyDown(screen.getAllByRole('treeitem')[0]!, { key: 'End' })
+    const more = screen.getByRole('button', { name: 'Scan more keys' })
+    fireEvent.click(more)
+    await waitFor(() => expect(useSidebarStore.getState().nodes['conn-redis']?.redisScans?.['0']?.limited).toBe(true))
+    const keys = useSidebarStore.getState().nodes['conn-redis']?.tables['0'] ?? []
+    expect(keys).toHaveLength(10002)
+    expect(keys).toContain('suffix-c')
+    expect(screen.queryByRole('button', { name: 'Scan more keys' })).toBeNull()
+    fireEvent.keyDown(document.activeElement!, { key: 'Home' })
+    fireEvent.change(screen.getByPlaceholderText('Filter keys'), { target: { value: 'suffix-c' } })
+    expect(useSidebarStore.getState().nodes['conn-redis']?.redisScans?.['0']?.limited).toBe(false)
+    expect(useSidebarStore.getState().nodes['conn-redis']?.tables['0']).toEqual([])
+  })
+
+  it('windows a large tree and keeps End/Home navigation reachable', () => {
+    seed(connection, 'app_db', Array.from({ length: 5000 }, (_, index) => `table_${String(index).padStart(4, '0')}`))
+    render(<SidebarTree />)
+    expect(screen.getAllByRole('treeitem').length).toBeLessThan(40)
+    expect(screen.queryByText('table_4999')).toBeNull()
+    const first = screen.getAllByRole('treeitem')[0]!
+    act(() => first.focus())
+    fireEvent.keyDown(first, { key: 'End' })
+    const last = screen.getByText('table_4999').closest('[role="treeitem"]')!
+    expect(document.activeElement).toBe(last)
+    expect(last.getAttribute('aria-posinset')).toBe('5000')
+    expect(last.getAttribute('aria-setsize')).toBe('5000')
+    expect(screen.getAllByRole('treeitem').length).toBeLessThan(40)
+    fireEvent.keyDown(last, { key: 'Home' })
+    expect(document.activeElement).toBe(screen.getAllByRole('treeitem')[0])
+  })
 
   it('gives connection, database and table rows the tree semantics they lacked', () => {
     seed(connection, 'app_db', ['users'])

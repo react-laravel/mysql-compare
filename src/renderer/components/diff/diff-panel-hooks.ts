@@ -168,6 +168,7 @@ export function useDiffComparison({
   const [comparisonEntries, setComparisonEntries] = useState<TableCompareEntry[]>([])
   const [showSync, setShowSync] = useState(false)
   const [showAllRowComparisons, setShowAllRowComparisons] = useState(false)
+  const activeOperationIds = useRef(new Set<string>())
   const compareRunIdRef = useRef(0)
   const comparePhaseRef = useRef<ComparePhase>('idle')
   const compareJobIdRef = useRef<string | null>(null)
@@ -218,21 +219,23 @@ export function useDiffComparison({
     setComparisonEntries((entries) => entries.filter((entry) => entry.table !== event.table))
   }, [compareContext])
 
-  /**
-   * The renderer half of cancellation: bumping the run id makes every in-flight
-   * per-table response a no-op and stops the loop from issuing more requests
-   * (blueprint risk 6 — `diff.table` itself has no cancel channel, so this is
-   * the honest limit). Deliberately does **not** touch `job-store`; `job-store`
-   * calls this, not the other way around.
-   */
+  // Cancel backend work and reject responses from the previous run.
   const stopCompare = useCallback(() => {
     if (comparePhaseRef.current !== 'loading-tables' && comparePhaseRef.current !== 'comparing') {
       return
     }
     compareRunIdRef.current += 1
+    for (const id of activeOperationIds.current) void api.operations?.cancel(id)
+    activeOperationIds.current.clear()
     compareJobIdRef.current = null
     setPhase('cancelled')
   }, [setPhase])
+
+  useEffect(() => () => {
+    compareRunIdRef.current += 1
+    for (const id of activeOperationIds.current) void api.operations?.cancel(id)
+    activeOperationIds.current.clear()
+  }, [])
 
   const cancelCompare = useCallback(() => {
     const jobId = compareJobIdRef.current
@@ -327,6 +330,8 @@ export function useDiffComparison({
           }))
         )
 
+        const operationId = crypto.randomUUID()
+        activeOperationIds.current.add(operationId)
         try {
           const result = await unwrap<TableComparisonResult>(
             requestTableComparison(diffRouter, {
@@ -336,7 +341,7 @@ export function useDiffComparison({
               targetDatabase: nextContext.targetDatabase,
               table,
               includeData: nextContext.compareData
-            })
+            }, operationId)
           )
           if (compareRunIdRef.current !== runId) return
 
@@ -362,7 +367,7 @@ export function useDiffComparison({
               error: (err as Error).message
             }))
           )
-        }
+        } finally { activeOperationIds.current.delete(operationId) }
       })
 
       if (compareRunIdRef.current !== runId) return
@@ -408,6 +413,8 @@ export function useDiffComparison({
         }))
       )
 
+      const operationId = crypto.randomUUID()
+      activeOperationIds.current.add(operationId)
       try {
         const result = await unwrap<TableComparisonResult>(
           requestTableComparison(api.diff, {
@@ -417,7 +424,7 @@ export function useDiffComparison({
             targetDatabase: compareContext.targetDatabase,
             table,
             includeData: compareContext.compareData
-          })
+          }, operationId)
         )
         if (compareRunIdRef.current !== runId) return
 
@@ -442,7 +449,7 @@ export function useDiffComparison({
             error: (err as Error).message
           }))
         )
-      }
+      } finally { activeOperationIds.current.delete(operationId) }
     },
     [compareContext]
   )

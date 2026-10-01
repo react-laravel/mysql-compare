@@ -43,6 +43,8 @@ export function createInitialForm(
     database: connection?.database || '',
     databases: connection?.databases,
     showAllDatabases: connection?.showAllDatabases,
+    tlsMode: connection?.tlsMode || 'auto',
+    tlsCaPem: connection?.tlsCaPem || '',
     useSSH: connection?.useSSH || sshSource?.useSSH || false,
     sshHost: connection?.sshHost || sshSource?.sshHost || '',
     sshPort: connection?.sshPort || sshSource?.sshPort || 22,
@@ -71,6 +73,7 @@ export function buildPayload(
     host,
     username: form.username.trim(),
     database: form.database?.trim(),
+    tlsCaPem: form.tlsCaPem?.trim() || undefined,
     sshHost: form.useSSH ? form.sshHost?.trim() : undefined,
     sshUsername: form.useSSH ? form.sshUsername?.trim() : undefined,
     password: form.password ? form.password : undefined,
@@ -94,6 +97,9 @@ export function validateConnectionForm(
   if (!form.host.trim()) return 'Host is required'
   if (form.engine !== 'redis' && !form.username.trim()) return 'Username is required'
   if (!isValidPort(form.port)) return 'Port must be between 1 and 65535'
+
+  if (form.useSSH && form.tlsMode === 'verify-full') return 'Verified database TLS through SSH is not supported. Choose Automatic transport or connect directly.'
+  if (form.tlsCaPem && form.tlsCaPem.length > 1024 * 1024) return 'CA certificate exceeds 1 MiB'
 
   if (!form.useSSH) return null
 
@@ -129,4 +135,14 @@ export function parsePortValue(value: string, fallback: number): number {
 function isValidPort(value: number | undefined): boolean {
   if (value === undefined) return false
   return Number.isInteger(value) && value >= 1 && value <= 65535
+}
+
+/** Transport badge uses exactly the backend policy. */
+export function connectionTransport(connection: Pick<ConnectionConfig, 'host' | 'useSSH' | 'tlsMode'>): 'ssh' | 'tls' | 'plaintext' {
+  if (connection.useSSH) return 'ssh'
+  if (connection.tlsMode === 'disabled') return 'plaintext'
+  if (connection.tlsMode === 'verify-full') return 'tls'
+  const host = connection.host.trim().replace(/^\[|\]$/g, '').toLowerCase()
+  const ipv4Loopback = /^127\.(?:\d{1,3}\.){2}\d{1,3}$/.test(host) && host.split('.').every((part) => Number(part) <= 255)
+  return host === 'localhost' || host === '::1' || ipv4Loopback ? 'plaintext' : 'tls'
 }

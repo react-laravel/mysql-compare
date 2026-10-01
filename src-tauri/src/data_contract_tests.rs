@@ -38,7 +38,13 @@ async fn contracts(engine: &str, port_var: &str) {
   }
   let req: QueryRowsRequest = serde_json::from_value(json!({ "connectionId": engine, "database": "contracts", "table": "items", "page": 1, "pageSize": 2 })).unwrap();
   let first = driver.query_rows(&req).await.unwrap();
-  assert_eq!(first.total, 4);
+  assert_eq!(first.total, 3);
+  assert!(first.has_more);
+  assert!(!first.total_is_exact);
+  let last = driver.query_rows(&QueryRowsRequest { page: 2, ..req.clone() }).await.unwrap();
+  assert_eq!(last.total, 4);
+  assert!(!last.has_more);
+  assert!(last.total_is_exact);
   assert_eq!(first.rows.len(), 2);
   assert_eq!(first.rows[0]["amount"], "12345678901234567890.1234567890");
   assert_eq!(
@@ -139,6 +145,7 @@ async fn contracts(engine: &str, port_var: &str) {
       driver
         .query_rows(&QueryRowsRequest {
           table: "items_copy".into(),
+          page_size: 500,
           ..req.clone()
         })
         .await
@@ -271,17 +278,8 @@ async fn contracts(engine: &str, port_var: &str) {
     .unwrap()
     .iter()
     .all(|event| event.task_id.as_deref() == Some("contract-sync")));
-  assert_eq!(
-    driver
-      .query_rows(&QueryRowsRequest {
-        database: "contracts_target".into(),
-        ..req.clone()
-      })
-      .await
-      .unwrap()
-      .total,
-    100004
-  );
+  let row_count = driver.execute_sql("SELECT COUNT(*) AS count FROM items", Some("contracts_target")).await.unwrap();
+  assert_eq!(row_count["rows"][0]["count"].as_i64().or_else(|| row_count["rows"][0]["count"].as_str().and_then(|n| n.parse().ok())), Some(100004));
   assert!(
     crate::sync::execute_with_progress(&|_| {}, driver.clone(), driver.clone(), &execute)
       .await
@@ -361,4 +359,176 @@ async fn postgres_browsing_data_contracts() {
   driver.close().await;
   alternate.close().await;
   admin.close().await;
+}
+
+async fn browsing_and_import_security(engine: &str, port_var: &str) {
+  let port: u16 = std::env::var(port_var).unwrap().parse().unwrap();
+  let config: ConnectionConfig = serde_json::from_value(json!({"id":"security", "engine":engine, "name":"security disposable", "host":"127.0.0.1", "port":port, "username":if engine == "mysql" { "root" } else { "contract_test" }, "database":"contracts", "createdAt":0,"updatedAt":0})).unwrap();
+  let driver = EngineDriver::open(config.clone(), None).await.unwrap();
+  driver.execute_sql("CREATE TABLE security_import (id INTEGER PRIMARY KEY, label TEXT)", Some("contracts")).await.unwrap();
+  let failed = driver.import_sql("contracts", &["INSERT INTO security_import VALUES (1, 'first')".into(), "INSERT INTO security_import VALUES (1, 'duplicate')".into()]).await;
+  assert!(failed.is_err());
+  let req: QueryRowsRequest = serde_json::from_value(json!({"connectionId":"security", "database":"contracts", "table":"security_import", "page":1,"pageSize":2})).unwrap();
+  assert!(driver.query_rows(&req).await.unwrap().rows.is_empty(), "DML import rolls back every prior statement");
+  assert_eq!(driver.import_sql("contracts", &["INSERT INTO security_import VALUES (1, 'first')".into(), "INSERT INTO security_import VALUES (2, 'second')".into(), "INSERT INTO security_import VALUES (3, 'third')".into()]).await.unwrap(), 3);
+  let page = driver.query_rows(&req).await.unwrap();
+  assert_eq!(page.rows.len(), 2); assert!(page.has_more); assert!(!page.total_is_exact);
+  let last = driver.query_rows(&QueryRowsRequest { page:2, ..req.clone() }).await.unwrap();
+  assert_eq!(last.total, 3); assert!(last.total_is_exact); assert!(!last.has_more);
+  assert!(driver.query_rows(&QueryRowsRequest { order_by:Some(OrderBy { column:"id".into(), dir:"ASC; DROP TABLE security_import".into() }), ..req.clone() }).await.is_err());
+  assert_eq!(driver.query_rows(&req).await.unwrap().rows.len(), 2);
+  if engine == "mysql" {
+    let literal = driver.execute_sql("SELECT 'OPTIMIZE TABLE' AS label", Some("contracts")).await.unwrap();
+    assert_eq!(literal["rows"][0]["label"], "OPTIMIZE TABLE");
+    assert!(driver.execute_sql("OPTIMIZE TABLE security_import", Some("contracts")).await.unwrap_err().contains("safe cancellation"));
+    assert!(driver.import_sql("contracts", &["INSERT INTO security_import VALUES (4,'must not execute')".into(), "/*!80000 REPAIR TABLE security_import */".into()]).await.unwrap_err().contains("safe cancellation"));
+    let key = serde_json::from_value(json!({"id":4})).unwrap();
+    assert!(driver.query_rows(&QueryRowsRequest { key_rows:Some(vec![key]), ..req.clone() }).await.unwrap().rows.is_empty(), "Reject the entire maintenance import before any statement executes");
+  }
+  let mode_driver = EngineDriver::open(config.clone(), None).await.unwrap();
+  let mode_sql = if engine == "mysql" { "SET SESSION sql_mode='NO_BACKSLASH_ESCAPES'" } else { "SET standard_conforming_strings = off" };
+  {
+    use sqlx::Executor;
+    match &mode_driver {
+      EngineDriver::Mysql(driver) => {
+        let mut connection = driver.acquire_active("contracts").await.unwrap();
+        (&mut *connection).execute(mode_sql).await.unwrap();
+        connection.complete_and_wait().await;
+      }
+      EngineDriver::Postgres(driver) => {
+        let mut connection = driver.acquire_active("contracts").await.unwrap();
+        (&mut *connection).execute(mode_sql).await.unwrap();
+        connection.complete_and_wait().await;
+      }
+      _ => unreachable!(),
+    }
+  }
+  assert!(mode_driver.import_sql("contracts", &["SELECT 1".into()]).await.is_err(), "Reject parsing under a nonstandard existing session mode");
+  mode_driver.close().await;
+  assert!(driver.import_sql("contracts", &[mode_sql.into(), "INSERT INTO security_import VALUES (4,'must roll back')".into()]).await.is_err(), "Recheck the session mode after a script changes it");
+  let missing_key = serde_json::from_value(json!({"id":4})).unwrap();
+  assert!(driver.query_rows(&QueryRowsRequest { key_rows:Some(vec![missing_key]), ..req.clone() }).await.unwrap().rows.is_empty());
+  let operations = crate::operations::Operations::default();
+  let slow = if engine == "mysql" { "SELECT SLEEP(5)" } else { "SELECT pg_sleep(5)" };
+  let query = operations.run(Some("security-cancel"), driver.execute_sql(slow, Some("contracts")));
+  let cancel = async { tokio::time::sleep(std::time::Duration::from_millis(50)).await; operations.cancel("security-cancel").unwrap(); };
+  let (canceled, _) = tokio::join!(tokio::time::timeout(std::time::Duration::from_secs(2), query), cancel);
+  assert!(canceled.unwrap().unwrap_err().contains("canceled"));
+  let after_cancel = driver.execute_sql("SELECT 'ready' AS state", Some("contracts")).await.unwrap();
+  assert_eq!(after_cancel["rows"][0]["state"], "ready", "A canceled socket must not contaminate later pooled queries");
+  let active_sql = if engine == "mysql" { "SELECT COUNT(*) AS active FROM information_schema.PROCESSLIST WHERE INFO = 'SELECT SLEEP(5)'" } else { "SELECT COUNT(*)::bigint AS active FROM pg_stat_activity WHERE query = 'SELECT pg_sleep(5)' AND state = 'active'" };
+  let mut stopped = false;
+  for _ in 0..20 {
+    let active = driver.execute_sql(active_sql, Some("contracts")).await.unwrap();
+    let count = active["rows"][0]["active"].as_i64().or_else(|| active["rows"][0]["active"].as_str().and_then(|n| n.parse().ok())).unwrap();
+    if count == 0 { stopped = true; break; }
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+  }
+  assert!(stopped, "Cancellation must stop the server statement, not only release the local future");
+  let large_text = if engine == "mysql" { "MEDIUMTEXT" } else { "TEXT" };
+  let blob_type = if engine == "mysql" { "BLOB" } else { "BYTEA" };
+  let json_type = if engine == "mysql" { "JSON" } else { "JSONB" };
+  let binary = if engine == "mysql" { "X'00ff'" } else { "decode('00ff','hex')" };
+  driver.execute_sql(&format!("CREATE TABLE security_cursor (tenant INTEGER, seq INTEGER, visible TEXT, payload {large_text}, binary_data {blob_type}, private_json {json_type}, PRIMARY KEY(tenant, seq)); INSERT INTO security_cursor VALUES (1,1,'first',REPEAT('x',262144),{binary}, '{{\"secret\":true}}'),(1,4,'second',REPEAT('x',262144),{binary}, '{{\"secret\":true}}'),(2,1,'third',REPEAT('x',262144),{binary}, '{{\"secret\":true}}'),(2,6,'fourth',REPEAT('x',262144),{binary}, '{{\"secret\":true}}'),(7,2,'last',REPEAT('x',262144),{binary}, '{{\"secret\":true}}')"), Some("contracts")).await.unwrap();
+  let cursor_req = QueryRowsRequest { table:"security_cursor".into(), columns:Some(vec!["visible".into()]), ..req.clone() };
+  let first = driver.query_rows(&cursor_req).await.unwrap();
+  assert_eq!(first.rows.len(), 2);
+  assert_eq!(first.rows[1]["seq"], 4);
+  assert_eq!(first.rows[0].len(), 3, "Only visible and mandatory PK fields cross IPC; hidden TEXT/BLOB/JSON remain on the server");
+  assert_eq!(first.columns.len(), 6, "Schema metadata remains complete for the column picker");
+  let second = driver.query_rows(&QueryRowsRequest { page:2, after:first.next_cursor.clone(), ..cursor_req.clone() }).await.unwrap();
+  assert_eq!(second.rows[0]["tenant"], 2); assert_eq!(second.rows[1]["seq"], 6);
+  let last = driver.query_rows(&QueryRowsRequest { page:3, after:second.next_cursor, ..cursor_req.clone() }).await.unwrap();
+  assert_eq!(last.rows[0]["tenant"], 7); assert!(!last.has_more); assert!(!last.total_is_exact);
+  let arbitrary = driver.query_rows(&QueryRowsRequest { page:99, page_size:50, after:Some(serde_json::from_value(json!({"tenant":0,"seq":0})).unwrap()), ..cursor_req.clone() }).await.unwrap();
+  assert_eq!(arbitrary.rows.len(), 5); assert_eq!(arbitrary.total, 5); assert!(!arbitrary.total_is_exact, "An arbitrary cursor cannot prove the count of preceding rows");
+  let only_keys = driver.query_rows(&QueryRowsRequest { columns:Some(vec![]), ..cursor_req.clone() }).await.unwrap();
+  assert_eq!(only_keys.rows[0].len(), 2);
+  for invalid in [json!({"tenant":1}), json!({"tenant":1,"seq":null}), json!({"tenant":1,"seq":4,"extra":0})] {
+    assert!(driver.query_rows(&QueryRowsRequest { after:Some(serde_json::from_value(invalid).unwrap()), ..cursor_req.clone() }).await.is_err());
+  }
+  assert!(driver.query_rows(&QueryRowsRequest { columns:Some(vec!["unknown".into()]), ..cursor_req.clone() }).await.is_err());
+  assert!(driver.query_rows(&QueryRowsRequest { after:first.next_cursor.clone(), order_by:Some(OrderBy{column:"seq".into(),dir:"ASC".into()}), ..cursor_req.clone() }).await.is_err());
+  let filtered = driver.query_rows(&QueryRowsRequest { after:Some(serde_json::from_value(json!({"tenant":2,"seq":6})).unwrap()), where_sql:Some("tenant=2 OR tenant=7".into()), ..cursor_req.clone() }).await.unwrap();
+  assert_eq!(filtered.rows.len(), 1); assert_eq!(filtered.rows[0]["tenant"], 7);
+  let mut verified = config; verified.tls_mode = Some(TlsMode::VerifyFull);
+  // The disposable runner's CA is not trusted by the operating system.
+  assert!(EngineDriver::test_connection(&verified, None).await.is_err());
+  if let Ok(path) = std::env::var("MYSQL_COMPARE_TEST_CA_PEM") {
+    verified.tls_ca_pem = Some(std::fs::read_to_string(path).unwrap());
+    assert!(EngineDriver::test_connection(&verified, None).await.is_ok(), "Private CA and correct IP identity must verify");
+    // The certificate contains only an IP SAN; localhost reaches the same socket
+    // but must not pass hostname verification.
+    verified.host = "localhost".into();
+    assert!(EngineDriver::test_connection(&verified, None).await.is_err(), "Wrong host identity must fail");
+  } else {
+    eprintln!("SKIPPED {engine} TLS fixture checks: MYSQL_COMPARE_TEST_CA_PEM is absent; run scripts/test-data-contracts.py for CA and hostname verification");
+  }
+  driver.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL; run scripts/test-data-contracts.py"]
+async fn mysql_browsing_import_security() { browsing_and_import_security("mysql", "MYSQL_COMPARE_MYSQL_TEST_PORT").await; }
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL; run scripts/test-data-contracts.py"]
+async fn postgres_browsing_import_security() { browsing_and_import_security("postgres", "MYSQL_COMPARE_PG_TEST_PORT").await; }
+
+#[tokio::test]
+#[ignore = "requires disposable TLS RESP probe; run scripts/test-data-contracts.py"]
+async fn redis_tls_certificate_security() {
+  let Ok(port) = std::env::var("MYSQL_COMPARE_REDIS_TLS_TEST_PORT") else {
+    eprintln!("SKIPPED Redis TLS fixture checks: MYSQL_COMPARE_REDIS_TLS_TEST_PORT is absent; run scripts/test-data-contracts.py for CA and hostname verification");
+    return;
+  };
+  let port: u16 = port.parse().unwrap();
+  let mut config: ConnectionConfig = serde_json::from_value(json!({"id":"redis-tls", "engine":"redis", "name":"TLS probe", "host":"127.0.0.1", "port":port, "username":"", "database":"0", "tlsMode":"verify-full", "createdAt":0,"updatedAt":0})).unwrap();
+  assert!(EngineDriver::test_connection(&config, None).await.is_err(), "Untrusted certificate must fail");
+  config.tls_ca_pem = Some(std::fs::read_to_string(std::env::var("MYSQL_COMPARE_TEST_CA_PEM").unwrap()).unwrap());
+  assert!(EngineDriver::test_connection(&config, None).await.is_ok(), "Private CA and matching IP identity must verify");
+  config.host = "localhost".into();
+  assert!(EngineDriver::test_connection(&config, None).await.is_err(), "Hostname mismatch must fail");
+}
+
+#[tokio::test]
+#[ignore = "requires disposable Redis; run scripts/test-data-contracts.py"]
+async fn redis_scan_cursor_and_remote_pattern_contract() {
+  let port: u16 = std::env::var("MYSQL_COMPARE_REDIS_TEST_PORT").unwrap().parse().unwrap();
+  let config: ConnectionConfig = serde_json::from_value(json!({"id":"redis-scan", "engine":"redis", "name":"disposable", "host":"127.0.0.1", "port":port, "username":"", "database":"0", "createdAt":0,"updatedAt":0})).unwrap();
+  let driver = EngineDriver::open(config, None).await.unwrap();
+  let mut connection = redis::Client::open(format!("redis://127.0.0.1:{port}/0")).unwrap().get_multiplexed_async_connection().await.unwrap();
+  let mut pipeline = redis::pipe();
+  for index in 0..13050 { pipeline.cmd("SET").arg(format!("bulk:{index}")).arg("fixture").ignore(); }
+  pipeline.query_async::<()>(&mut connection).await.unwrap();
+  let initial = driver.scan_redis_keys("0", "0", None).await.unwrap();
+  assert!(!initial.complete); assert_ne!(initial.next_cursor, "0");
+  let legacy: std::collections::HashSet<_> = driver.list_tables("0").await.unwrap().into_iter().collect();
+  assert_eq!(legacy.len(), 10000);
+  let target = (0..13050).map(|index| format!("bulk:{index}")).find(|key| !legacy.contains(key)).unwrap();
+  let mut cursor = "0".to_string();
+  let mut found = Vec::new();
+  let mut empty_nonfinal = false;
+  for _ in 0..100 {
+    let batch = driver.scan_redis_keys("0", &cursor, Some(&target)).await.unwrap();
+    if batch.keys.is_empty() && !batch.complete { empty_nonfinal = true; }
+    found.extend(batch.keys);
+    cursor = batch.next_cursor;
+    if batch.complete { break; }
+  }
+  assert_eq!(cursor, "0"); assert!(empty_nonfinal, "A filtered empty batch does not imply completion");
+  assert_eq!(found, vec![target], "MATCH discovers a key outside the original 10,000-key cap");
+  let mut all = std::collections::HashSet::new();
+  cursor = "0".into();
+  for _ in 0..100 {
+    let batch = driver.scan_redis_keys("0", &cursor, None).await.unwrap();
+    all.extend(batch.keys);
+    cursor = batch.next_cursor;
+    if batch.complete { break; }
+  }
+  assert_eq!(cursor, "0"); assert_eq!(all.len(), 13050);
+  assert!(driver.scan_redis_keys("0", "-1", None).await.is_err());
+  assert!(driver.scan_redis_keys("0", "18446744073709551616", None).await.is_err());
+  assert!(driver.scan_redis_keys("0", "0", Some(&"x".repeat(4097))).await.is_err());
+  driver.close().await;
 }

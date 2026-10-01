@@ -9,7 +9,9 @@ pub async fn diff_databases(
   app: AppHandle,
   state: State<'_, AppState>,
   req: DiffRequest,
+  operation_id: Option<String>,
 ) -> Result<IpcResult<DatabaseDiff>, String> {
+  let result = state.operations.run(operation_id.as_deref(), async {
   let source = match state.get_driver(&app, &req.source_connection_id).await {
     Ok(d) => d,
     Err(e) => return Ok(IpcResult::err(e)),
@@ -31,6 +33,9 @@ pub async fn diff_databases(
     Ok(v) => Ok(IpcResult::ok(v)),
     Err(e) => Ok(IpcResult::err(e)),
   }
+
+  }).await;
+  Ok(result.unwrap_or_else(IpcResult::err))
 }
 
 #[tauri::command]
@@ -38,7 +43,9 @@ pub async fn diff_table(
   app: AppHandle,
   state: State<'_, AppState>,
   req: TableDiffRequest,
+  operation_id: Option<String>,
 ) -> Result<IpcResult<TableComparisonResult>, String> {
+  let result = state.operations.run(operation_id.as_deref(), async {
   let source = match state.get_driver(&app, &req.source_connection_id).await {
     Ok(d) => d,
     Err(e) => return Ok(IpcResult::err(e)),
@@ -60,4 +67,7 @@ pub async fn diff_table(
     Ok(v) => Ok(IpcResult::ok(v)),
     Err(e) => Ok(IpcResult::err(e)),
   }
+
+  }).await;
+  Ok(result.unwrap_or_else(IpcResult::err))
 }

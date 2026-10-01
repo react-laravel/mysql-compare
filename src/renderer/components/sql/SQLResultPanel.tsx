@@ -8,11 +8,12 @@
 //   mutation  → `StatTile`s for affected rows / insert id / warnings
 //   batch     → `StatTile`s + the per-statement list
 //   explain   → `SQLExplainPanel`
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { ClipboardCopy, Play } from 'lucide-react'
 import { Badge } from '@renderer/components/ui/badge'
 import { Button } from '@renderer/components/ui/button'
 import { DataTable, type Column } from '@renderer/components/ui/data-table'
+import { Dialog } from '@renderer/components/ui/dialog'
 import { EmptyState } from '@renderer/components/ui/empty-state'
 import { Panel } from '@renderer/components/ui/panel'
 import { StatTile } from '@renderer/components/ui/stat-tile'
@@ -125,6 +126,7 @@ function SQLRowsPanel({
   onCopyRows: (format: CopyFormat) => void
 }) {
   const { t } = useI18n()
+  const [expandedCell, setExpandedCell] = useState<{ column: string; value: string } | null>(null)
 
   const tableColumns = useMemo<Column<ResultRow>[]>(
     () =>
@@ -132,11 +134,12 @@ function SQLRowsPanel({
         id: column,
         header: column,
         mono: true,
-        cellClassName: 'whitespace-pre-wrap break-all align-top',
-        title: (row) => formatCellValue(row[column]),
-        cell: (row) => formatCellValue(row[column])
+        width: 240,
+        cellClassName: 'max-w-xs truncate',
+        title: (row) => formatCellValue(row[column]).slice(0, 1024),
+        cell: (row) => <button type="button" className="block w-full truncate text-left" title={t('sql.cellPreviewHint')} onClick={() => setExpandedCell({ column, value: formatCellValue(row[column]) })}>{formatCellValue(row[column]).slice(0, 500)}</button>
       })),
-    [columns]
+    [columns, t]
   )
 
   return (
@@ -159,8 +162,12 @@ function SQLRowsPanel({
         rows={rows}
         rowKey={(_row, index) => String(index)}
         variant="report"
+        virtualized={{ rowHeight: 28 }}
         aria-label={t('sql.resultTitle')}
       />
+      <Dialog open={expandedCell !== null} onOpenChange={(open) => { if (!open) setExpandedCell(null) }} title={t('sql.cellValue')} description={expandedCell?.column} size="lg">
+        <pre className="max-h-[60vh] overflow-auto font-mono text-xs whitespace-pre-wrap break-words">{expandedCell?.value}</pre>
+      </Dialog>
     </div>
   )
 }

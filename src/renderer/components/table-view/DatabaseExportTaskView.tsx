@@ -16,7 +16,7 @@ import { StatTile } from '@renderer/components/ui/stat-tile'
 import { Toolbar } from '@renderer/components/ui/toolbar'
 import { useI18n } from '@renderer/i18n'
 import { api, unwrap } from '@renderer/lib/api'
-import { jobs } from '@renderer/store/job-store'
+import { jobs, useJobStore } from '@renderer/store/job-store'
 import { useUIStore } from '@renderer/store/ui-store'
 import type { ExportDatabaseRequest, ExportDatabaseResult } from '../../../shared/types'
 
@@ -39,6 +39,16 @@ export function DatabaseExportTaskView({ taskId, connectionName, request }: Data
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [confirmClose, setConfirmClose] = useState(false)
   const closeConfirmedRef = useRef(false)
+  const activeJobRef = useRef<string | null>(null)
+  const activeOperationRef = useRef<string | null>(null)
+  const cancelledRef = useRef(false)
+  const mountedRef = useRef(true)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => { mountedRef.current = false; queueMicrotask(() => {
+      if (!mountedRef.current && activeJobRef.current) useJobStore.getState().cancel(activeJobRef.current)
+    }) }
+  }, [])
   const tabId = `database-export:${taskId}`
 
   useEffect(() => {
@@ -63,21 +73,24 @@ export function DatabaseExportTaskView({ taskId, connectionName, request }: Data
       setResult(null)
       setErrorMessage(null)
 
-      // `db.exportDatabase` 既没有进度事件也没有取消通道，所以这条任务是
-      // 不确定进度、且**不带** `onCancel` —— 状态栏不会给出一个假的取消按钮
-      // （blueprint risk 6）。
+      cancelledRef.current = false
+      const operationId = crypto.randomUUID()
+      activeOperationRef.current = operationId
       const jobId = jobs.start({
         kind: 'export',
         tabId,
-        label: t('databaseExportTask.jobLabel', { database: request.database })
+        label: t('databaseExportTask.jobLabel', { database: request.database }),
+        onCancel: () => { cancelledRef.current = true; void api.operations?.cancel(operationId); setStatus('canceled') }
       })
 
+      activeJobRef.current = jobId
       try {
         if (typeof api.db.exportDatabase !== 'function') {
           throw new Error(t('databaseExportDialog.unavailable'))
         }
 
-        const nextResult = await unwrap<ExportDatabaseResult>(api.db.exportDatabase(request))
+        const nextResult = await unwrap<ExportDatabaseResult>(api.db.exportDatabase(request, operationId))
+        if (cancelledRef.current || !mountedRef.current) return
         setResult(nextResult)
 
         if (nextResult.canceled) {
@@ -90,12 +103,13 @@ export function DatabaseExportTaskView({ taskId, connectionName, request }: Data
         jobs.finish(jobId, { detail: nextResult.filePath })
         showToast(getExportMessage(nextResult, t), 'success')
       } catch (error) {
+        if (cancelledRef.current || !mountedRef.current) return
         const message = (error as Error).message
         setErrorMessage(message)
         setStatus('error')
         jobs.finish(jobId, { status: 'error', detail: message })
         showToast(message, 'error')
-      }
+      } finally { activeJobRef.current = null; activeOperationRef.current = null }
     }
 
     void runExport()
@@ -149,7 +163,7 @@ export function DatabaseExportTaskView({ taskId, connectionName, request }: Data
         }
         progress={
           status === 'running'
-            ? { status: 'running', label: t(`databaseExportTask.status.${status}`) }
+            ? { status: 'running', label: t(`databaseExportTask.status.${status}`), onCancel: () => { if (activeJobRef.current) useJobStore.getState().cancel(activeJobRef.current) } }
             : null
         }
         overflowLabel={t('common.moreActions')}
@@ -219,6 +233,7 @@ export function DatabaseExportTaskView({ taskId, connectionName, request }: Data
         cancelLabel={t('common.cancel')}
         confirmLabel={t('databaseExportTask.closeAnyway')}
         onConfirm={() => {
+          if (activeJobRef.current) useJobStore.getState().cancel(activeJobRef.current)
           closeConfirmedRef.current = true
           setConfirmClose(false)
           closeTab(tabId)

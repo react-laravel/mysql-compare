@@ -3,6 +3,8 @@ mod diff;
 mod drivers;
 mod export_import;
 mod ipc;
+mod operations;
+mod file_grants;
 mod secret_crypto;
 mod ssh;
 mod state;
@@ -34,6 +36,11 @@ pub fn run() {
       Ok(())
     })
     .invoke_handler(tauri::generate_handler![
+      commands::operation::operation_cancel,
+      commands::files::file_pick,
+      commands::connection::ssh_host_key_confirm,
+      commands::connection::ssh_host_key_list,
+      commands::connection::ssh_host_key_forget,
       commands::connection::connection_list,
       commands::connection::connection_organize,
       commands::connection::connection_update_database_browsing,
@@ -48,6 +55,7 @@ pub fn run() {
       commands::db::db_list_databases,
       commands::db::db_get_database_info,
       commands::db::db_list_tables,
+      commands::db::db_scan_redis_keys,
       commands::db::db_query_rows,
       commands::db::db_insert_row,
       commands::db::db_update_row,

@@ -8,9 +8,9 @@ use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 use uuid::Uuid;
 
-use crate::secret_crypto::{app_data_dir, decrypt_secret, encrypt_secret};
+use crate::secret_crypto::{app_data_dir, atomic_private_write, decrypt_secret, encrypt_secret, ensure_private_file, finish_legacy_key_migration, needs_secret_migration};
 use crate::types::{
-  ConnectionConfig, ConnectionOrganizationItem, DatabaseCredentialConfig, DbEngine, SafeConnection, SafeDatabaseCredential,
+  ConnectionConfig, ConnectionOrganizationItem, DatabaseCredentialConfig, DbEngine, SafeConnection, SafeDatabaseCredential, TlsMode,
 };
 
 #[cfg(test)]
@@ -37,6 +37,8 @@ struct StoredConnection {
   database: Option<String>,
   databases: Option<Vec<String>>,
   show_all_databases: Option<bool>,
+  tls_mode: Option<TlsMode>,
+  tls_ca_pem: Option<String>,
   database_credentials: Option<HashMap<String, StoredDatabaseCredential>>,
   #[serde(rename = "useSSH")]
   use_ssh: bool,
@@ -61,6 +63,7 @@ struct Schema {
 pub struct ConnectionStore {
   path: PathBuf,
   inner: Mutex<Schema>,
+  startup_error: Option<String>,
 }
 
 fn now_ms() -> i64 {
@@ -85,27 +88,66 @@ fn pick_ssh_secret(next: Option<&str>, previous: Option<String>) -> Option<Strin
   }
 }
 
+fn migrate_stored_secrets(
+  schema: &mut Schema,
+  mut migrate: impl FnMut(Option<&str>) -> Result<Option<String>, String>,
+) -> Result<bool, String> {
+  let mut changed = false;
+  for connection in &mut schema.connections {
+    let mut fields = vec![
+      &mut connection.password_cipher, &mut connection.ssh_password_cipher,
+      &mut connection.ssh_private_key_cipher, &mut connection.ssh_passphrase_cipher,
+    ];
+    if let Some(credentials) = &mut connection.database_credentials {
+      fields.extend(credentials.values_mut().map(|credential| &mut credential.password_cipher));
+    }
+    for field in fields {
+      if field.as_deref().is_some_and(needs_secret_migration) {
+        *field = migrate(field.as_deref())?;
+        changed = true;
+      }
+    }
+  }
+  Ok(changed)
+}
+
 impl ConnectionStore {
   pub fn load(app: &AppHandle) -> Result<Self, String> {
     let path = app_data_dir(app)?.join("connections.json");
-    let schema = if path.exists() {
-      let raw = fs::read_to_string(&path).map_err(|e| format!("read connections: {e}"))?;
-      serde_json::from_str(&raw).unwrap_or_default()
-    } else {
-      Schema::default()
+    let mut schema: Schema = match path.symlink_metadata() {
+      Ok(_) => {
+        ensure_private_file(&path)?;
+        let raw = fs::read_to_string(&path).map_err(|e| format!("read connections: {e}"))?;
+        serde_json::from_str(&raw).map_err(|e| format!("Saved connections are corrupted; restore from a trusted backup: {e}"))?
+      },
+      Err(e) if e.kind() == std::io::ErrorKind::NotFound => Schema::default(),
+      Err(e) => return Err(format!("inspect connections: {e}")),
     };
-    Ok(Self {
+    let original = schema.clone();
+    let migration = migrate_stored_secrets(&mut schema, |value| {
+      encrypt_secret(app, decrypt_secret(app, value)?)
+    });
+    let (migrated, startup_error) = match migration {
+      Ok(changed) => (changed, None),
+      Err(error) => { schema = original; (false, Some(format!("Credential migration stopped: {error}. Unlock the system credential store and restart the application."))) },
+    };
+    let mut store = Self {
       path,
       inner: Mutex::new(schema),
-    })
+      startup_error,
+    };
+    if migrated { store.persist(&store.inner.lock())?; }
+    if store.startup_error.is_none() {
+      if let Err(error) = finish_legacy_key_migration(app) {
+        store.startup_error = Some(format!("Credential key migration stopped: {error}. Unlock the system credential store and restart the application."));
+      }
+    }
+    Ok(store)
   }
 
   fn persist(&self, schema: &Schema) -> Result<(), String> {
-    let raw = serde_json::to_string_pretty(schema).map_err(|e| e.to_string())?;
-    let temporary = self.path.with_extension(format!("{}.tmp", Uuid::new_v4()));
-    let result = fs::write(&temporary, raw).and_then(|_| fs::rename(&temporary, &self.path));
-    if result.is_err() { let _ = fs::remove_file(&temporary); }
-    result.map_err(|e| format!("write connections: {e}"))
+    let raw = serde_json::to_vec_pretty(schema).map_err(|e| e.to_string())?;
+    atomic_private_write(&self.path, &raw)
   }
 
   pub fn list_safe(&self) -> Vec<SafeConnection> {
@@ -113,6 +155,7 @@ impl ConnectionStore {
   }
 
   pub fn organize(&self, items: Vec<ConnectionOrganizationItem>) -> Result<Vec<SafeConnection>, String> {
+    if let Some(error) = &self.startup_error { return Err(error.clone()); }
     let mut guard = self.inner.lock();
     let mut remaining: HashMap<_, _> = guard.connections.iter().map(|c| (c.id.clone(), c.clone())).collect();
     if items.len() != remaining.len() {
@@ -127,18 +170,13 @@ impl ConnectionStore {
     // Keep encrypted credentials and active drivers untouched. Persist the
     // entire order atomically before publishing it to readers.
     let next = Schema { connections };
-    let raw = serde_json::to_vec_pretty(&next).map_err(|e| e.to_string())?;
-    let temporary = self.path.with_extension(format!("{}.tmp", Uuid::new_v4()));
-    let result = fs::write(&temporary, raw).and_then(|_| fs::rename(&temporary, &self.path));
-    if let Err(error) = result {
-      let _ = fs::remove_file(&temporary);
-      return Err(format!("write connections: {error}"));
-    }
+    self.persist(&next)?;
     *guard = next;
     Ok(guard.connections.iter().map(to_safe).collect())
   }
 
   pub fn get_full(&self, app: &AppHandle, id: &str) -> Result<Option<ConnectionConfig>, String> {
+    if let Some(error) = &self.startup_error { return Err(error.clone()); }
     let guard = self.inner.lock();
     let Some(stored) = guard.connections.iter().find(|c| c.id == id) else {
       return Ok(None);
@@ -213,9 +251,13 @@ impl ConnectionStore {
   }
 
   pub fn remove(&self, id: &str) -> Result<(), String> {
+    if let Some(error) = &self.startup_error { return Err(error.clone()); }
     let mut guard = self.inner.lock();
-    guard.connections.retain(|c| c.id != id);
-    self.persist(&guard)
+    let mut next = guard.clone();
+    next.connections.retain(|c| c.id != id);
+    self.persist(&next)?;
+    *guard = next;
+    Ok(())
   }
 
   pub fn set_database_credential(
@@ -298,6 +340,8 @@ fn to_stored(app: &AppHandle, c: &ConnectionConfig) -> Result<StoredConnection, 
     database: c.database.clone(),
     databases: c.databases.clone(),
     show_all_databases: c.show_all_databases,
+    tls_mode: c.tls_mode,
+    tls_ca_pem: c.tls_ca_pem.clone(),
     database_credentials,
     use_ssh: c.use_ssh,
     ssh_host: c.ssh_host.clone(),
@@ -342,6 +386,8 @@ fn to_safe(s: &StoredConnection) -> SafeConnection {
     database: s.database.clone(),
     databases: s.databases.clone(),
     show_all_databases: s.show_all_databases,
+    tls_mode: s.tls_mode,
+    tls_ca_pem: s.tls_ca_pem.clone(),
     use_ssh: s.use_ssh,
     ssh_host: s.ssh_host.clone(),
     ssh_port: s.ssh_port,
@@ -388,6 +434,8 @@ fn to_full(app: &AppHandle, s: &StoredConnection) -> Result<ConnectionConfig, St
     database: s.database.clone(),
     databases: s.databases.clone(),
     show_all_databases: s.show_all_databases,
+    tls_mode: s.tls_mode,
+    tls_ca_pem: s.tls_ca_pem.clone(),
     use_ssh: s.use_ssh,
     ssh_host: s.ssh_host.clone(),
     ssh_port: s.ssh_port,

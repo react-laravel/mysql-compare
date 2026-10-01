@@ -26,6 +26,7 @@ interface TableDataGridProps {
   data: QueryRowsResult | null
   error?: Error | null
   refreshing?: boolean
+  cancelled?: boolean
   visibleColumns: ColumnInfo[]
   orderBy?: { column: string; dir: 'ASC' | 'DESC' }
   density: 'compact' | 'comfortable'
@@ -58,6 +59,7 @@ export function TableDataGrid({
   data,
   error,
   refreshing = false,
+  cancelled = false,
   visibleColumns,
   orderBy,
   density,
@@ -116,12 +118,13 @@ export function TableDataGrid({
       ...editColumn,
       ...visibleColumns.map<Column<Row>>((column) => ({
         id: column.name,
+        width: 192,
         sortable,
         headerClassName: 'whitespace-nowrap align-top [&_button]:items-start [&_button]:text-left [&_button>svg]:mt-2',
         cellClassName: wrapCells
-          ? 'max-w-md whitespace-pre-wrap break-words align-top'
+          ? 'max-w-md align-top'
           : 'max-w-xs truncate',
-        title: (row) => formatCellValue(row[column.name]),
+        title: (row) => formatCellValue(row[column.name]).slice(0, 1024),
         header: (
           <span className="flex min-w-0 flex-1 flex-col items-start gap-0.5 py-1 text-left leading-tight">
             <span className="flex h-5 items-center gap-1 whitespace-nowrap">
@@ -140,8 +143,8 @@ export function TableDataGrid({
           const json = getFormattedJsonDisplay(row[column.name])
           return (
             <span className="flex min-w-0 items-start gap-1.5">
-              <span className={cn('min-w-0', wrapCells ? 'whitespace-pre-wrap break-words' : 'truncate')}>
-                {renderTableCellValue(row[column.name], column)}
+              <span className={cn('min-w-0', wrapCells ? 'line-clamp-2 max-h-10 whitespace-pre-wrap break-words' : 'truncate')}>
+                {renderTableCellValue(row[column.name], column).slice(0, 500)}
               </span>
               {json ? (
                 <JsonViewerTrigger
@@ -218,6 +221,10 @@ export function TableDataGrid({
     return items
   }
 
+  if (cancelled && !data) {
+    return <EmptyState variant="no-selection" title={t('common.cancelled')} action={<Button variant="primary" icon={RefreshCw} onClick={onRetry}>{t('common.retry')}</Button>} />
+  }
+
   if (error && !data) {
     return (
       <div className="min-h-0 flex-1 overflow-auto">
@@ -259,6 +266,7 @@ export function TableDataGrid({
       aria-label={t('tableData.grid')}
       variant="grid"
       density={density}
+      virtualized={{ rowHeight: wrapCells ? 44 : density === 'comfortable' ? 30 : 26, headerHeight: 64 }}
       columns={columns}
       rows={data?.rows ?? []}
       rowKey={(_row, index) => String(index)}

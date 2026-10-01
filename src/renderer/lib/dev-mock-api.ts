@@ -245,6 +245,7 @@ export function createMockApi(mode: MockMode = readMockMode()): AppAPI {
   const mock: AppAPI = {
     runtime,
 
+    operations: { cancel: async () => ({ ok: true }) },
     connection: {
       // Always succeeds so `?mock=error` still has a navigable tree.
       list: () => respondAlways([...state.connections]),
@@ -356,6 +357,16 @@ export function createMockApi(mode: MockMode = readMockMode()): AppAPI {
           1.5
         ),
       listTables: (connectionId, database) => respond([...tablesOf(connectionId, database)]),
+      scanRedisKeys: (connectionId, database, cursor = '0', pattern) => {
+        const listed = tablesOf(connectionId, database)
+        const total = REDIS_TOTAL_KEYS[database] ?? listed.length
+        const all = total > listed.length ? [...listed, ...Array.from({ length: total - listed.length }, (_, index) => `unscanned:key:${listed.length + index + 1}`)] : listed
+        const offset = Math.max(0, Number(cursor) || 0)
+        const next = Math.min(offset + 500, all.length)
+        const literal = pattern?.slice(1, -1).replace(/\\(.)/g, '$1')
+        const keys = all.slice(offset, next).filter((key) => !literal || key.includes(literal))
+        return respond({ keys, nextCursor: next < all.length ? String(next) : '0', complete: next >= all.length })
+      },
       queryRows: (req) => respond(queryRowsResult(engineOf(req.connectionId), req), 1.5),
       insertRow: () => (failing() ? refuse() : respond(undefined)),
       updateRow: () => (failing() ? refuse() : respond(undefined)),
@@ -432,6 +443,8 @@ export function createMockApi(mode: MockMode = readMockMode()): AppAPI {
     },
 
     ssh: {
+      listHostKeys: async () => ({ ok: true, data: [] }),
+      forgetHostKey: async () => ({ ok: true, data: true }),
       listFiles: (req) => {
         const path = req.path && req.path.length > 0 ? req.path : '/home/deploy'
         return respond({ path, parentPath: parentOf(path), entries: [...sshEntries(path)] }, 1.5)

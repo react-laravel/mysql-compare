@@ -18,6 +18,7 @@ interface UseTableDataRowActionsArgs {
   database: string
   table: string
   data: QueryRowsResult | null
+  visibleColumnNames?: string[]
   showToast: ShowToast
   t: Translator
   refresh: () => void
@@ -50,6 +51,7 @@ export function useTableDataRowActions({
   database,
   table,
   data,
+  visibleColumnNames,
   showToast,
   t,
   refresh
@@ -124,7 +126,10 @@ export function useTableDataRowActions({
     if (selectedRows.length === 0) return
 
     try {
-      await navigator.clipboard.writeText(JSON.stringify(selectedRows, null, 2))
+      const copiedRows = visibleColumnNames
+        ? selectedRows.map((row) => Object.fromEntries(visibleColumnNames.map((name) => [name, row[name]])))
+        : selectedRows
+      await navigator.clipboard.writeText(JSON.stringify(copiedRows, null, 2))
       showToast(t('tableData.copiedRows', { count: selectedRows.length }), 'success')
     } catch (error) {
       showToast((error as Error).message, 'error')

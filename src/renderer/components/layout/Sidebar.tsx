@@ -19,7 +19,7 @@ import {
   useSidebarStore
 } from '@renderer/store/sidebar-store'
 import { useI18n } from '@renderer/i18n'
-import { getDatabaseKey } from './sidebar-actions'
+import { cancelSidebarRedisScans, getDatabaseKey } from './sidebar-actions'
 import { SidebarOverlays } from './SidebarOverlays'
 import { SidebarTree } from './SidebarTree'
 
@@ -38,6 +38,8 @@ export function Sidebar() {
   const resizeStateRef = useRef<{ startX: number; startWidth: number } | null>(null)
   const handledDatabaseDropEventIdRef = useRef(0)
   const handledTableDropEventIdRef = useRef(0)
+
+  useEffect(() => () => cancelSidebarRedisScans(), [])
 
   useEffect(() => {
     void refreshConnections()
@@ -80,18 +82,21 @@ export function Sidebar() {
     handledDatabaseDropEventIdRef.current = latestDatabaseDropEvent.id
 
     const { connectionId, database } = latestDatabaseDropEvent
+    cancelSidebarRedisScans(connectionId, database)
     setNodes((current) => {
       const node = current[connectionId]
       if (!node?.databases?.includes(database)) return current
       const expandedDbs = new Set(node.expandedDbs)
       expandedDbs.delete(database)
       const { [database]: _removedTables, ...tables } = node.tables
+      const { [database]: _removedScan, ...redisScans } = node.redisScans ?? {}
       return {
         ...current,
         [connectionId]: {
           ...node,
           databases: node.databases.filter((name) => name !== database),
           tables,
+          redisScans,
           expandedDbs
         }
       }

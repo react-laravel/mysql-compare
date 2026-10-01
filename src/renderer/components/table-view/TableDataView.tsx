@@ -69,6 +69,8 @@ export function TableDataView({
   const {
     data,
     loading,
+    cancelled,
+    usesKeyset,
     error,
     page,
     pageDraft,
@@ -90,6 +92,7 @@ export function TableDataView({
     setDensity,
     setVisibleColumns,
     refresh,
+    cancel,
     applyWhere,
     clearWhere,
     goToPage,
@@ -125,6 +128,7 @@ export function TableDataView({
     database,
     table,
     data,
+    visibleColumnNames: visibleDataColumns.map((column) => column.name),
     showToast,
     t,
     refresh
@@ -164,7 +168,7 @@ export function TableDataView({
 
   const buildInsertSQL = (row: Record<string, unknown>, includeId: boolean): string | null => {
     if (!data || engine === 'redis') return null
-    return buildRowInsertSQL({ engine, database, table, columns: data.columns, row, includeId })
+    return buildRowInsertSQL({ engine, database, table, columns: visibleDataColumns, row, includeId })
   }
 
   const copyRowAsInsert = async (row: Record<string, unknown>, includeId: boolean) => {
@@ -216,7 +220,7 @@ export function TableDataView({
         hasActiveFilter={Boolean(where || appliedWhere)}
         loading={loading}
         selectedCount={selected.size}
-        totalRows={data?.total}
+        totalRows={data?.totalIsExact === false ? undefined : data?.total}
         hasPrimaryKey={data?.hasPrimaryKey ?? true}
         dataReady={Boolean(data)}
         wrapCells={wrapCells}
@@ -239,6 +243,7 @@ export function TableDataView({
         onApplyWhere={applyWhere}
         onClearWhere={clearWhere}
         onRefresh={refresh}
+        onCancel={cancel}
         onOpenExport={() => setExportOpen(true)}
         onOpenColumnPanel={() => setColumnPanelOpen(true)}
         onToggleWrapCells={() => setWrapCells((current) => !current)}
@@ -255,6 +260,7 @@ export function TableDataView({
         data={data}
         error={error}
         refreshing={loading}
+        cancelled={cancelled}
         visibleColumns={visibleDataColumns}
         orderBy={effectiveOrderBy}
         density={density}
@@ -282,6 +288,11 @@ export function TableDataView({
       {data && (
         <TableDataPagination
           totalRows={data.total}
+          totalIsExact={data.totalIsExact}
+          totalIsEstimate={false}
+          usesOffset={!usesKeyset}
+          hasMore={data.hasMore}
+          currentRowCount={data.rows.length}
           pageSize={pageSize}
           page={page}
           totalPages={totalPages}

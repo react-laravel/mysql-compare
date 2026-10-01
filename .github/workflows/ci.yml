@@ -32,6 +32,13 @@ jobs:
   rust:
     runs-on: ubuntu-latest
     services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s --health-timeout=3s --health-retries=10
       mysql:
         image: mysql:8.4
         env:
@@ -59,7 +66,7 @@ jobs:
       - name: Install Tauri system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev openssh-server
+          sudo apt-get install -y libdbus-1-dev libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev openssh-server
           sudo mkdir -p /run/sshd
 
       - uses: dtolnay/rust-toolchain@stable
@@ -78,6 +85,7 @@ jobs:
         env:
           MYSQL_COMPARE_MYSQL_TEST_PORT: 3306
           MYSQL_COMPARE_PG_TEST_PORT: 5432
+          MYSQL_COMPARE_REDIS_TEST_PORT: 6379
         run: |
           # The browsing contracts exercise password failures. Keep the fixture
           # administrator trusted, but authenticate the two restricted accounts.
