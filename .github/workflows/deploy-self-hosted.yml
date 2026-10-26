@@ -1,0 +1,89 @@
+name: MySQL Compare website to B (GitHub hosted)
+
+on:
+  push:
+    branches: [electron]
+  workflow_dispatch:
+    inputs:
+      source_revision:
+        description: Exact electron website source commit; initial value preserves the existing website
+        required: true
+        default: 'b927fc9748ce0988439b51ba2c6b7ea3e0ae3324'
+        type: string
+      validate_only:
+        description: Build the candidate and only check the existing B website
+        required: true
+        default: true
+        type: boolean
+permissions:
+  contents: read
+concurrency:
+  group: mysql-compare-web-b
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      NODE_OPTIONS: --max-old-space-size=4096
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+    steps:
+      - name: Check out trusted publishing infrastructure
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          path: ci
+          persist-credentials: false
+      - name: Verify restricted publisher and client
+        run: python3 -m unittest discover -s ci/deployment/tests -p "test_*.py"
+      - name: Select immutable website source
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_SOURCE_REVISION: ${{ inputs.source_revision }}
+        run: python3 ci/scripts/mysql-web-ci.py select
+      - name: Check out the electron website edition
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ steps.source.outputs.source_revision }}
+          path: source
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24.16.0
+          cache: npm
+          cache-dependency-path: source/package-lock.json
+      - name: Build only the existing website
+        working-directory: source
+        run: |
+          test -f src/web/index.ts
+          test -f vite.web.config.ts
+          npm ci --ignore-scripts
+          npm run typecheck
+          npm test
+          npm run web:build
+      - name: Package compiled server and production dependencies
+        id: package
+        env:
+          SOURCE_REVISION: ${{ steps.source.outputs.source_revision }}
+        run: node ci/scripts/mysql-web-ci.mjs --source source --output "$RUNNER_TEMP/mysql-web-runtime" --archive "$RUNNER_TEMP/mysql-web-runtime.tar.gz" --source-revision "$SOURCE_REVISION" --workflow-revision "$GITHUB_SHA"
+      - name: Refuse stale automatic publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_SOURCE_REVISION: ${{ steps.source.outputs.source_revision }}
+        run: python3 ci/scripts/mysql-web-ci.py select
+      - name: Validate or publish only this B website
+        env:
+          RUNTIME_REVISION: ${{ steps.package.outputs.revision }}
+          VALIDATE_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.validate_only }}
+          B_MYSQL_COMPARE_DEPLOY_SSH_KEY: ${{ secrets.B_MYSQL_COMPARE_DEPLOY_SSH_KEY }}
+          B_MYSQL_COMPARE_DEPLOY_KNOWN_HOSTS: ${{ secrets.B_MYSQL_COMPARE_DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          if [ "$VALIDATE_ONLY" = true ]; then
+            python3 ci/scripts/mysql-web-ci.py deploy --revision "$RUNTIME_REVISION" --archive "$RUNNER_TEMP/mysql-web-runtime.tar.gz" --check-only
+          else
+            python3 ci/scripts/mysql-web-ci.py deploy --revision "$RUNTIME_REVISION" --archive "$RUNNER_TEMP/mysql-web-runtime.tar.gz"
+          fi
+      - name: Remove temporary runtime bundle
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/mysql-web-runtime" "$RUNNER_TEMP/mysql-web-runtime.tar.gz"
