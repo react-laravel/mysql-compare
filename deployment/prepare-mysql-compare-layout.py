@@ -20,7 +20,7 @@ for name,digest in m['files'].items():
 before=command(['systemctl','show','mysql-compare.service','-p','MainPID','--value']).strip();assert int(before)>0
 command(['useradd','--system','--home-dir',str(STATE),'--create-home','--shell','/bin/bash','--user-group',USER]);command(['usermod','-L',USER]);deploy=pwd.getpwnam(USER);runtime=pwd.getpwnam(RUNTIME)
 assert set(os.getgrouplist(USER,deploy.pw_gid))=={deploy.pw_gid} and runtime.pw_gid!=deploy.pw_gid
-STATE.chmod(0o755);os.chown(STATE,0,0)
+STATE.chmod(0o750);os.chown(STATE,0,deploy.pw_gid)
 for file in ['.bashrc','.profile','.bash_profile','.ssh/rc']:
  p=STATE/file
  if p.exists():
@@ -39,7 +39,7 @@ incoming=STATE/'incoming';incoming.mkdir(mode=0o700);os.chown(incoming,deploy.pw
 for name,target in [('publish-mysql-compare.py','/usr/local/libexec/publish-mysql-compare'),('mysql-compare-ssh-gateway.py','/usr/local/libexec/mysql-compare-ssh-gateway')]:
  p=pathlib.Path(target);p.write_bytes((helpers/name).read_bytes());p.chmod(0o755)
 sudo=pathlib.Path('/etc/sudoers.d/mysql-compare-deploy');sudo.write_bytes((helpers/'sudoers-mysql-compare-deploy').read_bytes());sudo.chmod(0o440);command(['visudo','-c','-f',str(sudo)])
-ssh=STATE/'.ssh';ssh.mkdir(mode=0o700,exist_ok=True);os.chown(ssh,0,0)
-auth=ssh/'authorized_keys';auth.write_text('restrict,command="/usr/local/libexec/mysql-compare-ssh-gateway" '+key+'\n');auth.chmod(0o600);os.chown(auth,0,0)
+ssh=STATE/'.ssh';ssh.mkdir(mode=0o750,exist_ok=True);ssh.chmod(0o750);os.chown(ssh,0,deploy.pw_gid)
+auth=ssh/'authorized_keys';auth.write_text('restrict,command="/usr/local/libexec/mysql-compare-ssh-gateway" '+key+'\n');auth.chmod(0o640);os.chown(auth,0,deploy.pw_gid)
 assert command(['systemctl','show','mysql-compare.service','-p','MainPID','--value']).strip()==before
 print(json.dumps({'restricted_layout_installed':True,'runtime_PID_unchanged':True,'private_runtime_paths_denied':private,'only_sudo_restart':'mysql-compare.service','outer_link_root_owned':True,'sole_initial_release':old.name,'new_key_has_forced_command_and_restrict':True}))
