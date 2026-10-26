@@ -8,7 +8,7 @@ on:
       source_revision:
         description: Exact electron website source commit; initial value preserves the existing website
         required: true
-        default: 'b927fc9748ce0988439b51ba2c6b7ea3e0ae3324'
+        default: '564f8e53570f25fe2a0dca11021dd7ce142a58da'
         type: string
       validate_only:
         description: Build the candidate and only check the existing B website
