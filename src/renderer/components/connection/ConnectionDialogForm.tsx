@@ -15,7 +15,7 @@ interface Props {
   onSSHKeyInputChange: (event: ChangeEvent<HTMLInputElement>) => void | Promise<void>
   onSSHKeyDrop: (event: DragEvent<HTMLDivElement>) => void | Promise<void>
   onSSHKeyDraggingChange: (dragging: boolean) => void
-  sshKeyInputRef: RefObject<HTMLInputElement>
+  sshKeyInputRef: RefObject<HTMLInputElement | null>
 }
 
 export function ConnectionDialogForm({
