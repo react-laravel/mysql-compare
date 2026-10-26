@@ -1,22 +1,23 @@
 # MySQL Compare 网页版发布至 B
 
-网页版本来自 electron 分支，首次发布固定 b927fc9748ce0988439b51ba2c6b7ea3e0ae3324。默认 main 是 Tauri 桌面版，网页流程绝不将其当网站部署，桌面 CI/Release 不改。main 与 electron 同步网页发布基础设施；首次提交带 [skip ci]，先验证再发布。
+2026-10-26 已验证：GitHub 托管构建、仅验证、真实发布及恢复标签构建均成功；网站位于 B，A 的网页入口已退役。网页源码来自 electron，main 的 Tauri 桌面版不作为网页源码，桌面 CI/Release 保留。
 
-构建在 GitHub ubuntu-24.04 / Node24.16.0 上执行，沿用网页 npm 锁文件。只运行 web:build；生产机不安装依赖。后端33个现有TS模块编译成单个JS，网站静态成品与115个所需生产包一起发布；不带Electron、Monaco编辑器开发依赖、tsx、原始环境或用户数据。许可证保留。
+已验证的网页源码：`564f8e53570f25fe2a0dca11021dd7ce142a58da`。相对于原网页 `b927fc9748ce0988439b51ba2c6b7ea3e0ae3324`，除发布基础设施外，仅同步 main 已有的 React 19 nullable ref 类型声明一行；声明在编译时擦除。33 模块后端编译入口 SHA-256 与原网页完全相同：`1bdaa12eb7c3838d908ae37917f7a1b18bcbdec088187cc5e2c9fdd575bb6f2e`。依赖锁和运行行为未改。
 
-B 的 mysql-compare-deploy 账号独立于 runtime mysql-compare，只能通过强制网关执行 receive/publish/validate 三种固定命令；不提供终端/转发，不可直接读网站登录配置、会话/加密密钥、连接记录、进程环境或其他站点私密目录。sudo仅允许 restart mysql-compare.service。公网CI来源动态，使用这把仅限该站点的独立密钥。
+构建环境是 GitHub ubuntu-24.04 / Node24.16.0，沿用 npm 锁文件并运行 typecheck、测试和 web:build。B 仅接收编译后端、dist-web 与115个生产包，不安装完整开发依赖。凭据和用户文件不进入构建包或 GitHub。
 
-GitHub Secrets：B_MYSQL_COMPARE_DEPLOY_SSH_KEY、B_MYSQL_COMPARE_DEPLOY_KNOWN_HOSTS。仅用于发布程序，不包含真实网站Basic登录信息。
+B 的 `mysql-compare-deploy` 独立账号只经强制网关执行 receive/publish/validate 三种固定操作，sudo 只允许重启 `mysql-compare.service`；不提供终端或转发，不能直接读运行账号的登录配置、会话密钥、连接文件或其他项目。GitHub Secrets 是 `B_MYSQL_COMPARE_DEPLOY_SSH_KEY` 和 `B_MYSQL_COMPARE_DEPLOY_KNOWN_HOSTS`。
 
-发布前需runtime专属UID连续5次无ESTABLISHED套接字，包括HTTP/SSE和DB/SSH出站连接；未断开的连接会拒绝发布。上传/展开大小限制、路径/链接/秘密文件校验、哈希校验和至少1GiB磁盘余量都由B发布器执行。失败恢复原current，成功删除旧运行版，保持一个版本。运行环境和持久文件独立于代码，发布不修改它们，不自动操作任何数据库或远程SSH资源。
+发布前要求运行UID连续5次没有HTTP/SSE/数据库/SSH已建立连接。B执行包大小、路径、链接、敏感文件和内容哈希检查，并保留至少1GiB磁盘余量。失败在B恢复此前current；成功删除旧版，仅保留一个运行包。发布不改环境、持久文件或外部数据库，不执行数据库结构变更。
 
-手动验证（source_revision应为精确网页提交）：
+恢复标签：`mysql-b-verified-20261026`，工作流修订 `ebb2c43373ac417facc8503b07e4e08f13091765`，网站源码固定为上述564f提交。先验证：
 
 ```sh
-gh workflow run deploy-self-hosted.yml -R react-laravel/mysql-compare --ref main \
-  -f source_revision=b927fc9748ce0988439b51ba2c6b7ea3e0ae3324 -f validate_only=true
+gh workflow run deploy-self-hosted.yml -R react-laravel/mysql-compare \
+  --ref mysql-b-verified-20261026 \
+  -f source_revision=564f8e53570f25fe2a0dca11021dd7ce142a58da -f validate_only=true
 ```
 
-相同参数 validate_only=false 才上传并发布。之后 electron push 自动构建对应提交；main 的 Tauri push不会发布网站。恢复标签在真实发布成功后创建，恢复时固定该标签及其source_revision；不要启用旧A的Deployer流程或通知钩子。
+验证通过后相同参数改 `validate_only=false` 才发布。今后 electron push 自动部署对应提交；main 的桌面push不发布网页。标签验证成功任务40341925605，真实发布40341136395，完整托管验证40340442322。
 
-当前该方案尚未安装新账号/公钥/Secret，也未提交或执行真实托管流程。现有B迁移实例已通过真实Basic会话、95个静态文件/2511运行文件逐项校验；拟议发布器18项边界/回退/单版本/只检查不上传测试通过，纯代码包实际打包与发布器解包校验另有回执。GitHub业务构建仍需批准后真实验证。
+原Basic认证/会话、两份共47B持久文件保持；真实登录和95个静态资源校验通过，没有连接真实外部数据库或SSH。A已有旧文件不能在B接受写入后直接解冻作为回滚；优先在B从恢复标签重建程序，业务数据继续使用B的最新副本。
